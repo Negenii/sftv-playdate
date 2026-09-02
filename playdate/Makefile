@@ -1,0 +1,26 @@
+HEAP_SIZE      = 8388208
+STACK_SIZE     = 61800
+
+PRODUCT = SSTV_RX.pdx
+
+SDK = ${PLAYDATE_SDK_PATH}
+ifeq ($(SDK),)
+	SDK = $(shell egrep '^\s*SDKRoot' ~/.Playdate/config | head -n 1 | cut -c9-)
+endif
+ifeq ($(SDK),)
+$(error SDK path not found; set ENV value PLAYDATE_SDK_PATH)
+endif
+
+VPATH += src ../common
+
+SRC = src/main.c src/mic_ring.c ../common/crc8.c ../common/sstv_frame.c ../common/sstv_demod.c
+
+UINCDIR = ../common
+
+UASRC =
+UDEFS =
+UADEFS =
+ULIBDIR =
+ULIBS =
+
+include $(SDK)/C_API/buildsupport/common.mk

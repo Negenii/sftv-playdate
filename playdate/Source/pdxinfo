@@ -1,0 +1,6 @@
+name=SSTV RX
+author=negenii
+description=Receive a 400x240 image over sound from a Flipper Zero
+bundleID=com.negenii.sstvrx
+version=0.1
+buildNumber=1
