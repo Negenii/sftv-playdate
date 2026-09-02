@@ -8,3 +8,4 @@ build/
 *.o
 tests/bin/
 .ufbt/
+tools/.venv/
