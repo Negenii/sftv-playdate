@@ -1,7 +1,7 @@
 HEAP_SIZE      = 8388208
 STACK_SIZE     = 61800
 
-PRODUCT = SSTV_RX.pdx
+PRODUCT = SFTV_RX.pdx
 
 SDK = ${PLAYDATE_SDK_PATH}
 ifeq ($(SDK),)

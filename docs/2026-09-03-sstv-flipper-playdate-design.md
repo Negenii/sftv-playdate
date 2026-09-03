@@ -5,6 +5,10 @@ Status: approved design
 
 ## Current protocol (revision 6, 2026-09-03) — supersedes the signal sections below
 
+The apps are called **SFTV** (Flipper TV): `SFTV TX` on the Flipper (appid `sftv_tx`, pictures in
+`/ext/apps_data/sftv_tx`) and `SFTV RX` on the Playdate (`com.negenii.sftvrx`). Source identifiers
+keep the historical `sstv_` prefix.
+
 Everything below this section is the original design plus revision notes; the sections
 "Signal format", "Line frame" and the demodulator algorithm are historical. What runs now:
 
@@ -61,7 +65,9 @@ Everything below this section is the original design plus revision notes; the se
   through it as lines go out, like paper fed into a shredder, uncovering a
   dolphin resting under a palm (firmware `L1_Waves` frame, GPL-3) and the word "Sent!". A
   panel on the right shows state, a rounded progress bar, lines done and time left, and button
-  hints with the firmware OK and Back icons.
+  hints with the firmware OK and Back icons. Pictures are picked in a tile grid (three 40x20
+  thumbnails per page, the same dither as the tiny preview, Left/Right/Up/Down, OK opens, Back
+  exits) instead of the system file browser.
 - **Playdate UI**: main menu with two rounded tiles, Receive (Flipper dolphin, GPL-3 sprite
   from the firmware's `L3_Hijack_radio` animation, to be replaced by the user's own drawing)
   and Gallery (thumbnail of the latest saved picture). Receive shows an intro scene: the

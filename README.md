@@ -1,4 +1,4 @@
-# SSTV for Flipper Zero → Playdate
+# SFTV, Flipper TV: Flipper Zero → Playdate pictures over sound
 
 Flipper Zero plays a 400×240 1-bit image through its buzzer; a Playdate decodes it from its
 microphone and draws it line by line while the sound is playing. One pass takes 1.5–5.4 minutes
@@ -32,28 +32,28 @@ section on top is authoritative).
 
     (cd tests && make test)            # host unit tests
     (cd flipper && ufbt launch)        # build, install and run on a connected Flipper
-    (cd playdate && make)              # SSTV_RX.pdx
+    (cd playdate && make)              # SFTV_RX.pdx
 
 Momentum SDK for ufbt: `ufbt update --index-url=https://up.momentum-fw.dev/firmware/directory.json --channel release`.
-Playdate install: `pdutil <serial port> datadisk`, copy `SSTV_RX.pdx` into `Games/`, eject,
-`pdutil <port> run /Games/SSTV_RX.pdx`. Or launch it from the Playdate's game list. The SDK
+Playdate install: `pdutil <serial port> datadisk`, copy `SFTV_RX.pdx` into `Games/`, eject,
+`pdutil <port> run /Games/SFTV_RX.pdx`. Or launch it from the Playdate's game list. The SDK
 Makefile drops object files into `playdate/common/`; `rm -rf playdate/common playdate/build`
 forces a full rebuild.
 
 Images: `sh tools/setup.sh`, then `tools/.venv/bin/python tools/img2pbm.py photo.jpg out.pbm`
-and copy the `.pbm` to the Flipper SD card at `/ext/apps_data/sstv_tx/`.
+and copy the `.pbm` to the Flipper SD card at `/ext/apps_data/sftv_tx/`.
 
 ## Using it
 
-Flipper: Apps → Tools → SSTV TX → pick a `.pbm` → OK sends one pass, Back stops.
-Playdate: SSTV RX, allow the microphone, put the Flipper 10–30 cm from the Playdate mic (bottom
+Flipper: Apps → Tools → SFTV TX → a tile grid of the `.pbm` files in `apps_data/sftv_tx` (Left/Right, OK) → OK sends one pass, Back stops.
+Playdate: SFTV RX, allow the microphone, put the Flipper 10–30 cm from the Playdate mic (bottom
 edge). Main menu: Receive or Gallery. Receive shows the dolphin sending the preview to a
 Playdate; the picture then rises from the bottom edge line by line over the scene, lost
 half-lines showing a dimmed preview placeholder. An
 incoming transmission jumps to Receive from any screen. A dot in the corner flashes per frame.
 Right toggles the side panel (name, state and ZIP/RAW pills, line progress, counters, tone
 level). When the END frame arrives a banner shows the file name and line count, and the image
-is saved as `Data/com.negenii.sstvrx/<name>.pbm` (same name overwrites). Gallery: a grid of
+is saved as `Data/com.negenii.sftvrx/<name>.pbm` (same name overwrites). Gallery: a grid of
 thumbnails, d-pad moves the cursor, A opens full screen, B goes back. A in receive mode clears
 the image, B returns to the menu, Up records 30 s of raw microphone audio to `rec.wav`.
 

@@ -1,6 +1,6 @@
-name=SSTV RX
+name=SFTV RX
 author=negenii
-description=Receive a 400x240 image over sound from a Flipper Zero
-bundleID=com.negenii.sstvrx
+description=Flipper TV: receive pictures over sound from a Flipper Zero
+bundleID=com.negenii.sftvrx
 version=0.1
 buildNumber=1

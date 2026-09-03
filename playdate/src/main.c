@@ -593,7 +593,7 @@ static void draw_spout(int x0, int y0, int x1, int y1, float t) {
 static void draw_menu(void) {
     pd->graphics->clear(kColorWhite);
     use_font(font_big);
-    draw_text("SSTV", 16, 8);
+    draw_text("SFTV", 16, 8);
     use_font(font_ui);
     const char* mic = mic_state > 0 ? "mic on" : mic_state < 0 ? "mic denied" : "mic?";
     draw_pill(mic, LCD_COLUMNS - 32 - text_width(mic) - 12, 10, false);
