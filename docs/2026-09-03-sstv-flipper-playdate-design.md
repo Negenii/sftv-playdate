@@ -3,6 +3,40 @@
 Date: 2026-09-03
 Status: approved design
 
+## Current protocol (revision 3, 2026-09-03 evening) — supersedes the signal sections below
+
+Everything below this section is the original design plus revision notes; the sections
+"Signal format", "Line frame" and the demodulator algorithm are historical. What runs now:
+
+- **Modulation**: 4-FSK, 2 bits per 4 ms symbol, square-wave tones 2500 / 3000 / 3500 /
+  4000 Hz (symbol value 0..3), sync 5500 Hz for 16 ms. All tones are multiples of 500 Hz so
+  a 2 ms detector window sees them (and the buzzer's 3 kHz ringing) as orthogonal; none is
+  2x or 3x another (the buzzer is nonlinear). Per-tone PWM duty on the Flipper
+  (30 / 12 / 30 / 50 %) attenuates the loud resonance tone by 10 dB so the tones arrive
+  within a few dB of each other at the Playdate.
+- **Why 4 ms**: measured on Flipper buzzer -> Playdate mic, tone tails last 1-2 ms (2000-2250
+  and 4750-5000 Hz ring for 5-15 ms and are avoided). The decision window is the last 2 ms of
+  the symbol (`SSTV_SAMPLE_POINT 0.95`), after the previous tone has died down.
+- **Framing**: half-line segments (200 px). Logical frame = [segment index, 2 bytes][25 pixel
+  bytes][CRC-8] + 8 Reed-Solomon parity bytes = 36 bytes = 144 symbols. Four consecutive
+  logical frames are byte-interleaved into four physical frames, each sent as
+  sync + 144 symbols = 592 ms. Image = 480 physical frames = 4.7 min, one pass (OK repeats).
+- **Receiver**: per-tone quadrature detectors (2 ms window) plus a 4 x longer sync detector;
+  per-tone peak-tracking gain normalisation (clamp 20 dB); symbol = argmax normalised energy,
+  soft confidence per bit. Sync: dominance run of the long detector, then the sync->data
+  crossover; a second-order tracking loop starts each frame halfway between the predicted
+  and measured edge and nudges the symbol clock (Flipper and Playdate clocks differ by 0.1 %).
+  Flywheel: with the sync buried in noise the frame starts at the predicted edge (up to 3
+  frames); mid-frame false syncs are rejected. The block layer de-interleaves four physical
+  frames, marks the least confident bytes as erasures and decodes RS errors-and-erasures
+  (up to 8 erased bytes per frame), then CRC. Verified segments are never overwritten.
+- **Transmitter**: TIM16 driven through the repetition counter and preloaded registers,
+  one interrupt per symbol; sending all cycles of a symbol in hardware avoids the lost-overflow
+  problem seen with a per-cycle ISR.
+- **Measured**: loopback 0 dB SNR 480/480 segments; 400 ms noise bursts at +15 dB every 3 s
+  480/480; hardware pass with the devices being moved and someone talking: 425/480 good,
+  19 noisy.
+
 ## Goal
 
 A proof of concept: Flipper Zero plays a 400×240 1-bit image as sound through its
