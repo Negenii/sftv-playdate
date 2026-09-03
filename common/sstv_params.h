@@ -132,7 +132,7 @@
 #define SSTV_SYNC_US 16000
 #endif
 #ifndef SSTV_LEADER_US
-#define SSTV_LEADER_US 1000000 /* leader: symbols cycling 0,1,2,3 (gain calibration) */
+#define SSTV_LEADER_US 2000000 /* leader: symbols cycling 0,1,2,3 (gain calibration); 2 s so the receiver settles before the first frame (START) */
 #endif
 
 /* Receiver tuning. */

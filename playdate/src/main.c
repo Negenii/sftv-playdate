@@ -42,6 +42,7 @@ static float sheet_y = LCD_ROWS; /* top of the sheet; it slides in from the bott
 static unsigned last_data_ms;
 static char current_name[NAME_CAP] = "untitled";
 static bool started; /* START meta received, transmission in progress */
+static void begin_pass(unsigned now); /* start the pass on the first decoded frame; defined near on_meta */
 static unsigned started_ms; /* when the START block ended: the pass timeline starts here */
 static int total_frames; /* physical frames in the pass, announced in START */
 static bool image_dirty; /* something received since the last save */
@@ -317,6 +318,7 @@ static void preview_refresh_bitmap(void) {
 
 static void on_preview(void* ctx, int layer, int chunk, int nbytes, const uint8_t* data) {
     (void)ctx;
+    begin_pass(pd->system->getCurrentTimeMilliseconds());
     if(layer == 2) {
         if(chunk < 0 || chunk >= SSTV_SCHEDULE_CHUNKS) return;
         memcpy(schedule + chunk * SSTV_PREVIEW_CHUNK, data, (size_t)nbytes);
@@ -342,6 +344,7 @@ static void on_preview(void* ctx, int layer, int chunk, int nbytes, const uint8_
 
 static void on_pixels(void* ctx, uint16_t line, int x_byte, int nbytes, const uint8_t* pixels) {
     (void)ctx;
+    begin_pass(pd->system->getCurrentTimeMilliseconds());
     last_data_ms = pd->system->getCurrentTimeMilliseconds();
     if(line >= SSTV_HEIGHT || x_byte + nbytes > SSTV_LINE_BYTES) return;
     uint8_t* dst = image_data + line * image_rowbytes + x_byte;
@@ -422,6 +425,18 @@ static int expected_lines(unsigned now) {
     }
     if(lines > (float)SSTV_HEIGHT) lines = (float)SSTV_HEIGHT;
     return (int)lines;
+}
+
+/* Marks a transmission in progress on the first decoded frame of a pass, so the intro scene
+ * and its preview show even when the START frame itself was lost (START only adds the name and
+ * the timeline). Clears once per pass; a later START still forces a clean restart. */
+static void begin_pass(unsigned now) {
+    if(started) return;
+    clear_image();
+    started = true;
+    started_ms = now;
+    last_data_ms = now;
+    ui_mode = ModeReceive;
 }
 
 static void on_meta(void* ctx, const char* name, bool is_end, int frames, bool coded) {
