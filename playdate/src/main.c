@@ -91,6 +91,7 @@ static LCDBitmap* menu_thumb; /* latest saved image, for the gallery tile */
 #define REC_RATE 44100
 static int16_t* rec_buf;
 static int rec_len; /* samples captured so far, -1 when idle */
+static const char* rec_prefix = "rec"; /* "rec" (Up) or "test" (Down, tone test takes) */
 
 /* ---- audio thread ---- */
 
@@ -472,7 +473,7 @@ static void save_recording(void) {
     FileStat st;
     int n = 1;
     do {
-        snprintf(path, sizeof path, "rec%d.wav", n++);
+        snprintf(path, sizeof path, "%s%d.wav", rec_prefix, n++);
     } while(n < 100 && pd->file->stat(path, &st) == 0);
     SDFile* f = pd->file->open(path, kFileWrite);
     if(!f) return;
@@ -750,7 +751,7 @@ static void draw_panel(void) {
     int px = x;
     px += draw_pill(state, px, y, true) + 5;
     px += draw_pill(rx.coded ? "ZIP" : "RAW", px, y, false) + 5;
-    if(rec_len >= 0) draw_pill("REC", px, y, true);
+    if(rec_len >= 0) draw_pill(rec_prefix[0] == 't' ? "TEST" : "REC", px, y, true);
     y += font_height() + 12;
     /* line progress */
     int bar_w = PANEL_W - 16;
@@ -919,7 +920,14 @@ static int update(void* userdata) {
         if(pushed & kButtonA) clear_image();
         if(pushed & kButtonB) menu_open();
         if(pushed & kButtonRight) show_panel = !show_panel;
-        if((pushed & kButtonUp) && rec_len < 0) rec_len = 0;
+        if((pushed & kButtonUp) && rec_len < 0) {
+            rec_prefix = "rec";
+            rec_len = 0;
+        }
+        if((pushed & kButtonDown) && rec_len < 0) { /* temporary: tone test takes */
+            rec_prefix = "test";
+            rec_len = 0;
+        }
         draw_receive();
         break;
     case ModeGrid:
