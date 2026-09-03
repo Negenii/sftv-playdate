@@ -41,16 +41,23 @@
  * detector window. None is 2x or 3x another (the buzzer is nonlinear: 2000/4000 put a
  * second harmonic straight into the other detector). A Playdate recording showed the tone
  * level swinging with device position by 6 dB at 3.5 kHz but 20 dB at 6 kHz (shorter
- * wavelength, deeper interference notches), so the set sits as low as the buzzer allows:
- * 2000-2500 Hz ring for 15 ms and are out, 3000 Hz is the buzzer resonance (loud, decays
- * in 1.2 ms, harmless behind the 2 ms guard). Symbol value v (0..3) is SSTV_TONE_HZ[v]. */
+ * wavelength, deeper interference notches; high tones are also more directional), so the
+ * set sits as low as the buzzer allows: 2000-2250 Hz ring for 15 ms and are out, 2500 decays
+ * in 2.4 ms, 3000 Hz is the buzzer resonance (loud, decays in 1.2 ms, harmless behind the
+ * 2 ms guard). Symbol value v (0..3) is SSTV_TONE_HZ[v]. */
 #define SSTV_NUM_TONES 4
 #define SSTV_BITS_PER_SYMBOL 2
-#define SSTV_TONE0_HZ 3000
-#define SSTV_TONE1_HZ 3500
-#define SSTV_TONE2_HZ 4000
-#define SSTV_TONE3_HZ 4500
+#define SSTV_TONE0_HZ 2500
+#define SSTV_TONE1_HZ 3000
+#define SSTV_TONE2_HZ 3500
+#define SSTV_TONE3_HZ 4000
 #define SSTV_TONES_INIT {SSTV_TONE0_HZ, SSTV_TONE1_HZ, SSTV_TONE2_HZ, SSTV_TONE3_HZ}
+/* Transmit pre-emphasis: PWM duty per tone, percent. The fundamental of a square wave scales
+ * with sin(pi * duty), so a narrow pulse attenuates a tone without touching the others:
+ * 12 % = -10 dB, 30 % = -4 dB. The buzzer's 3 kHz resonance arrived 10-27 dB louder than
+ * the other tones at a Playdate microphone; this evens the set out (and quietens the whine). */
+#define SSTV_TONE_DUTY_PCT_INIT {30, 12, 30, 50}
+#define SSTV_SYNC_DUTY_PCT 50
 #ifndef SSTV_FSYNC_HZ
 #define SSTV_FSYNC_HZ 5500 /* frame sync: 500 Hz grid, no 2x/3x relation, 1.3 ms decay (5000 Hz rang for 5 ms and blurred the sync edge) */
 #endif
@@ -79,7 +86,7 @@
 #define SSTV_NOISE_FLOOR_LSB 40.0f /* square-wave amplitude below which detectors are ignored */
 #endif
 #define SSTV_GAIN_TAU_S 0.5f /* per-tone peak tracker decay time constant */
-#define SSTV_GAIN_CLAMP 30.0f /* max tracked gain ratio between tones (~15 dB) */
+#define SSTV_GAIN_CLAMP 100.0f /* max tracked gain ratio between tones (20 dB) */
 #define SSTV_SYNC_MIN_MS 6 /* net dominant run (of the long sync detector) to accept a sync */
 
 /* Derived. */

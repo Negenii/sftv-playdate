@@ -3,16 +3,25 @@
 
 void sstv_mod_init(sstv_mod* m, float sample_rate, int16_t amplitude) {
     static const int tones[SSTV_NUM_TONES] = SSTV_TONES_INIT;
+    static const int duty[SSTV_NUM_TONES] = SSTV_TONE_DUTY_PCT_INIT;
     m->sample_rate = sample_rate;
     m->amplitude = amplitude;
-    for(int k = 0; k < SSTV_NUM_TONES; k++) m->tones[k] = (float)tones[k];
+    for(int k = 0; k < SSTV_NUM_TONES; k++) {
+        m->tones[k] = (float)tones[k];
+        m->duty[k] = (float)duty[k] / 100.0f;
+    }
     m->fsync = (float)SSTV_FSYNC_HZ;
+    m->sync_duty = (float)SSTV_SYNC_DUTY_PCT / 100.0f;
     m->phase = 0.0;
     m->time_us = 0.0;
     m->samples_out = 0;
 }
 
 int sstv_mod_tone(sstv_mod* m, float freq_hz, int duration_us, int16_t* out, int cap) {
+    return sstv_mod_tone_duty(m, freq_hz, 0.5f, duration_us, out, cap);
+}
+
+int sstv_mod_tone_duty(sstv_mod* m, float freq_hz, float duty, int duration_us, int16_t* out, int cap) {
     double end_us = m->time_us + (double)duration_us;
     long long end_samples = (long long)(end_us * (double)m->sample_rate / 1e6 + 0.5);
     long long n64 = end_samples - m->samples_out;
@@ -21,7 +30,7 @@ int sstv_mod_tone(sstv_mod* m, float freq_hz, int duration_us, int16_t* out, int
     int n = (int)n64;
     double step = (double)freq_hz / (double)m->sample_rate;
     for(int i = 0; i < n; i++) {
-        out[i] = m->phase < 0.5 ? m->amplitude : (int16_t)(-m->amplitude);
+        out[i] = m->phase < (double)duty ? m->amplitude : (int16_t)(-m->amplitude);
         m->phase += step;
         if(m->phase >= 1.0) m->phase -= 1.0;
     }
@@ -32,12 +41,12 @@ int sstv_mod_tone(sstv_mod* m, float freq_hz, int duration_us, int16_t* out, int
 
 int sstv_mod_frame(sstv_mod* m, const uint8_t* frame, int16_t* out, int cap) {
     int total = 0;
-    int n = sstv_mod_tone(m, m->fsync, SSTV_SYNC_US, out, cap);
+    int n = sstv_mod_tone_duty(m, m->fsync, m->sync_duty, SSTV_SYNC_US, out, cap);
     if(n < 0) return -1;
     total += n;
     for(int i = 0; i < SSTV_SYMBOLS_PER_FRAME; i++) {
         int v = sstv_frame_symbol(frame, i);
-        n = sstv_mod_tone(m, m->tones[v], SSTV_SYMBOL_US, out + total, cap - total);
+        n = sstv_mod_tone_duty(m, m->tones[v], m->duty[v], SSTV_SYMBOL_US, out + total, cap - total);
         if(n < 0) return -1;
         total += n;
     }
@@ -47,7 +56,8 @@ int sstv_mod_frame(sstv_mod* m, const uint8_t* frame, int16_t* out, int cap) {
 int sstv_mod_image(sstv_mod* m, const uint8_t* image_bits, int16_t* out, int cap) {
     int total = 0;
     for(int i = 0; i < SSTV_LEADER_SYMBOLS; i++) {
-        int n = sstv_mod_tone(m, m->tones[i % SSTV_NUM_TONES], SSTV_SYMBOL_US, out + total, cap - total);
+        int k = i % SSTV_NUM_TONES;
+        int n = sstv_mod_tone_duty(m, m->tones[k], m->duty[k], SSTV_SYMBOL_US, out + total, cap - total);
         if(n < 0) return -1;
         total += n;
     }
