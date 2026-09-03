@@ -35,12 +35,15 @@ last block of each group the transmitter inserts 3 parity blocks = 12 frames of 
 RS codeword). END (4 identical META frames) is sent after the last parity block and is not
 covered, so the receiver finishes only after the last repair opportunity.
 
-Parity: for each byte column k of the 29 data bytes of a logical frame (header, payload,
-CRC), the codeword is [d_0[k] … d_{n−1}[k] | p_0[k] … p_11[k]] with the existing RS(…, 12)
-code over GF(256) (`rs.c`, same generator as the inner code). Parity frame j carries p_j[k]
-in its 29 data bytes and is itself packed like any logical frame (inner RS parity added on
-top). The pass total announced in START/END counts parity frames; on a raw photo the pass
-grows from 508 to 568 frames (+11 %, 5.4 → 6.0 min).
+Parity: for each byte column k of the 26 payload bytes of a logical frame, the codeword is
+[d_0[k] … d_{n−1}[k] | p_0[k] … p_11[k]] with the existing RS(…, 12) code over GF(256)
+(`rs.c`, same generator as the inner code). Parity frame j is an ordinary logical frame with
+header type PARITY, index g × 12 + j, payload byte k = p_j[k] (inner RS parity on top). The
+header of a lost frame is not transmitted twice: the receiver rebuilds it from the position
+(START/TINY/PREVIEW/SCHEDULE by range, RAW segment = position − 28, CODED block = position / 4
+− 1, raw vs coded from START), and no CRC is needed after repair. The pass total announced in
+START/END counts parity frames; a raw photo grows from 508 to 572 frames (+13 %, 5.4 → 6.4 min),
+the checker from 84 to 100.
 
 Constants (`sstv_params.h`): `SSTV_FT_PARITY 3`, `SSTV_OUTER_GROUP 108`,
 `SSTV_OUTER_PARITY SSTV_PARITY_BYTES` (12), `SSTV_OUTER_GROUPS_MAX` derived from
@@ -55,8 +58,8 @@ timeline:
 
 ## Transmitter (`sstv_build_physical`)
 
-Builds frames in data order as today, feeding every logical frame's 29 data bytes into 29
-streaming RS encoders (`rs_encoder_t` state of 12 bytes: `rs_encoder_init`, `rs_encoder_feed(byte)`,
+Builds frames in data order as today, feeding every logical frame's 26 payload bytes into 26
+streaming RS encoders, one per payload column (`rs_encoder_t` state of 12 bytes: `rs_encoder_init`, `rs_encoder_feed(byte)`,
 `rs_encoder_finish(parity)`, added to `rs.c`; `rs_encode` becomes a wrapper). After each 108
 frames, and after the last data frame, it emits the 12 parity frames as 3 interleaved blocks
 and resets the encoders. END goes last. `lines_after` for parity and END frames repeats the
@@ -66,8 +69,8 @@ tone's brightness instead of blue); `sstv_tx_current_symbol()` gains a companion
 
 ## Receiver (`common/sstv_rx`)
 
-New state: a pass buffer `frames[SSTV_MAX_DATA_FRAMES][29]` with a presence bitmap, parity
-buffer `parity[SSTV_OUTER_GROUPS_MAX][12][29]` with presence bits, and the `coded` flag (from
+New state: a pass buffer `data[SSTV_MAX_DATA_FRAMES][26]` with presence flags, parity
+buffer `parity[SSTV_OUTER_GROUPS_MAX][12][26]` with presence flags, and the `coded` flag (from
 START or the first data frame). About 15 kB.
 
 `try_block` keeps its physical → logical decoding; the per-frame dispatch (pixels, meta,
@@ -77,9 +80,9 @@ from the stored payloads of its 4 positions, up to the first missing one (today'
 and unpacked again in full after a repair completes the block.
 
 Repair runs when a parity frame arrives and its group has missing data frames (or missing
-parity) with erasures ≤ 12: for each of the 29 columns build the codeword from stored bytes
+parity) with erasures ≤ 12: for each of the 26 columns build the codeword from stored bytes
 (missing frames = erasure positions), `rs_decode_erasures`, write the recovered bytes back.
-Each recovered frame is CRC-checked, then dispatched through `handle_frame` (pixels fill in,
+Each recovered frame gets its header from its position and is dispatched through `handle_frame` (pixels fill in,
 previews complete, coded blocks re-unpack). Counters: `frames_repaired`, `groups_repaired`,
 `repairs_failed`. A group that never got enough frames stays as is.
 
