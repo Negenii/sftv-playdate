@@ -11,8 +11,9 @@ and repaired. A pass starts with a META frame carrying the file name, then 20 fr
 preview (3.4 s) so the receiver can show what is coming, and ends with an END META frame. Pixels go either as RAW half-line segments (a lost frame costs half a line) or, when the
 lossless line codec saves at least 15 %, as CODED blocks; the transmitter picks per image. The
 receiver tracks the symbol clock from the sync period and flywheels through buried syncs. The
-Flipper LED follows the data (blue = tone, off = silence, red = sync) and the preview inverts
-line by line as lines go out. Design and measurement notes:
+Flipper LED follows the data (blue = tone, off = silence, red = sync); on its screen the
+picture is a framed sheet that slides out through the top edge as lines go out, and on the
+Playdate the same sheet crawls in from the bottom edge. Design and measurement notes:
 `docs/2026-09-03-sstv-flipper-playdate-design.md` (the "Current protocol"
 section on top is authoritative).
 
@@ -46,7 +47,8 @@ and copy the `.pbm` to the Flipper SD card at `/ext/apps_data/sstv_tx/`.
 Flipper: Apps → Tools → SSTV TX → pick a `.pbm` → OK sends one pass, Back stops.
 Playdate: SSTV RX, allow the microphone, put the Flipper 10–30 cm from the Playdate mic (bottom
 edge). Main menu: Receive or Gallery. Receive shows the dolphin sending the preview to a
-Playdate until the first lines arrive, then the picture over a dimmed preview placeholder. An
+Playdate; the picture then rises from the bottom edge line by line over the scene, lost
+half-lines showing a dimmed preview placeholder. An
 incoming transmission jumps to Receive from any screen. A dot in the corner flashes per frame.
 Right toggles the side panel (name, state and ZIP/RAW pills, line progress, counters, tone
 level). When the END frame arrives a banner shows the file name and line count, and the image

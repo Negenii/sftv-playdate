@@ -33,6 +33,8 @@ static mic_ring ring;
 /* Receive state. Half-line segments (raw mode) or whole lines (coded mode) arrive verified. */
 static uint8_t seg_seen[SSTV_HEIGHT]; /* bit 0: left half, bit 1: right half */
 static int segs_done; /* of SSTV_NUM_SEGS */
+static int lines_reached; /* highest line with data + 1: how much of the sheet is on screen */
+static float sheet_y = LCD_ROWS; /* top of the sheet; it slides in from the bottom edge */
 static unsigned last_data_ms;
 static char current_name[NAME_CAP] = "untitled";
 static bool started; /* START meta received, transmission in progress */
@@ -293,6 +295,7 @@ static void on_pixels(void* ctx, uint16_t line, int x_byte, int nbytes, const ui
     uint8_t* dst = image_data + line * image_rowbytes + x_byte;
     /* PBM: 1 = black. Playdate bitmap: 1 = white. */
     for(int i = 0; i < nbytes; i++) dst[i] = (uint8_t)~pixels[i];
+    if(line + 1 > lines_reached) lines_reached = line + 1;
     uint8_t mask = nbytes == SSTV_LINE_BYTES ? 3 : (x_byte == 0 ? 1 : 2);
     uint8_t before = seg_seen[line];
     seg_seen[line] |= mask;
@@ -308,6 +311,8 @@ static void clear_image(void) {
     preview_chunks = 0;
     if(preview_bitmap) preview_refresh_bitmap();
     segs_done = 0;
+    lines_reached = 0;
+    sheet_y = LCD_ROWS;
     image_dirty = false;
     finished = false;
     started = false;
@@ -324,6 +329,7 @@ static void on_meta(void* ctx, const char* name, bool is_end) {
         started = false;
         finished_ms = now;
         finished_lines = segs_done / 2;
+        lines_reached = SSTV_HEIGHT; /* pull the whole sheet in, gaps and all */
         save_image();
         return;
     }
@@ -649,12 +655,19 @@ static void draw_finished_banner(void) {
     draw_text_white(t, x + 12, y + 8);
 }
 
+/* The picture is a sheet that crawls in from the bottom edge as lines arrive (the Flipper
+ * shows the same sheet leaving through its top edge). It covers the intro scene as it rises. */
 static void draw_receive(void) {
-    if(segs_done == 0 && !finished) {
-        draw_scene(); /* listening, or START + preview received but no lines yet */
-    } else {
-        pd->graphics->clear(kColorWhite);
-        pd->graphics->drawBitmap(image, 0, 0, kBitmapUnflipped);
+    float target = (float)(LCD_ROWS - lines_reached);
+    float d = target - sheet_y;
+    if(d < -0.5f || d > 0.5f) sheet_y += d * 0.15f;
+    else sheet_y = target;
+    int y = (int)(sheet_y + 0.5f);
+    if(y > 0) draw_scene(); /* listening, or START + preview received; the sheet grows over it */
+    else pd->graphics->clear(kColorWhite);
+    if(y < LCD_ROWS) {
+        pd->graphics->drawBitmap(image, 0, y, kBitmapUnflipped);
+        if(y > 0) pd->graphics->fillRect(0, y - 2, LCD_COLUMNS, 2, kColorBlack); /* sheet edge */
     }
     if(show_panel) draw_panel();
     draw_finished_banner();

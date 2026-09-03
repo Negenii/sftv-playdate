@@ -52,14 +52,17 @@ Everything below this section is the original design plus revision notes; the se
   frame), checks CRC, then dispatches by frame type.
 - **Transmitter**: TIM16 driven through the repetition counter and preloaded registers, one
   interrupt per symbol. The RGB LED follows the symbol on the speaker (off for silence, blue
-  for tones, red during sync) from a 2 ms polling thread. The preview image inverts line by
-  line from the top as lines go out, so the picture is its own progress bar.
+  for tones, red during sync) from a 2 ms polling thread. The screen shows the picture as an
+  80x48 framed sheet (same dither as the transmitted preview) that slides up and leaves through
+  the top edge as lines go out, like paper fed into a shredder.
 - **Playdate UI**: main menu with two rounded tiles, Receive (Flipper dolphin, GPL-3 sprite
   from the firmware's `L3_Hijack_radio` animation, to be replaced by the user's own drawing)
   and Gallery (thumbnail of the latest saved picture). Receive shows an intro scene: the
   dolphin, a drawn Playdate, and once START arrives a water spout from the blowhole to the
-  console whose screen fills with the preview chunk by chunk; the first picture line switches
-  to the full-screen picture over the dimmed preview placeholder. Whatever screen is up, START
+  console whose screen fills with the preview chunk by chunk. The picture itself is a sheet
+  that crawls in from the bottom edge as lines arrive (top of the sheet = highest line
+  received, eased), covering the scene; lost half-lines show the dimmed preview placeholder.
+  END pulls the whole sheet in. Whatever screen is up, START
   jumps to Receive. A dot in the corner flashes per frame. Right toggles a side panel (Roobert
   10 Bold, numbers in Roobert 9 Mono): name, state pill (IDLE / RX / LOST / DONE), ZIP or RAW
   pill, REC pill, line progress bar, right-aligned counters, tone and level bar. On END a
