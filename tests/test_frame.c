@@ -103,7 +103,9 @@ int main(void) {
         CHECK(sstv_frame_unpack(back + i * SSTV_FRAME_BYTES, &blk, pl + i * SSTV_PAYLOAD_BYTES));
         CHECK_EQ_INT(sstv_hdr_type(blk), SSTV_FT_META);
         CHECK_EQ_INT(pl[i * SSTV_PAYLOAD_BYTES], SSTV_META_START);
-        CHECK(memcmp(pl + i * SSTV_PAYLOAD_BYTES + 1, "white.pbm", 9) == 0);
+        int word = pl[i * SSTV_PAYLOAD_BYTES + 1] | (pl[i * SSTV_PAYLOAD_BYTES + 2] << 8);
+        CHECK_EQ_INT(word, frames | SSTV_META_CODED_FLAG); /* announces the pass length and mode */
+        CHECK(memcmp(pl + i * SSTV_PAYLOAD_BYTES + SSTV_META_NAME_OFFSET, "white.pbm", 9) == 0);
     }
     /* preview: a white image gives an all-zero preview, chunks 0..19 follow the start block */
     {

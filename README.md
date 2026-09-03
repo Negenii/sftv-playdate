@@ -7,7 +7,7 @@ depending on how well the image compresses (dithered photos: 5.4 min; line art: 
 Signal: 4-FSK, 2 bits per 4 ms symbol; symbol 0 is silence, 1..3 are 3000/3500/4000 Hz,
 5500 Hz frame sync. Frames are 41 bytes: header (type + index), 26 payload bytes, CRC-8 and
 12 Reed-Solomon parity bytes; four frames are byte-interleaved so a noise burst is spread thin
-and repaired. A pass starts with a META frame carrying the file name, then 20 frames of an 80x48 dithered
+and repaired. A pass starts with a META frame carrying the file name, the pass length in frames and the mode, then 20 frames of an 80x48 dithered
 preview (3.4 s) so the receiver can show what is coming, and ends with an END META frame. Pixels go either as RAW half-line segments (a lost frame costs half a line) or, when the
 lossless line codec saves at least 15 %, as CODED blocks; the transmitter picks per image. The
 receiver tracks the symbol clock from the sync period and flywheels through buried syncs. The

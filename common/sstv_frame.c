@@ -137,14 +137,20 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
     if(coded) *coded = use_coded;
 
     int blocks = 0;
-    /* Start meta block: [SSTV_META_START][file name] in every logical frame. */
+    /* Start meta block: [SSTV_META_START][total frames | coded flag][file name] in every
+     * logical frame. Total = start + preview + data + end blocks. */
+    int data_blocks = use_coded ? coded_blocks : SSTV_NUM_SEGS / SSTV_ILEAVE;
+    uint16_t total = (uint16_t)((1 + SSTV_PREVIEW_CHUNKS / SSTV_ILEAVE + data_blocks + 1) * SSTV_ILEAVE);
+    uint16_t word = total | (use_coded ? SSTV_META_CODED_FLAG : 0);
     uint8_t meta[SSTV_PAYLOAD_BYTES];
     memset(meta, 0, SSTV_PAYLOAD_BYTES);
     meta[0] = SSTV_META_START;
+    meta[1] = (uint8_t)(word & 0xFF);
+    meta[2] = (uint8_t)(word >> 8);
     if(name) {
         size_t n = strlen(name);
         if(n > SSTV_NAME_MAX) n = SSTV_NAME_MAX;
-        memcpy(meta + 1, name, n);
+        memcpy(meta + SSTV_META_NAME_OFFSET, name, n);
     }
     for(int i = 0; i < SSTV_ILEAVE; i++) sstv_frame_pack(sstv_hdr(SSTV_FT_META, 0), meta, logical + i * SSTV_FRAME_BYTES);
     emit_block(logical, out, blocks++);

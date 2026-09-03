@@ -30,10 +30,13 @@ static void on_pixels(void* ctx, uint16_t line, int x_byte, int nbytes, const ui
 
 static char last_name[SSTV_PAYLOAD_BYTES + 1];
 static int end_seen;
-static void on_meta(void* ctx, const char* name, bool is_end) {
+static int last_total;
+static bool last_coded;
+static void on_meta(void* ctx, const char* name, bool is_end, int total_frames, bool coded) {
     (void)ctx;
     strncpy(last_name, name, SSTV_PAYLOAD_BYTES);
     if(is_end) end_seen++;
+    else { last_total = total_frames; last_coded = coded; }
 }
 
 static uint8_t preview_got[SSTV_PREVIEW_BYTES];
@@ -186,6 +189,8 @@ static void test_full_image_clean(void) {
     CHECK_EQ_INT(ok, SSTV_HEIGHT);
     CHECK_EQ_INT(end_seen, 1);
     CHECK(strcmp(last_name, "image") == 0);
+    CHECK_EQ_INT(last_total, SSTV_NUM_SEGS + 2 * SSTV_ILEAVE + SSTV_PREVIEW_CHUNKS); /* raw pass length announced */
+    CHECK(!last_coded);
     /* a compressible image needs fewer frames and still arrives intact */
     for(int y = 0; y < SSTV_HEIGHT; y++) {
         memset(image + y * SSTV_LINE_BYTES, 0, SSTV_LINE_BYTES);

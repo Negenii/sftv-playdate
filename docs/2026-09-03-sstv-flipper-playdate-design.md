@@ -22,9 +22,9 @@ Everything below this section is the original design plus revision notes; the se
   parity bytes (41 bytes = 164 symbols). Header: top 2 bits frame type, 14-bit index. Four
   logical frames are byte-interleaved into four physical frames of sync + 164 symbols = 672 ms,
   so a noise burst is spread across four codewords. Frame types:
-  - `META` (2): payload [subtype][data]. Subtype 0 = START (data = file name without extension,
-    up to 24 chars), sent as the first block of every pass; subtype 1 = END, sent as the last
-    block; subtype 2 = PREVIEW, 20 independent frames (index = chunk, 25 bytes each) right after
+  - `META` (2): payload [subtype][data]. Subtype 0 = START, sent as the first block of every
+    pass, data = [total physical frames of the pass, 16-bit LE, bit 15 = coded][file name
+    without extension, up to 23 chars]; subtype 1 = END, same layout, sent as the last block; subtype 2 = PREVIEW, 20 independent frames (index = chunk, 25 bytes each) right after
     START carrying an 80x48 preview of the picture: each preview pixel is the black count of a
     5x5 block, Bayer-dithered. 5 blocks = 3.4 s (+4 % on the checker image, +1 % on a photo).
     The receiver starts a new image on START (saving the previous one), shows the preview
@@ -60,9 +60,11 @@ Everything below this section is the original design plus revision notes; the se
   and Gallery (thumbnail of the latest saved picture). Receive shows an intro scene: the
   dolphin, a drawn Playdate, and once START arrives a water spout from the blowhole to the
   console whose screen fills with the preview chunk by chunk. The picture itself is a sheet
-  that crawls in from the bottom edge as lines arrive (top of the sheet = highest line
-  received, eased), covering the scene; lost half-lines show the dimmed preview placeholder.
-  END pulls the whole sheet in. Whatever screen is up, START
+  that crawls in from the bottom edge, covering the scene. Its position follows the pass
+  timeline announced in START (frames x 672 ms, lines spread evenly over the data frames), or
+  the highest received line if that is further, so lost frames never stall it and their rows
+  show the dimmed preview placeholder until real lines arrive. END pulls the whole sheet in;
+  if END is lost, the timeline plus 4 s finishes the pass. Whatever screen is up, START
   jumps to Receive. A dot in the corner flashes per frame. Right toggles a side panel (Roobert
   10 Bold, numbers in Roobert 9 Mono): name, state pill (IDLE / RX / LOST / DONE), ZIP or RAW
   pill, REC pill, line progress bar, right-aligned counters, tone and level bar. On END a

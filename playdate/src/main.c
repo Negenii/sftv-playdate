@@ -38,7 +38,8 @@ static float sheet_y = LCD_ROWS; /* top of the sheet; it slides in from the bott
 static unsigned last_data_ms;
 static char current_name[NAME_CAP] = "untitled";
 static bool started; /* START meta received, transmission in progress */
-static unsigned started_ms;
+static unsigned started_ms; /* when the START block ended: the pass timeline starts here */
+static int total_frames; /* physical frames in the pass, announced in START */
 static bool image_dirty; /* something received since the last save */
 static bool finished; /* END meta received */
 static unsigned finished_ms;
@@ -320,17 +321,34 @@ static void clear_image(void) {
     sstv_rx_reset_counters(&rx);
 }
 
-static void on_meta(void* ctx, const char* name, bool is_end) {
-    (void)ctx;
+static void finish(unsigned now) {
+    finished = true;
+    started = false;
+    finished_ms = now;
+    finished_lines = segs_done / 2;
+    lines_reached = SSTV_HEIGHT; /* pull the whole sheet in, gaps and all */
+    save_image();
+}
+
+/* Lines the transmitter has sent by now according to the announced timeline: the START block
+ * ended at started_ms, then 20 preview frames, then the data frames (lines spread evenly over
+ * them), then the END block. Drives the sheet so lost frames do not stall it. */
+static int expected_lines(unsigned now) {
+    if(!started || total_frames <= 0) return 0;
+    float frames = (float)(now - started_ms) * 1000.0f / (float)SSTV_PHYS_US;
+    float data_frames = (float)(total_frames - 2 * SSTV_ILEAVE - SSTV_PREVIEW_CHUNKS);
+    if(data_frames <= 0) return 0;
+    float f = (frames - (float)SSTV_PREVIEW_CHUNKS) / data_frames;
+    if(f < 0) f = 0;
+    if(f > 1) f = 1;
+    return (int)(f * (float)SSTV_HEIGHT);
+}
+
+static void on_meta(void* ctx, const char* name, bool is_end, int frames, bool coded) {
+    (void)ctx; (void)coded;
     unsigned now = pd->system->getCurrentTimeMilliseconds();
     if(is_end) {
-        /* The transmitter is done: save and announce. */
-        finished = true;
-        started = false;
-        finished_ms = now;
-        finished_lines = segs_done / 2;
-        lines_reached = SSTV_HEIGHT; /* pull the whole sheet in, gaps and all */
-        save_image();
+        finish(now); /* the transmitter is done: save and announce */
         return;
     }
     /* A new transmission starts: keep what the previous one produced, then start fresh. */
@@ -338,6 +356,7 @@ static void on_meta(void* ctx, const char* name, bool is_end) {
     clear_image();
     started = true;
     started_ms = now;
+    total_frames = frames;
     strncpy(current_name, name, NAME_CAP - 1);
     current_name[NAME_CAP - 1] = 0;
     last_data_ms = now;
@@ -569,7 +588,8 @@ static void draw_scene(void) {
         use_font(font_big);
         draw_text_centered(nm, LCD_COLUMNS / 2, 190);
         use_font(font_ui);
-        snprintf(t, sizeof t, "incoming picture, preview %d/%d", preview_chunks, SSTV_PREVIEW_CHUNKS);
+        int secs = total_frames > 0 ? (int)((unsigned)total_frames * (SSTV_PHYS_US / 1000) / 1000) : 0;
+        snprintf(t, sizeof t, "%s, %d:%02d, preview %d/%d", rx.coded ? "compressed" : "raw", secs / 60, secs % 60, preview_chunks, SSTV_PREVIEW_CHUNKS);
         draw_text_centered(t, LCD_COLUMNS / 2, 218);
     } else {
         use_font(font_big);
@@ -658,7 +678,10 @@ static void draw_finished_banner(void) {
 /* The picture is a sheet that crawls in from the bottom edge as lines arrive (the Flipper
  * shows the same sheet leaving through its top edge). It covers the intro scene as it rises. */
 static void draw_receive(void) {
-    float target = (float)(LCD_ROWS - lines_reached);
+    unsigned now = pd->system->getCurrentTimeMilliseconds();
+    int shown = expected_lines(now);
+    if(lines_reached > shown) shown = lines_reached; /* never hide a line that arrived */
+    float target = (float)(LCD_ROWS - shown);
     float d = target - sheet_y;
     if(d < -0.5f || d > 0.5f) sheet_y += d * 0.15f;
     else sheet_y = target;
@@ -739,6 +762,8 @@ static int update(void* userdata) {
 
     unsigned now = pd->system->getCurrentTimeMilliseconds();
     if(image_dirty && ((segs_done == SSTV_NUM_SEGS) || (now - last_data_ms > LOST_TIMEOUT_MS))) save_image();
+    /* END never came: the pass is over by the announced timeline plus a margin. */
+    if(started && total_frames > 0 && now - started_ms > (unsigned)(total_frames - SSTV_ILEAVE) * (SSTV_PHYS_US / 1000) + 4000) finish(now);
 
     switch(ui_mode) {
     case ModeMenu:

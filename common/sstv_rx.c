@@ -88,10 +88,13 @@ static int try_block(sstv_rx* rx) {
                 if(n > SSTV_PREVIEW_CHUNK) n = SSTV_PREVIEW_CHUNK;
                 if(rx->preview_cb) rx->preview_cb(rx->ctx, chunk, n, m + 1);
             } else if(!named) {
-                /* START / END: the same name in every frame, report once */
-                memcpy(name, m + 1, SSTV_PAYLOAD_BYTES - 1);
-                name[SSTV_PAYLOAD_BYTES - 1] = 0;
-                if(rx->meta_cb) rx->meta_cb(rx->ctx, name, m[0] == SSTV_META_END);
+                /* START / END: the same payload in every frame, report once */
+                memcpy(name, m + SSTV_META_NAME_OFFSET, SSTV_NAME_MAX);
+                name[SSTV_NAME_MAX] = 0;
+                uint16_t word = (uint16_t)(m[1] | (m[2] << 8));
+                bool coded = (word & SSTV_META_CODED_FLAG) != 0;
+                if(m[0] == SSTV_META_START) rx->coded = coded;
+                if(rx->meta_cb) rx->meta_cb(rx->ctx, name, m[0] == SSTV_META_END, word & ~SSTV_META_CODED_FLAG, coded);
                 named = true;
             }
         }

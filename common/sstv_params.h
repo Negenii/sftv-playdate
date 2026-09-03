@@ -17,9 +17,12 @@
  *                 lines ([count][first line][records]...), index = block. Used when the image
  *                 compresses by at least SSTV_CODED_MIN_GAIN (line art, text), where a block
  *                 carries 4-10 lines and the transfer is that much shorter.
- *   SSTV_FT_META  payload = [subtype][data]. Subtypes SSTV_META_START (opens a transmission,
- *                 data = file name, repeated in all four logical frames of the block) and
- *                 SSTV_META_END (closes it) carry the name; SSTV_META_PREVIEW frames carry
+ *   SSTV_FT_META  payload = [subtype][data]. Subtypes SSTV_META_START (opens a transmission)
+ *                 and SSTV_META_END (closes it) carry [total physical frames, 16-bit LE, bit 15
+ *                 set when the picture goes as CODED blocks][file name, SSTV_NAME_MAX bytes],
+ *                 repeated in all four logical frames of the block. The frame count lets the
+ *                 receiver time the whole pass (every physical frame is SSTV_PHYS_US) and
+ *                 animate independently of lost frames. SSTV_META_PREVIEW frames carry
  *                 SSTV_PREVIEW_CHUNK bytes of an 80x48 dithered preview of the image, header
  *                 index = chunk number. They follow START so the receiver can show what is
  *                 coming (and use it as a blurred placeholder) 3.4 s into the transfer. */
@@ -27,7 +30,9 @@
 #define SSTV_SEG_BYTES 25 /* half a line */
 #define SSTV_SEGS_PER_LINE 2
 #define SSTV_NUM_SEGS (SSTV_HEIGHT * SSTV_SEGS_PER_LINE) /* 480 */
-#define SSTV_NAME_MAX (SSTV_PAYLOAD_BYTES - 2) /* 24 characters */
+#define SSTV_META_NAME_OFFSET 3 /* [subtype][frames lo][frames hi][name...] */
+#define SSTV_NAME_MAX (SSTV_PAYLOAD_BYTES - SSTV_META_NAME_OFFSET) /* 23 characters */
+#define SSTV_META_CODED_FLAG 0x8000
 #define SSTV_META_START 0
 #define SSTV_META_END 1
 #define SSTV_META_PREVIEW 2

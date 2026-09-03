@@ -25,9 +25,9 @@ static void on_pixels(void* ctx, uint16_t line, int x_byte, int nbytes, const ui
     c->seen[line] |= mask;
 }
 
-static void on_meta(void* ctx, const char* name, bool is_end) {
+static void on_meta(void* ctx, const char* name, bool is_end, int total_frames, bool coded) {
     (void)ctx;
-    printf("meta: %s name=\"%s\"\n", is_end ? "end" : "start", name);
+    printf("meta: %s name=\"%s\" frames=%d coded=%d\n", is_end ? "end" : "start", name, total_frames, coded);
 }
 
 static int preview_chunks;
