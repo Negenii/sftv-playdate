@@ -13,6 +13,9 @@ typedef struct {
     int16_t amplitude;
     float tones[SSTV_NUM_TONES]; /* Hz per symbol value. Initialised from sstv_params. */
     float duty[SSTV_NUM_TONES]; /* PWM duty per tone, 0..1 */
+    float channel_gain[SSTV_NUM_TONES]; /* amplitude gain the acoustic path applies per tone;
+                                            default undoes the duty pre-emphasis (models the
+                                            buzzer resonance the pre-emphasis was tuned for) */
     float fsync;
     float sync_duty;
     double phase; /* cycles, [0,1) */
@@ -25,6 +28,8 @@ void sstv_mod_init(sstv_mod* m, float sample_rate, int16_t amplitude);
 /* Appends a square-wave tone with the given duty (0..1; 0.5 = symmetric). Returns samples
  * written, or -1 (nothing written) if cap is too small. */
 int sstv_mod_tone_duty(sstv_mod* m, float freq_hz, float duty, int duration_us, int16_t* out, int cap);
+/* Same with an amplitude gain (channel model). */
+int sstv_mod_tone_gain(sstv_mod* m, float freq_hz, float duty, float gain, int duration_us, int16_t* out, int cap);
 int sstv_mod_tone(sstv_mod* m, float freq_hz, int duration_us, int16_t* out, int cap);
 
 /* Sync burst followed by the symbols of one physical frame. */

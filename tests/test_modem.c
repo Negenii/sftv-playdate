@@ -8,6 +8,7 @@ int main(void) {
     sstv_mod m;
     sstv_mod_init(&m, 44100.0f, 10000);
     CHECK(m.tones[0] == (float)SSTV_TONE0_HZ);
+    CHECK(m.tones[1] == (float)SSTV_TONE1_HZ);
     CHECK(m.tones[SSTV_NUM_TONES - 1] == (float)SSTV_TONE3_HZ);
     CHECK(m.fsync == (float)SSTV_FSYNC_HZ);
 

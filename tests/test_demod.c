@@ -184,7 +184,7 @@ static void test_frequency_offset(void) {
     capture* c = capture_new();
     sstv_mod m;
     sstv_mod_init(&m, 44100.0f, AMP);
-    for(int k = 0; k < SSTV_NUM_TONES; k++) m.tones[k] *= 1.015f;
+    for(int k = 0; k < SSTV_NUM_TONES; k++) m.tones[k] *= 1.015f; /* 0 stays 0 */
     m.fsync *= 1.015f;
     CHECK_EQ_INT(run_image(&m, 44100.0f, NULL, c, image), SSTV_NUM_SEGS);
     free(c);

@@ -64,6 +64,9 @@ typedef struct {
     float energy_sync_long; /* scaled to the short window's energy units */
     float margin[SSTV_FRAME_BITS]; /* per-bit soft decision of the last line */
     float gain[SSTV_NUM_TONES]; /* tracked peak energy per tone (channel gain) */
+    float sync_gain; /* tracked peak energy of the sync detector */
+    float sync_gain_decay;
+    float sync_peak; /* peak short-window sync energy within the current burst */
     int frames; /* physical frames delivered */
     sstv_phys_cb cb;
     void* ctx;

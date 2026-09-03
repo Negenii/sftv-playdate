@@ -52,6 +52,7 @@ void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_phys_cb cb, void* ct
     for(int k = 0; k < SSTV_NUM_TONES; k++) {
         d->det[k].step = (uint32_t)((double)tones[k] / (double)sample_rate * 4294967296.0);
     }
+    d->sync_gain_decay = 1.0f - 1.0f / (SSTV_SYNC_GAIN_TAU_S * sample_rate);
     d->det[SSTV_DEMOD_SYNC_DET].step =
         (uint32_t)((double)SSTV_FSYNC_HZ / (double)sample_rate * 4294967296.0);
     d->sync_long.step = d->det[SSTV_DEMOD_SYNC_DET].step;
@@ -69,6 +70,7 @@ void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_phys_cb cb, void* ct
     float floor_amp = SSTV_NOISE_FLOOR_LSB * 0.6366f * (float)d->window * 32767.0f;
     d->min_energy = floor_amp * floor_amp;
     for(int k = 0; k < SSTV_NUM_TONES; k++) d->gain[k] = d->min_energy;
+    d->sync_gain = d->min_energy;
 
     d->state = SSTV_DEMOD_IDLE;
     d->cb = cb;
@@ -110,11 +112,14 @@ static inline void track_gains(sstv_demod* d) {
     }
 }
 
+static const int tone_hz[SSTV_NUM_TONES] = SSTV_TONES_INIT;
+
 static void decide_symbol(sstv_demod* d) {
     float nrm[SSTV_NUM_TONES];
     int best = 0;
     for(int k = 0; k < SSTV_NUM_TONES; k++) {
-        nrm[k] = d->energy[k] / d->gain[k];
+        /* A silence symbol competes with a fixed level: it wins when every tone is quiet. */
+        nrm[k] = tone_hz[k] == 0 ? SSTV_SILENCE_LEVEL : d->energy[k] / d->gain[k];
         if(nrm[k] > nrm[best]) best = k;
     }
     int base = d->symbol_index * SSTV_BITS_PER_SYMBOL;
@@ -214,6 +219,10 @@ void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n) {
 
         float edata = 0.0f;
         for(int k = 0; k <= SSTV_NUM_TONES; k++) {
+            if(k < SSTV_NUM_TONES && tone_hz[k] == 0) {
+                d->energy[k] = 0.0f; /* silence symbol has no detector */
+                continue;
+            }
             det_push(&d->det[k], s, old, W);
             float fi = (float)d->det[k].i;
             float fq = (float)d->det[k].q;
@@ -228,9 +237,18 @@ void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n) {
         }
         float es = d->energy[SSTV_DEMOD_SYNC_DET];
         track_gains(d);
-        /* Sync acceptance uses the long window (+6 dB SNR); the edge uses the short one. */
+        {
+            float g = d->sync_gain * d->sync_gain_decay;
+            if(d->energy_sync_long > g) g = d->energy_sync_long;
+            if(g < d->min_energy) g = d->min_energy;
+            d->sync_gain = g;
+        }
+        /* Sync acceptance uses the long window (+6 dB SNR); the edge uses the short one.
+         * The burst must also be a real one: at least a fraction of the tracked sync peak,
+         * otherwise noise on the sync frequency during silence symbols would qualify. */
         bool dominant = (d->energy_sync_long > d->dominance * edata) &&
-                        (d->energy_sync_long > d->min_energy);
+                        (d->energy_sync_long > d->min_energy) &&
+                        (d->energy_sync_long > SSTV_SYNC_MIN_REL * d->sync_gain);
         if(dominant) {
             d->sync_run++;
         } else if(d->sync_run > 0) {
@@ -241,15 +259,20 @@ void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n) {
         case SSTV_DEMOD_IDLE:
             if(d->sync_run >= d->sync_min_run) {
                 d->state = SSTV_DEMOD_SYNC;
+                d->sync_peak = es;
             } else {
                 maybe_flywheel(d);
             }
             break;
 
         case SSTV_DEMOD_SYNC:
-            /* The window [n-W+1, n] straddles the sync->data edge; energies cross when it
-             * is half in each, so the first data sample is about n - W/2. */
-            if(es < edata) {
+            /* The window [n-W+1, n] straddles the sync->data edge; the sync energy falls to a
+             * quarter of its plateau when the window is half past the edge (energy scales
+             * with the square of the covered fraction), so the first data sample is about
+             * n - W/2. Judged against the burst's own peak, so it works even when silence
+             * follows the sync. */
+            if(es > d->sync_peak) d->sync_peak = es;
+            if(es < 0.25f * d->sync_peak) {
                 on_measured_edge(d, (double)d->n - (double)W / 2.0 + (double)d->edge_adjust);
             } else {
                 maybe_flywheel(d);
@@ -266,6 +289,7 @@ void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n) {
                     d->sync_run = 0;
                 } else {
                     d->state = SSTV_DEMOD_SYNC; /* abandon the frame, resync */
+                    d->sync_peak = es;
                 }
                 break;
             }
