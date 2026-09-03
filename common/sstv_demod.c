@@ -39,7 +39,8 @@ void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_line_cb cb, void* ct
     memset(d, 0, sizeof *d);
     d->sample_rate = sample_rate;
     d->bit_len = sample_rate * (float)SSTV_BIT_US / 1000000.0f;
-    d->window = (int)(d->bit_len + 0.5f);
+    float win = sample_rate * (float)SSTV_WINDOW_US / 1000000.0f;
+    d->window = (int)(win + 0.5f);
     if(d->window > SSTV_DEMOD_MAX_WINDOW) d->window = SSTV_DEMOD_MAX_WINDOW;
     if(d->window < 4) d->window = 4;
 
@@ -49,8 +50,10 @@ void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_line_cb cb, void* ct
     }
 
     d->dominance = 3.0f;
-    d->edge_adjust = 0.0f;
-    d->sync_min_run = 3 * d->window;
+    d->sync_min_run = 3 * d->window; /* 3 ms */
+    d->edge_adjust = sample_rate * (float)SSTV_EDGE_ADJUST_US / 1000000.0f;
+    d->sample_point = SSTV_SAMPLE_POINT;
+    d->gain_decay = 1.0f - 1.0f / (SSTV_GAIN_TAU_S * sample_rate);
 
     /* A square wave of amplitude A correlated with a Q15 sine over W samples gives
      * |I| ~= A * (4/pi) * (W/2) * 32767. Noise floor: A = 150 LSB. */
@@ -58,6 +61,7 @@ void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_line_cb cb, void* ct
     d->level_norm = 1.0f / (full * full);
     float floor_amp = 150.0f * 0.6366f * (float)d->window * 32767.0f;
     d->min_energy = floor_amp * floor_amp;
+    d->gain[0] = d->gain[1] = d->min_energy;
 
     d->state = SSTV_DEMOD_IDLE;
     d->cb = cb;
@@ -85,6 +89,21 @@ static void finish_line(sstv_demod* d) {
     d->state = SSTV_DEMOD_IDLE;
 }
 
+/* Peak trackers follow each data tone's channel gain so a tone that the speaker or
+ * microphone favours does not win every decision. The ratio between them is clamped. */
+static inline void track_gains(sstv_demod* d, float e0, float e1) {
+    float g0 = d->gain[0] * d->gain_decay;
+    float g1 = d->gain[1] * d->gain_decay;
+    if(e0 > g0) g0 = e0;
+    if(e1 > g1) g1 = e1;
+    if(g0 < d->min_energy) g0 = d->min_energy;
+    if(g1 < d->min_energy) g1 = d->min_energy;
+    if(g1 * SSTV_GAIN_CLAMP < g0) g1 = g0 / SSTV_GAIN_CLAMP;
+    if(g0 * SSTV_GAIN_CLAMP < g1) g0 = g1 / SSTV_GAIN_CLAMP;
+    d->gain[0] = g0;
+    d->gain[1] = g1;
+}
+
 void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n) {
     const int W = d->window;
     for(int idx = 0; idx < n; idx++) {
@@ -101,10 +120,11 @@ void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n) {
             d->energy[k] = fi * fi + fq * fq;
         }
         float e0 = d->energy[0], e1 = d->energy[1], es = d->energy[2];
+        track_gains(d, e0, e1);
         float edata = e0 > e1 ? e0 : e1;
         bool dominant = (es > d->dominance * edata) && (es > d->min_energy);
-        /* Tolerate short dropouts inside a sync burst (noise): a non-dominant sample
-         * costs one, so a sustained burst still accumulates. */
+        /* Tolerate short dropouts inside a sync burst (noise, echoes): a non-dominant
+         * sample costs one, so a sustained burst still accumulates. */
         if(dominant) {
             d->sync_run++;
         } else if(d->sync_run > 0) {
@@ -117,11 +137,11 @@ void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n) {
             break;
 
         case SSTV_DEMOD_SYNC:
-            /* The window [n-W+1, n] straddles the sync->data edge; energies cross when
-             * it is half in each, i.e. the edge (first data sample) is at n - W/2 + 1. */
+            /* The window [n-W+1, n] straddles the sync->data edge; energies cross when it
+             * is half in each, so the first data sample is about n - W/2. */
             if(es < edata) {
                 double t0 = (double)d->n - (double)W / 2.0 + (double)d->edge_adjust;
-                d->next_decision = t0 + (double)d->bit_len - 1.0;
+                d->next_decision = t0 + (double)(d->sample_point * d->bit_len) - 1.0;
                 d->bit_index = 0;
                 memset(d->frame, 0, sizeof d->frame);
                 d->sync_run = 0; /* a resync during DATA needs a fresh burst */
@@ -136,7 +156,13 @@ void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n) {
                 break;
             }
             if((double)d->n >= d->next_decision) {
-                if(e1 > e0) d->frame[d->bit_index >> 3] |= (uint8_t)(0x80 >> (d->bit_index & 7));
+                /* Compare gain-normalised energies over the tail of the symbol.
+                 * Ratios, not cross products: energies are ~1e20 and would overflow float. */
+                float n1 = e1 / d->gain[1], n0 = e0 / d->gain[0];
+                d->margin[d->bit_index] = (n1 - n0) / (n1 + n0 + 1e-30f);
+                if(n1 > n0) {
+                    d->frame[d->bit_index >> 3] |= (uint8_t)(0x80 >> (d->bit_index & 7));
+                }
                 d->bit_index++;
                 d->next_decision += (double)d->bit_len;
                 if(d->bit_index >= SSTV_FRAME_BITS) finish_line(d);

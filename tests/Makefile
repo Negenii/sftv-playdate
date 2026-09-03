@@ -1,5 +1,5 @@
 CC ?= clang
-CFLAGS ?= -std=c11 -O2 -g -Wall -Wextra -Werror -Wdouble-promotion -I../common -I../playdate/src -I.
+CFLAGS ?= -std=c11 -O2 -g -Wall -Wextra -Werror -Wdouble-promotion -I../common -I../playdate/src -I. $(EXTRA_CFLAGS)
 COMMON_SRC := $(wildcard ../common/*.c)
 PD_SRC := $(wildcard ../playdate/src/mic_ring.c)
 HOST_SRC := $(wildcard wav_io.c)

@@ -81,7 +81,8 @@ int16_t* wav_read_mono16(const char* path, int* n, int* sample_rate) {
         } else if(memcmp(buf + p, "data", 4) == 0) {
             data = body;
             data_len = clen;
-            if(p + 8 + data_len > (size_t)size) data_len = (uint32_t)((size_t)size - p - 8);
+            /* Streaming recorders often leave the length at 0 or 0xFFFFFFFF: take the rest. */
+            if(data_len == 0 || p + 8 + data_len > (size_t)size) data_len = (uint32_t)((size_t)size - p - 8);
         }
         p += 8 + clen + (clen & 1);
     }

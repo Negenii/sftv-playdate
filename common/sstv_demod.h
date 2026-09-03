@@ -28,13 +28,15 @@ typedef struct {
 
 typedef struct {
     float sample_rate;
-    int window; /* W: samples in one bit period, rounded */
-    float bit_len; /* samples per bit, exact */
+    int window; /* W: samples in one detector window (1 ms) */
+    float bit_len; /* samples per symbol, exact */
     float min_energy; /* noise floor on detector energy */
     float dominance; /* sync energy must exceed data energies by this factor */
-    int sync_min_run; /* consecutive dominant samples to accept a sync */
+    int sync_min_run; /* net dominant samples to accept a sync */
     float level_norm; /* energy -> 0..1 level */
     float edge_adjust; /* samples added to the estimated sync->data edge (tuning) */
+    float sample_point; /* fraction of the symbol at which the decision window ends */
+    float gain_decay; /* per-sample decay of the tone peak trackers */
 
     sstv_det det[3]; /* 0: F0, 1: F1, 2: FSYNC */
     int16_t ring[SSTV_DEMOD_MAX_WINDOW];
@@ -48,6 +50,8 @@ typedef struct {
     uint8_t frame[SSTV_FRAME_BYTES];
 
     float energy[3];
+    float margin[SSTV_FRAME_BITS]; /* per-bit soft decision of the last line (debug/tuning) */
+    float gain[2]; /* tracked peak energy of tone 0 and tone 1 (channel gain) */
     int lines;
     int crc_errors;
     sstv_line_cb cb;
@@ -55,7 +59,7 @@ typedef struct {
 } sstv_demod;
 
 typedef struct {
-    float level; /* 0..1, strongest detector */
+    float level; /* 0..1, strongest detector, amplitude scale */
     int tone; /* -1 none, 0 F0, 1 F1, 2 sync */
     int lines;
     int crc_errors;

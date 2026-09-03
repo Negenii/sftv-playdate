@@ -25,7 +25,7 @@ int sstv_mod_tone(sstv_mod* m, float freq_hz, int duration_us, int16_t* out, int
 /* Sync burst followed by the 416 bits of a packed frame. */
 int sstv_mod_frame(sstv_mod* m, const uint8_t* frame, int16_t* out, int cap);
 
-/* Leader tone followed by all SSTV_HEIGHT lines of a P4 raster (SSTV_IMAGE_BYTES). */
+/* Leader (alternating 0/1 symbols) followed by all SSTV_HEIGHT lines of a P4 raster (SSTV_IMAGE_BYTES). */
 int sstv_mod_image(sstv_mod* m, const uint8_t* image_bits, int16_t* out, int cap);
 
 /* Samples needed by sstv_mod_image at this sample rate (with a little slack). */

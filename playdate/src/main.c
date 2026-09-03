@@ -8,7 +8,7 @@
 #include "mic_ring.h"
 
 #define STATUS_H 20
-#define COMPLETE_TIMEOUT_MS 3000
+#define LOST_TIMEOUT_MS 5000
 
 static PlaydateAPI* pd;
 static LCDBitmap* image;
@@ -18,17 +18,20 @@ static int image_rowbytes;
 static sstv_demod demod;
 static mic_ring ring;
 
-static uint8_t line_seen[SSTV_HEIGHT];
+static uint8_t line_seen[SSTV_HEIGHT]; /* 0 none, 1 crc-bad copy, 2 crc-ok copy */
 static int distinct_lines;
+static int max_line_seen = -1;
 static unsigned last_line_ms;
 static int mic_state; /* 0 asking, 1 allowed, -1 denied */
 static bool show_status = true;
+static volatile unsigned mic_samples; /* total samples delivered by the mic callback */
 
 /* ---- audio thread ---- */
 
 static int mic_cb(void* context, int16_t* data, int len) {
     (void)context;
     mic_ring_write(&ring, data, len);
+    mic_samples += (unsigned)len;
     return 1;
 }
 
@@ -36,22 +39,25 @@ static int mic_cb(void* context, int16_t* data, int len) {
 
 static void on_line(void* ctx, uint8_t line_no, const uint8_t* pixels, bool crc_ok) {
     (void)ctx;
-    (void)crc_ok;
+    last_line_ms = pd->system->getCurrentTimeMilliseconds();
     if(line_no >= SSTV_HEIGHT) return;
+    /* A line arrives once; a second copy with a bad CRC is a corrupted line number.
+     * Never replace a good row with garbage. Bad rows are still drawn (that is the
+     * "satellite noise" look) when nothing better is there. */
+    if(line_seen[line_no] == 2 && !crc_ok) return;
     uint8_t* row = image_data + line_no * image_rowbytes;
     /* PBM: 1 = black. Playdate bitmap: 1 = white. */
     for(int i = 0; i < SSTV_LINE_BYTES; i++) row[i] = (uint8_t)~pixels[i];
-    if(!line_seen[line_no]) {
-        line_seen[line_no] = 1;
-        distinct_lines++;
-    }
-    last_line_ms = pd->system->getCurrentTimeMilliseconds();
+    if(!line_seen[line_no]) distinct_lines++;
+    line_seen[line_no] = crc_ok ? 2 : 1;
+    if((int)line_no > max_line_seen) max_line_seen = line_no;
 }
 
 static void clear_image(void) {
     memset(image_data, 0xFF, (size_t)image_rowbytes * SSTV_HEIGHT);
     memset(line_seen, 0, sizeof line_seen);
     distinct_lines = 0;
+    max_line_seen = -1;
     sstv_demod_reset_counters(&demod);
 }
 
@@ -81,14 +87,18 @@ static void draw_status(void) {
     } else {
         const char* tone = st.tone == 2 ? "sync" : st.tone == 1 ? "1" : st.tone == 0 ? "0" : "-";
         unsigned now = pd->system->getCurrentTimeMilliseconds();
+        bool quiet = distinct_lines > 0 && now - last_line_ms > LOST_TIMEOUT_MS;
         bool complete = distinct_lines == SSTV_HEIGHT ||
-                        (distinct_lines > 0 && now - last_line_ms > COMPLETE_TIMEOUT_MS);
+                        (quiet && max_line_seen >= SSTV_HEIGHT - 10);
         if(complete) {
-            snprintf(text, sizeof text, "complete  %d/%d lines  crc err %d", distinct_lines,
+            snprintf(text, sizeof text, "complete  %d/%d lines  crc err %d  A: clear", distinct_lines,
+                     SSTV_HEIGHT, st.crc_errors);
+        } else if(quiet) {
+            snprintf(text, sizeof text, "signal lost  %d/%d lines  crc err %d", distinct_lines,
                      SSTV_HEIGHT, st.crc_errors);
         } else {
-            snprintf(text, sizeof text, "lines %d/%d  crc err %d  tone %s", distinct_lines,
-                     SSTV_HEIGHT, st.crc_errors, tone);
+            snprintf(text, sizeof text, "lines %d/%d  crc err %d  tone %s  mic %uk", distinct_lines,
+                     SSTV_HEIGHT, st.crc_errors, tone, mic_samples / 1000);
         }
     }
     pd->graphics->drawText(text, strlen(text), kASCIIEncoding, 4, y + 3);

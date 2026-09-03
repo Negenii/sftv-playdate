@@ -45,8 +45,12 @@ int sstv_mod_frame(sstv_mod* m, const uint8_t* frame, int16_t* out, int cap) {
 }
 
 int sstv_mod_image(sstv_mod* m, const uint8_t* image_bits, int16_t* out, int cap) {
-    int total = sstv_mod_tone(m, m->f1, SSTV_LEADER_US, out, cap);
-    if(total < 0) return -1;
+    int total = 0;
+    for(int i = 0; i < SSTV_LEADER_SYMBOLS; i++) {
+        int n = sstv_mod_tone(m, (i & 1) ? m->f1 : m->f0, SSTV_BIT_US, out + total, cap - total);
+        if(n < 0) return -1;
+        total += n;
+    }
     uint8_t frame[SSTV_FRAME_BYTES];
     for(int y = 0; y < SSTV_HEIGHT; y++) {
         sstv_frame_pack((uint8_t)y, image_bits + y * SSTV_LINE_BYTES, frame);
@@ -58,7 +62,6 @@ int sstv_mod_image(sstv_mod* m, const uint8_t* image_bits, int16_t* out, int cap
 }
 
 int sstv_mod_image_capacity(float sample_rate) {
-    double us = (double)SSTV_LEADER_US +
-                (double)SSTV_HEIGHT * ((double)SSTV_SYNC_US + (double)SSTV_FRAME_BITS * SSTV_BIT_US);
+    double us = (double)SSTV_LEADER_SYMBOLS * SSTV_BIT_US + (double)SSTV_HEIGHT * SSTV_LINE_US;
     return (int)(us * (double)sample_rate / 1e6) + 64;
 }

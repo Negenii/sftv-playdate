@@ -76,7 +76,7 @@ static void test_single_line(void) {
 
     float sr = 44100.0f;
     int pre = silence_samples(sr, 20), post = silence_samples(sr, 20);
-    int cap = pre + 4000 + 20000 + post;
+    int cap = pre + 4000 + 40000 + post;
     int16_t* s = calloc((size_t)cap, sizeof(int16_t));
     sstv_mod m;
     sstv_mod_init(&m, sr, AMP);
@@ -175,12 +175,13 @@ static void test_clock_offset(void) {
     uint8_t* image = malloc(SSTV_IMAGE_BYTES);
     capture* c = malloc(sizeof *c);
     sstv_mod m;
-    sstv_mod_init(&m, 44056.0f, AMP); /* transmitter 0.1 % slow relative to receiver */
+    /* Transmitter 300 ppm slow relative to the receiver: 6x a typical crystal error,
+     * 0.12 symbol of drift by the end of a line. */
+    sstv_mod_init(&m, 44100.0f * (1.0f - 0.0003f), AMP);
     run_image(&m, 44100.0f, 0.0f, c, image);
     int ok = lines_matching(c, image);
-    printf("  clock -0.1%%: %d/%d lines intact\n", ok, SSTV_HEIGHT);
-    /* 0.1 % is 20x a real crystal error; 0.42 bit of drift by the end of a line. */
-    CHECK(ok >= SSTV_HEIGHT * 98 / 100);
+    printf("  clock -300ppm: %d/%d lines intact\n", ok, SSTV_HEIGHT);
+    CHECK_EQ_INT(ok, SSTV_HEIGHT);
     free(c);
     free(image);
 }
@@ -197,11 +198,11 @@ static void test_other_sample_rate(void) {
 }
 
 static void test_lost_sync(void) {
-    /* Three lines; the middle one's sync is cut to 3 ms. Expect lines 0 and 2 only. */
+    /* Three lines; the middle one's sync is cut to 2 ms. Expect lines 0 and 2 only. */
     float sr = 44100.0f;
     uint8_t pixels[3][SSTV_LINE_BYTES], frame[SSTV_FRAME_BYTES];
     for(int i = 0; i < 3; i++) fill_random(pixels[i], SSTV_LINE_BYTES);
-    int cap = 4 * 20000;
+    int cap = 4 * 40000;
     int16_t* s = calloc((size_t)cap, sizeof(int16_t));
     sstv_mod m;
     sstv_mod_init(&m, sr, AMP);
@@ -213,7 +214,8 @@ static void test_lost_sync(void) {
         n += sstv_mod_frame(&m, frame, s + n, cap - n);
     }
     n += silence_samples(sr, 20);
-    memset(s + start[1], 0, sizeof(int16_t) * (size_t)silence_samples(sr, 2)); /* first 2 ms of sync #1 */
+    int cut_ms = SSTV_SYNC_US / 1000 - 2; /* leave 2 ms of the burst */
+    memset(s + start[1], 0, sizeof(int16_t) * (size_t)silence_samples(sr, cut_ms));
 
     capture c = {0};
     sstv_demod d;

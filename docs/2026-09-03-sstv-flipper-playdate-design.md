@@ -26,14 +26,24 @@ progress indicator while transmitting.
 
 | Symbol  | Tone    | Duration            |
 |---------|---------|---------------------|
-| bit 0   | 2000 Hz | 1 ms (2 cycles)     |
-| bit 1   | 3000 Hz | 1 ms (3 cycles)     |
-| sync    | 4000 Hz | 5 ms (20 cycles)    |
-| leader  | 3000 Hz | 1000 ms, once at start of image |
+| bit 0   | 2000 Hz | 2 ms (4 cycles)     |
+| bit 1   | 3000 Hz | 2 ms (6 cycles)     |
+| sync    | 4000 Hz | 8 ms (32 cycles)    |
+| leader  | alternating bit 0 / bit 1 symbols | 1000 ms, once at start of image |
 
-Bit rate 1000 baud. The tones are 1 kHz apart, equal to the reciprocal of the bit
-period, so a 1 ms boxcar detector sees them as orthogonal. Square-wave harmonics
-(6, 9, 12 kHz) do not land on any detected tone.
+Bit rate 500 baud. The detector window is 1 ms, so the tones (1 kHz apart) are
+orthogonal to it; the decision is taken over the second half of each 2 ms symbol.
+Square-wave harmonics (6, 9, 12 kHz) do not land on any detected tone.
+
+Revision note (2026-09-03, after measuring a real speaker → room → microphone channel):
+the first design used 1 ms symbols. Measured channels take 1–4 ms to decay by 20 dB
+after a tone stops and about 1 ms for a new tone to rise, so with 1 ms symbols the
+previous bit dominated the detector (contrast 1.7 dB, ~25 % bit errors). With 2 ms
+symbols and the window over the symbol tail the same channel decodes about half of
+the lines cleanly; the rest is periodic room noise. The symbol, sync and leader
+durations are `#ifndef`-overridable in `sstv_params.h` for experiments (transmitter
+and receiver must agree). The alternating leader lets the receiver's per-tone gain
+trackers settle before line 0.
 
 Tones are square waves (Flipper speaker is a PWM output). Each bit is a whole
 number of cycles so the transmitter can switch frequency at a cycle boundary with
@@ -42,14 +52,14 @@ continuous phase.
 ### Line frame
 
 ```
-[sync 4000 Hz 5 ms] [line number, 8 bits] [400 pixel bits] [CRC-8, 8 bits]
+[sync 4000 Hz 8 ms] [line number, 8 bits] [400 pixel bits] [CRC-8, 8 bits]
 ```
 
 - Bits are sent MSB first.
 - Line number 0..239. Pixel bit 1 = black (matches PBM P4 convention).
 - CRC-8 (poly 0x07, init 0x00) over the 51 bytes: line number + 50 pixel bytes.
-- Line duration: 5 + 8 + 400 + 8 = 421 ms. Full image: 1 s leader + 240 × 421 ms
-  ≈ 102 s.
+- Line duration: 8 ms sync + 416 × 2 ms = 840 ms. Full image: 1 s leader + 240 × 840 ms
+  ≈ 203 s (3.4 min).
 - Lines are sent in order 0..239 without gaps. The receiver does not rely on the
   order: each line carries its own number, so a lost line leaves a gap and does
   not shift the rest of the image.
@@ -58,9 +68,11 @@ continuous phase.
 
 ### End of image
 
-After line 239 the transmitter stops (silence). The receiver treats "240 lines
-seen" or "no sync for 3 s after at least one line" as end of image and shows a
-"complete" status, keeping the picture on screen.
+After line 239 the transmitter stops (silence). The receiver shows "complete" when
+all 240 lines were seen, or when no line arrived for 5 s and a line ≥ 230 was seen;
+a 5 s gap earlier in the image shows "signal lost". The picture stays on screen.
+A row that was received with a good CRC is never overwritten by a later copy with a
+bad CRC (that is a corrupted line number, not a retransmission).
 
 ## Repository layout
 
@@ -123,22 +135,25 @@ void sstv_demod_status(const sstv_demod* d, sstv_demod_status_t* out);  // level
 Algorithm:
 
 1. Three quadrature detectors (2000, 3000, 4000 Hz) with a sliding window of
-   `W = round(sample_rate / 1000)` samples (44 at 44.1 kHz). Each detector keeps
+   `W = round(sample_rate / 1000)` samples (44 at 44.1 kHz), i.e. 1 ms regardless of
+   the symbol length. Each detector keeps
    running I and Q sums using cos/sin lookup tables of length equal to the tone
    period in samples (recomputed at init for the given sample rate; use a
    phase accumulator with a 1024-entry sine table to support non-integer
    periods). Energy `E = I² + Q²` per detector, updated per sample by adding the
    new sample's contribution and subtracting the one that left the window.
 2. States: `IDLE` → `SYNC` → `DATA`.
-   - IDLE: when `E_sync` exceeds both `E0` and `E1` by a factor of 4 and exceeds
-     a noise floor, enter SYNC and start counting samples.
-   - SYNC: while `E_sync` dominates keep counting. If dominance ends after ≥ 3 ms
-     worth of samples, the sample at which it ended is `t0`; enter DATA. If it
-     ends earlier, back to IDLE (false alarm).
-   - DATA: bit `k` (0..415) is decided at sample time `t0 + (k + 0.5) × W_f`
-     where `W_f = sample_rate / 1000` kept as a float accumulator. Decision:
-     `bit = E1 > E0`. After 416 bits, unpack the frame, invoke the callback,
-     return to IDLE.
+   - IDLE: a run counter increments on samples where `E_sync` exceeds both `E0` and
+     `E1` by a factor of 3 and exceeds a noise floor, and decrements otherwise (so
+     noise dropouts do not reset it). When it reaches 3 ms worth of samples, enter SYNC.
+   - SYNC: wait for the crossover `E_sync < max(E0, E1)`; that fixes `t0`; enter DATA.
+   - DATA: bit `k` (0..415) is decided when the window ends at
+     `t0 + k × bit_len + SAMPLE_POINT × bit_len` (SAMPLE_POINT = 0.8, i.e. the window
+     covers roughly the second half of the symbol, after the previous tone has decayed).
+     `t0` is the crossover point minus W/2 plus EDGE_ADJUST (−0.3 ms: echoes delay the
+     crossover). Decision: `E1 / g1 > E0 / g0` where `g0`, `g1` are per-tone peak
+     trackers (decay 0.3 s, ratio clamped to ±15 dB) that absorb speaker/microphone
+     coloration. After 416 bits, unpack the frame, invoke the callback, return to IDLE.
    - A sync burst detected during DATA (E_sync dominant for ≥ 3 ms) aborts the
      current line and restarts SYNC, so a garbled line does not swallow the next.
 3. Status for UI: `level` = max energy normalised to full scale, `tone` = index of
@@ -233,6 +248,7 @@ Implementation:
    At end of a line, the ISR posts the line number to a FuriMessageQueue; the
    main thread updates the UI. After line 239 the ISR disables the timer output
    and posts a done event.
+   The leader is `SSTV_LEADER_SYMBOLS` alternating bit-0 / bit-1 symbols.
 6. Stop: disable interrupt, `furi_hal_interrupt_set_isr(..., NULL, NULL)`,
    disable counter and outputs, `furi_hal_bus_disable(FuriHalBusTIM16)`,
    `furi_hal_speaker_release()`.
@@ -292,6 +308,9 @@ the Flipper side exists.
 
 ## Open parameters to tune on hardware
 
-- Detector dominance factor (4×) and noise floor.
-- Sync minimum length (3 ms) vs false alarms.
+- Detector dominance factor (3×) and noise floor.
+- Sync minimum run (3 ms) vs false alarms.
+- `SSTV_SAMPLE_POINT`, `SSTV_EDGE_ADJUST_US`, and the symbol length itself; see
+  `tests/bin/sstv_decode_wav in.wav out.pbm [sample_point] [edge_adjust_samples]` and
+  `SSTV_DUMP=file` for per-bit soft decisions.
 - Distance and Flipper speaker volume; Playdate mic gain is fixed by hardware.

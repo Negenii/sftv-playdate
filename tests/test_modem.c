@@ -38,23 +38,26 @@ int main(void) {
     CHECK_EQ_INT(sstv_mod_tone(&m, 2000.0f, 1000000, buf, 1024), -1);
     CHECK_EQ_INT(m.samples_out, 0);
 
-    /* One frame: 5 ms sync + 416 ms of bits = 421 ms = 18566 samples. */
+    /* One frame: sync + 416 symbols, at 44.1 kHz. */
     uint8_t pixels[SSTV_LINE_BYTES], frame[SSTV_FRAME_BYTES];
     memset(pixels, 0xA5, sizeof pixels);
     sstv_frame_pack(7, pixels, frame);
-    int16_t* big = malloc(sizeof(int16_t) * 20000);
+    int16_t* big = malloc(sizeof(int16_t) * 40000);
     sstv_mod_init(&m, 44100.0f, 10000);
-    CHECK_EQ_INT(sstv_mod_frame(&m, frame, big, 20000), 18566);
+    int frame_samples = (int)((double)SSTV_LINE_US * 44100.0 / 1e6 + 0.5);
+    CHECK_EQ_INT(sstv_mod_frame(&m, frame, big, 40000), frame_samples);
     free(big);
 
-    /* Full image capacity: 1 s + 240 * 0.421 s = 102.04 s. */
+    /* Full image capacity: leader + 240 lines. */
+    double image_us = (double)SSTV_LEADER_SYMBOLS * SSTV_BIT_US + 240.0 * SSTV_LINE_US;
+    int image_samples = (int)(image_us * 44100.0 / 1e6);
     int cap = sstv_mod_image_capacity(44100.0f);
-    CHECK(cap >= 4499964 && cap <= 4500100);
+    CHECK(cap >= image_samples && cap <= image_samples + 200);
     uint8_t* image = calloc(SSTV_IMAGE_BYTES, 1);
     int16_t* all = malloc(sizeof(int16_t) * (size_t)cap);
     sstv_mod_init(&m, 44100.0f, 10000);
     int img_n = sstv_mod_image(&m, image, all, cap);
-    CHECK(img_n >= 4499960 && img_n <= cap);
+    CHECK(img_n >= image_samples - 2 && img_n <= cap);
     free(all);
     free(image);
     TEST_MAIN_END();
