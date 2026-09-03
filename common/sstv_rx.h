@@ -32,6 +32,19 @@ typedef struct {
     int frames_bad;
     int rs_corrected;
     bool coded; /* last seen data frame type */
+    /* Outer code (revision 7): every decoded logical frame is kept by data position; a group
+     * is repaired from its parity frames when at most SSTV_OUTER_PARITY frames of the group
+     * (data + parity) are missing. Positions come from headers, never from frame counting. */
+    uint8_t data[SSTV_MAX_DATA_FRAMES][SSTV_PAYLOAD_BYTES];
+    uint8_t have[SSTV_MAX_DATA_FRAMES];
+    uint8_t parity[SSTV_OUTER_GROUPS_MAX][SSTV_OUTER_PARITY][SSTV_PAYLOAD_BYTES];
+    uint8_t have_parity[SSTV_OUTER_GROUPS_MAX][SSTV_OUTER_PARITY];
+    uint8_t group_done[SSTV_OUTER_GROUPS_MAX]; /* complete or repaired: no further attempts */
+    int data_frames; /* data positions in the pass (from the announced total), 0 = unknown */
+    bool pass_open; /* START seen, END not yet: a repeated START block does not reset */
+    int frames_repaired;
+    int groups_repaired;
+    int repairs_failed; /* parity in hand but too many frames missing */
     sstv_pixel_cb pixel_cb;
     sstv_meta_cb meta_cb;
     sstv_preview_cb preview_cb;
@@ -40,6 +53,9 @@ typedef struct {
 
 void sstv_rx_init(sstv_rx* rx, sstv_pixel_cb pixel_cb, sstv_meta_cb meta_cb, sstv_preview_cb preview_cb, void* ctx);
 void sstv_rx_reset_counters(sstv_rx* rx);
+
+/* Forgets the previous pass's frames (called on START; sstv_rx_init calls it too). */
+void sstv_rx_start_pass(sstv_rx* rx);
 
 /* One demodulated physical frame: SSTV_FRAME_BYTES bytes and SSTV_FRAME_BITS soft values. */
 void sstv_rx_phys(sstv_rx* rx, const uint8_t* frame, const float* soft);

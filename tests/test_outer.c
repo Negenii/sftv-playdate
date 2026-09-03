@@ -1,0 +1,155 @@
+/* Receiver-level tests of the outer code: physical frames go straight into sstv_rx_phys,
+ * losses are simulated by garbling (noise with low confidence) or skipping physical frames. */
+#include "sstv_frame.h"
+#include "sstv_rx.h"
+#include "sstv_preview.h"
+#include "test_util.h"
+#include <string.h>
+#include <stdlib.h>
+
+typedef struct {
+    uint8_t got[SSTV_HEIGHT][SSTV_LINE_BYTES];
+    uint8_t seen[SSTV_HEIGHT];
+    int ends;
+    int starts;
+    int preview_chunks, tiny_chunks;
+} capture;
+
+static void on_pixels(void* ctx, uint16_t line, int x_byte, int nbytes, const uint8_t* px) {
+    capture* c = ctx;
+    memcpy(c->got[line] + x_byte, px, (size_t)nbytes);
+    c->seen[line] |= nbytes == SSTV_LINE_BYTES ? 3 : (x_byte == 0 ? 1 : 2);
+}
+static void on_meta(void* ctx, const char* name, bool is_end, int total, bool coded) {
+    (void)name; (void)total; (void)coded;
+    if(is_end) ((capture*)ctx)->ends++;
+    else ((capture*)ctx)->starts++;
+}
+static void on_preview(void* ctx, int layer, int chunk, int nbytes, const uint8_t* data) {
+    (void)chunk; (void)nbytes; (void)data;
+    if(layer == 0) ((capture*)ctx)->tiny_chunks++;
+    else if(layer == 1) ((capture*)ctx)->preview_chunks++;
+}
+
+static int lines_ok(const capture* c, const uint8_t* image) {
+    int ok = 0;
+    for(int y = 0; y < SSTV_HEIGHT; y++)
+        if(c->seen[y] == 3 && memcmp(c->got[y], image + y * SSTV_LINE_BYTES, SSTV_LINE_BYTES) == 0) ok++;
+    return ok;
+}
+
+static uint32_t st = 7;
+static uint32_t rnd(void) {
+    st = st * 1103515245u + 12345u;
+    return st >> 8;
+}
+
+static bool in(const int* list, int n, int v) {
+    for(int i = 0; i < n; i++) if(list[i] == v) return true;
+    return false;
+}
+
+/* Feeds a pass; physical frames in `garble` arrive as noise with low confidence, frames in
+ * `skip` never arrive. */
+static void feed(sstv_rx* rx, const uint8_t* phys, int frames, const int* garble, int n_garble, const int* skip, int n_skip) {
+    float soft_good[SSTV_FRAME_BITS], soft_bad[SSTV_FRAME_BITS];
+    for(int i = 0; i < SSTV_FRAME_BITS; i++) {
+        soft_good[i] = 1.0f;
+        soft_bad[i] = 0.05f;
+    }
+    for(int f = 0; f < frames; f++) {
+        if(in(skip, n_skip, f)) continue;
+        if(in(garble, n_garble, f)) {
+            uint8_t noise[SSTV_FRAME_BYTES];
+            for(int i = 0; i < SSTV_FRAME_BYTES; i++) noise[i] = (uint8_t)rnd();
+            sstv_rx_phys(rx, noise, soft_bad);
+        } else {
+            sstv_rx_phys(rx, phys + f * SSTV_FRAME_BYTES, soft_good);
+        }
+    }
+}
+
+static void run_case(const char* label, const uint8_t* image, const uint8_t* phys, int frames, const int* garble, int n_garble, const int* skip, int n_skip, int want_lines, int want_repaired_min) {
+    capture* c = calloc(1, sizeof *c);
+    sstv_rx rx;
+    sstv_rx_init(&rx, on_pixels, on_meta, on_preview, c);
+    feed(&rx, phys, frames, garble, n_garble, skip, n_skip);
+    int ok = lines_ok(c, image);
+    printf("  %s: %d/%d lines, frames ok %d bad %d, repaired %d frames in %d groups, %d failed\n", label, ok, SSTV_HEIGHT,
+           rx.frames_ok, rx.frames_bad, rx.frames_repaired, rx.groups_repaired, rx.repairs_failed);
+    CHECK_EQ_INT(ok, want_lines);
+    CHECK(rx.frames_repaired >= want_repaired_min);
+    CHECK_EQ_INT(c->ends, 1);
+    CHECK_EQ_INT(c->starts, 1);
+    if(want_lines == SSTV_HEIGHT) {
+        CHECK_EQ_INT(c->tiny_chunks, SSTV_TINY_CHUNKS);
+        CHECK_EQ_INT(c->preview_chunks, SSTV_PREVIEW_CHUNKS);
+    }
+    free(c);
+}
+
+int main(void) {
+    uint8_t* image = malloc(SSTV_IMAGE_BYTES);
+    uint8_t* phys = malloc(SSTV_MAX_FRAMES * SSTV_FRAME_BYTES);
+    bool coded;
+
+    /* raw pass (random image) */
+    for(int i = 0; i < SSTV_IMAGE_BYTES; i++) image[i] = (uint8_t)rnd();
+    int frames = sstv_build_physical(image, "noise", phys, NULL, &coded);
+    CHECK(!coded);
+    printf("raw pass: %d frames\n", frames);
+    run_case("raw clean", image, phys, frames, NULL, 0, NULL, 0, SSTV_HEIGHT, 0);
+    /* two garbled physical frames in one block kill its 4 logical frames; three such blocks in
+       group 0 = 12 lost frames: all repaired */
+    int g12[] = {40, 41, 60, 61, 80, 81};
+    run_case("raw 12 lost in group 0", image, phys, frames, g12, 6, NULL, 0, SSTV_HEIGHT, 12);
+    /* a fourth block lost in the same group: 16 > 12, the group stays short (8 lines), later
+       groups fine */
+    int g16[] = {40, 41, 60, 61, 80, 81, 100, 101};
+    run_case("raw 16 lost in group 0", image, phys, frames, g16, 8, NULL, 0, SSTV_HEIGHT - 8, 0);
+    /* losses spread over groups, including a parity block (physical 108..119 are group 0's
+       parity) and the tiny preview block (4..7) */
+    int spread[] = {4, 5, 110, 111, 130, 131, 250, 251, 400, 401};
+    run_case("raw spread losses", image, phys, frames, spread, 10, NULL, 0, SSTV_HEIGHT, 12);
+    /* physical frames that never arrive (sync lost): one per group */
+    int skip[] = {50, 200, 330, 450};
+    run_case("raw skipped frames", image, phys, frames, NULL, 0, skip, 4, SSTV_HEIGHT, 8);
+    /* the START block itself lost: the pass still opens on the repaired... no: without START
+       the receiver cannot announce; it decodes the rest and END announces the name */
+    /* START lost together with data blocks in the first and the last (short) group: the
+       first group repairs on its parity (full group assumed), the last one on END */
+    int gstart[] = {0, 1, 40, 41, 500, 501};
+    {
+        capture* c = calloc(1, sizeof *c);
+        sstv_rx rx;
+        sstv_rx_init(&rx, on_pixels, on_meta, on_preview, c);
+        feed(&rx, phys, frames, gstart, 6, NULL, 0);
+        printf("  raw START + blocks lost: %d/%d lines, repaired %d frames in %d groups\n", lines_ok(c, image), SSTV_HEIGHT, rx.frames_repaired, rx.groups_repaired);
+        CHECK_EQ_INT(lines_ok(c, image), SSTV_HEIGHT);
+        CHECK_EQ_INT(c->ends, 1);
+        CHECK_EQ_INT(c->starts, 0);
+        CHECK_EQ_INT(rx.frames_repaired, 12);
+        free(c);
+    }
+
+    /* coded pass (8-line stripes compress well) */
+    for(int y = 0; y < SSTV_HEIGHT; y++)
+        for(int i = 0; i < SSTV_LINE_BYTES; i++) image[y * SSTV_LINE_BYTES + i] = (y / 8) & 1 ? 0xF0 : 0x0F;
+    frames = sstv_build_physical(image, "stripes", phys, NULL, &coded);
+    CHECK(coded);
+    printf("coded pass: %d frames\n", frames);
+    run_case("coded clean", image, phys, frames, NULL, 0, NULL, 0, SSTV_HEIGHT, 0);
+    /* one garbled frame of a coded block: the inner RS with erasures fixes it */
+    int c1[] = {45};
+    run_case("coded one garbled frame", image, phys, frames, c1, 1, NULL, 0, SSTV_HEIGHT, 0);
+    /* a whole coded block lost (two garbled frames): its lines come back after the parity */
+    int c2[] = {44, 45};
+    run_case("coded block lost", image, phys, frames, c2, 2, NULL, 0, SSTV_HEIGHT, 4);
+    /* the schedule block and a data block lost */
+    int c3[] = {28, 29, 36, 37};
+    run_case("coded schedule + block lost", image, phys, frames, c3, 4, NULL, 0, SSTV_HEIGHT, 8);
+
+    free(image);
+    free(phys);
+    TEST_MAIN_END();
+}
