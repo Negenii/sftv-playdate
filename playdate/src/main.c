@@ -21,11 +21,9 @@ static sstv_demod demod;
 static sstv_rx rx;
 static mic_ring ring;
 
-/* Per-segment state: a segment is "good" once a copy passed Reed-Solomon + CRC. Bad copies
- * are drawn (that is the "satellite noise" look) but never over a good one. */
-static uint8_t seg_state[SSTV_NUM_SEGS]; /* 0 none, 1 noisy, 2 good */
-static int distinct_segs;
-static int good_segs;
+/* Lines arrive decoded and verified (RS + CRC); anything that failed is simply not drawn. */
+static uint8_t line_seen[SSTV_HEIGHT];
+static int good_lines;
 static unsigned last_seg_ms;
 static int mic_state; /* 0 asking, 1 allowed, -1 denied */
 static unsigned led_frame_ms; /* virtual LED: last physical frame time */
@@ -53,22 +51,15 @@ static int mic_cb(void* context, int16_t* data, int len) {
 
 /* ---- main thread ---- */
 
-static void draw_segment(int seg, const uint8_t* pixels) {
-    uint8_t* dst = image_data + sstv_seg_line(seg) * image_rowbytes + sstv_seg_byte_offset(seg);
-    /* PBM: 1 = black. Playdate bitmap: 1 = white. */
-    for(int i = 0; i < SSTV_SEG_BYTES; i++) dst[i] = (uint8_t)~pixels[i];
-}
-
-static void on_seg(void* ctx, uint16_t seg, const uint8_t* pixels, bool ok, int corrected) {
+static void on_line(void* ctx, uint16_t line, const uint8_t* pixels) {
     (void)ctx;
-    (void)corrected;
     last_seg_ms = pd->system->getCurrentTimeMilliseconds();
-    if(seg >= SSTV_NUM_SEGS) return;
-    if(seg_state[seg] == 2 && !ok) return;
-    draw_segment(seg, pixels);
-    if(seg_state[seg] == 0) distinct_segs++;
-    if(ok && seg_state[seg] != 2) good_segs++;
-    seg_state[seg] = ok ? 2 : 1;
+    if(line >= SSTV_HEIGHT) return;
+    uint8_t* dst = image_data + line * image_rowbytes;
+    /* PBM: 1 = black. Playdate bitmap: 1 = white. */
+    for(int i = 0; i < SSTV_LINE_BYTES; i++) dst[i] = (uint8_t)~pixels[i];
+    if(!line_seen[line]) good_lines++;
+    line_seen[line] = 1;
 }
 
 static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
@@ -81,9 +72,8 @@ static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
 
 static void clear_image(void) {
     memset(image_data, 0xFF, (size_t)image_rowbytes * SSTV_HEIGHT);
-    memset(seg_state, 0, sizeof seg_state);
-    distinct_segs = 0;
-    good_segs = 0;
+    memset(line_seen, 0, sizeof line_seen);
+    good_lines = 0;
     sstv_demod_reset_counters(&demod);
     sstv_rx_reset_counters(&rx);
 }
@@ -142,22 +132,21 @@ static void draw_status(void) {
         snprintf(text, sizeof text, "waiting for microphone permission...");
     } else {
         unsigned now = pd->system->getCurrentTimeMilliseconds();
-        bool quiet = distinct_segs > 0 && now - last_seg_ms > LOST_TIMEOUT_MS;
-        int noisy = distinct_segs - good_segs;
+        bool quiet = good_lines > 0 && now - last_seg_ms > LOST_TIMEOUT_MS;
         static const char tone_names[] = "0123S";
         char tone[2] = {st.tone >= 0 && st.tone <= SSTV_NUM_TONES ? tone_names[st.tone] : '-', 0};
         if(rec_len >= 0) {
-            snprintf(text, sizeof text, "REC %d s  good %d/%d", rec_len / REC_RATE, good_segs, SSTV_NUM_SEGS);
-        } else if(good_segs == SSTV_NUM_SEGS) {
-            snprintf(text, sizeof text, "complete %d/%d  rs fixed %d  A: clear", good_segs, SSTV_NUM_SEGS,
+            snprintf(text, sizeof text, "REC %d s  lines %d/%d", rec_len / REC_RATE, good_lines, SSTV_HEIGHT);
+        } else if(good_lines == SSTV_HEIGHT) {
+            snprintf(text, sizeof text, "complete %d/%d  rs fixed %d  A: clear", good_lines, SSTV_HEIGHT,
                      rx.rs_corrected);
         } else if(quiet) {
-            snprintf(text, sizeof text, "signal lost  good %d/%d  noisy %d%s", good_segs, SSTV_NUM_SEGS, noisy,
-                     rec_saved ? "  (rec.wav saved)" : "");
+            snprintf(text, sizeof text, "signal lost  lines %d/%d  bad frames %d%s", good_lines, SSTV_HEIGHT,
+                     rx.frames_bad, rec_saved ? "  (rec.wav saved)" : "");
         } else {
-            snprintf(text, sizeof text, "good %d/%d noisy %d rs %d fw %d/%d st%d drop %u %s", good_segs,
-                     SSTV_NUM_SEGS, noisy, rx.rs_corrected, demod.flywheel_frames, demod.flywheel_left,
-                     (int)demod.state, mic_dropped, tone);
+            snprintf(text, sizeof text, "lines %d/%d bad %d rs %d fw %d/%d drop %u %s", good_lines,
+                     SSTV_HEIGHT, rx.frames_bad, rx.rs_corrected, demod.flywheel_frames, demod.flywheel_left,
+                     mic_dropped, tone);
         }
     }
     pd->graphics->drawText(text, strlen(text), kASCIIEncoding, 4, y + 3);
@@ -225,7 +214,7 @@ static void init(void) {
     rec_buf = pd->system->realloc(NULL, sizeof(int16_t) * REC_SECONDS * REC_RATE);
     rec_len = -1;
     mic_ring_init(&ring);
-    sstv_rx_init(&rx, on_seg, NULL);
+    sstv_rx_init(&rx, on_line, NULL);
     sstv_demod_init(&demod, 44100.0f, on_phys, NULL);
     clear_image();
 

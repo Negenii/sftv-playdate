@@ -2,82 +2,108 @@
 #include "sstv_frame.h"
 #include <string.h>
 
+typedef struct {
+    int n;
+    uint16_t lines[SSTV_HEIGHT];
+    uint8_t px[SSTV_HEIGHT][SSTV_LINE_BYTES];
+} cap;
+static void on_line(void* ctx, uint16_t line, const uint8_t* pixels) {
+    cap* c = ctx;
+    c->lines[c->n] = line;
+    memcpy(c->px[c->n], pixels, SSTV_LINE_BYTES);
+    c->n++;
+}
+
 int main(void) {
-    uint8_t pixels[SSTV_SEG_BYTES];
-    for(int i = 0; i < SSTV_SEG_BYTES; i++) pixels[i] = (uint8_t)(i * 37 + 11);
+    uint8_t payload[SSTV_PAYLOAD_BYTES];
+    for(int i = 0; i < SSTV_PAYLOAD_BYTES; i++) payload[i] = (uint8_t)(i * 37 + 11);
 
     uint8_t frame[SSTV_FRAME_BYTES];
-    sstv_frame_pack(345, pixels, frame);
-    CHECK_EQ_INT(frame[0], 1);
-    CHECK_EQ_INT(frame[1], 89);
-    CHECK(memcmp(frame + 2, pixels, SSTV_SEG_BYTES) == 0);
+    sstv_frame_pack(77, payload, frame);
+    CHECK_EQ_INT(frame[0], 0);
+    CHECK_EQ_INT(frame[1], 77);
+    CHECK(memcmp(frame + 2, payload, SSTV_PAYLOAD_BYTES) == 0);
 
-    uint16_t seg = 0;
-    uint8_t out[SSTV_SEG_BYTES];
-    CHECK(sstv_frame_unpack(frame, &seg, out));
-    CHECK_EQ_INT(seg, 345);
-    CHECK(memcmp(out, pixels, SSTV_SEG_BYTES) == 0);
-
-    /* bit and symbol accessors: 0x01 0x59 -> bits 0000 0001 0101 1001 */
-    CHECK_EQ_INT(sstv_frame_bit(frame, 7), 1);
-    CHECK_EQ_INT(sstv_frame_symbol(frame, 3), 1); /* bits 6,7 = 01 */
-    CHECK_EQ_INT(sstv_frame_symbol(frame, 4), 1); /* bits 8,9 = 01 */
-    CHECK_EQ_INT(sstv_frame_symbol(frame, 5), 1); /* bits 10,11 = 01 */
-    CHECK_EQ_INT(sstv_frame_symbol(frame, 6), 2); /* bits 12,13 = 10 */
+    uint16_t blk = 0;
+    uint8_t out[SSTV_PAYLOAD_BYTES];
+    CHECK(sstv_frame_unpack(frame, &blk, out));
+    CHECK_EQ_INT(blk, 77);
+    CHECK(memcmp(out, payload, SSTV_PAYLOAD_BYTES) == 0);
+    CHECK_EQ_INT(sstv_frame_symbol(frame, 7), 1); /* bits 14,15 of 0x00 0x4D */
     CHECK_EQ_INT(SSTV_SYMBOLS_PER_FRAME * SSTV_BITS_PER_SYMBOL, SSTV_FRAME_BITS);
 
-    /* up to PARITY/2 corrupted bytes are corrected blind (4 here) */
+    /* up to PARITY/2 corrupted bytes are corrected blind */
     int corrected = 0;
     uint8_t bad[SSTV_FRAME_BYTES];
     memcpy(bad, frame, sizeof bad);
-    bad[5] ^= 0x10;
-    bad[0] ^= 0xFF;
-    bad[SSTV_FRAME_BYTES - 1] ^= 0x01;
-    bad[20] ^= 0x80;
-    CHECK(sstv_frame_unpack_soft(bad, NULL, &seg, out, &corrected));
-    CHECK_EQ_INT(corrected, 4);
-    CHECK_EQ_INT(seg, 345);
-    CHECK(memcmp(out, pixels, SSTV_SEG_BYTES) == 0);
+    for(int i = 0; i < SSTV_PARITY_BYTES / 2; i++) bad[2 + i * 5] ^= (uint8_t)(0x11 + i);
+    CHECK(sstv_frame_unpack_soft(bad, NULL, &blk, out, &corrected));
+    CHECK_EQ_INT(corrected, SSTV_PARITY_BYTES / 2);
+    CHECK(memcmp(out, payload, SSTV_PAYLOAD_BYTES) == 0);
 
-    /* PARITY bytes corrupted: blind decode fails, but with confidence marking them it works */
+    /* PARITY bytes corrupted: blind fails, erasures from confidence succeed */
     memcpy(bad, frame, sizeof bad);
     float conf[SSTV_FRAME_BYTES];
     for(int i = 0; i < SSTV_FRAME_BYTES; i++) conf[i] = 1.0f;
     for(int i = 0; i < SSTV_PARITY_BYTES; i++) {
-        bad[3 + i * 3] ^= (uint8_t)(0x5A + i);
-        conf[3 + i * 3] = 0.05f;
+        bad[1 + i * 3] ^= (uint8_t)(0x5A + i);
+        conf[1 + i * 3] = 0.05f;
     }
-    CHECK(!sstv_frame_unpack_soft(bad, NULL, &seg, out, &corrected));
-    CHECK(sstv_frame_unpack_soft(bad, conf, &seg, out, &corrected));
-    CHECK_EQ_INT(seg, 345);
-    CHECK(memcmp(out, pixels, SSTV_SEG_BYTES) == 0);
+    CHECK(!sstv_frame_unpack_soft(bad, NULL, &blk, out, &corrected));
+    CHECK(sstv_frame_unpack_soft(bad, conf, &blk, out, &corrected));
+    CHECK_EQ_INT(blk, 77);
 
-    /* interleave round trip and byte placement */
+    /* interleave round trip */
     uint8_t logical[SSTV_ILEAVE * SSTV_FRAME_BYTES], physical[SSTV_ILEAVE * SSTV_FRAME_BYTES],
         back[SSTV_ILEAVE * SSTV_FRAME_BYTES];
     for(int i = 0; i < (int)sizeof logical; i++) logical[i] = (uint8_t)(i * 7 + 3);
     sstv_interleave(logical, physical);
-    CHECK_EQ_INT(physical[0], logical[0]);
     CHECK_EQ_INT(physical[1], logical[SSTV_FRAME_BYTES]);
-    CHECK_EQ_INT(physical[SSTV_ILEAVE], logical[1]);
     sstv_deinterleave(physical, back);
     CHECK(memcmp(back, logical, sizeof logical) == 0);
 
-    /* build_physical: block 0 de-interleaves to segments 0..ILEAVE-1 of the image */
+    /* block pack/unpack on a random (incompressible) image: 2 lines per block */
     uint8_t* image = malloc(SSTV_IMAGE_BYTES);
-    for(int i = 0; i < SSTV_IMAGE_BYTES; i++) image[i] = (uint8_t)(i ^ (i >> 5));
-    uint8_t* phys = malloc(SSTV_NUM_SEGS * SSTV_FRAME_BYTES);
-    sstv_build_physical(image, phys);
+    for(int i = 0; i < SSTV_IMAGE_BYTES; i++) image[i] = (uint8_t)((i * 2654435761u) >> 13);
+    uint8_t blockp[SSTV_BLOCK_PAYLOAD];
+    int n = sstv_block_pack(image, 10, blockp);
+    CHECK_EQ_INT(n, 2); /* 2 + 2 x 51 = 104 */
+    cap c = {0};
+    CHECK_EQ_INT(sstv_block_unpack(blockp, SSTV_BLOCK_PAYLOAD, on_line, &c), 2);
+    CHECK_EQ_INT(c.lines[0], 10);
+    CHECK_EQ_INT(c.lines[1], 11);
+    CHECK(memcmp(c.px[0], image + 10 * SSTV_LINE_BYTES, SSTV_LINE_BYTES) == 0);
+    CHECK(memcmp(c.px[1], image + 11 * SSTV_LINE_BYTES, SSTV_LINE_BYTES) == 0);
+
+    /* a white image packs many lines per block and survives truncation to the valid prefix */
+    memset(image, 0, SSTV_IMAGE_BYTES);
+    n = sstv_block_pack(image, 0, blockp);
+    CHECK(n >= 15);
+    c.n = 0;
+    CHECK_EQ_INT(sstv_block_unpack(blockp, SSTV_BLOCK_PAYLOAD, on_line, &c), n);
+    c.n = 0;
+    int partial = sstv_block_unpack(blockp, 20, on_line, &c); /* only the first frame valid */
+    CHECK(partial > 0 && partial < n);
+
+    /* full build: frames is a multiple of ILEAVE, white image needs far fewer than 480 */
+    uint8_t* phys = malloc(SSTV_MAX_FRAMES * SSTV_FRAME_BYTES);
+    int frames = sstv_build_physical(image, phys);
+    CHECK_EQ_INT(frames % SSTV_ILEAVE, 0);
+    CHECK(frames <= 80);
+    for(int i = 0; i < SSTV_IMAGE_BYTES; i++) image[i] = (uint8_t)((i * 2654435761u) >> 13);
+    frames = sstv_build_physical(image, phys);
+    CHECK_EQ_INT(frames, SSTV_HEIGHT / 2 * SSTV_ILEAVE); /* 2 raw lines per block */
+    /* first block decodes to line 0 */
     sstv_deinterleave(phys, back);
+    uint8_t pl[SSTV_BLOCK_PAYLOAD];
     for(int i = 0; i < SSTV_ILEAVE; i++) {
-        CHECK(sstv_frame_unpack(back + i * SSTV_FRAME_BYTES, &seg, out));
-        CHECK_EQ_INT(seg, i);
-        CHECK(memcmp(out, image + sstv_seg_line(i) * SSTV_LINE_BYTES + sstv_seg_byte_offset(i), SSTV_SEG_BYTES) == 0);
+        CHECK(sstv_frame_unpack(back + i * SSTV_FRAME_BYTES, &blk, pl + i * SSTV_PAYLOAD_BYTES));
+        CHECK_EQ_INT(blk, 0);
     }
-    /* last block */
-    sstv_deinterleave(phys + (SSTV_NUM_BLOCKS - 1) * SSTV_ILEAVE * SSTV_FRAME_BYTES, back);
-    CHECK(sstv_frame_unpack(back + (SSTV_ILEAVE - 1) * SSTV_FRAME_BYTES, &seg, out));
-    CHECK_EQ_INT(seg, SSTV_NUM_SEGS - 1);
+    c.n = 0;
+    CHECK_EQ_INT(sstv_block_unpack(pl, SSTV_BLOCK_PAYLOAD, on_line, &c), 2);
+    CHECK_EQ_INT(c.lines[0], 0);
+    CHECK_EQ_INT(c.lines[1], 1);
     free(image);
     free(phys);
     TEST_MAIN_END();

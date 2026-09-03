@@ -12,21 +12,17 @@
 /* demod -> rx -> segments */
 typedef struct {
     sstv_rx rx;
-    int count; /* segments delivered */
-    int ok;
-    uint8_t got[SSTV_NUM_SEGS][SSTV_SEG_BYTES];
-    uint8_t seen[SSTV_NUM_SEGS]; /* 1 delivered bad, 2 delivered ok */
+    int count; /* lines delivered */
+    uint8_t got[SSTV_HEIGHT][SSTV_LINE_BYTES];
+    uint8_t seen[SSTV_HEIGHT];
 } capture;
 
-static void on_seg(void* ctx, uint16_t seg, const uint8_t* pixels, bool ok, int corrected) {
-    (void)corrected;
+static void on_line(void* ctx, uint16_t line, const uint8_t* pixels) {
     capture* c = ctx;
     c->count++;
-    if(ok) c->ok++;
-    if(seg < SSTV_NUM_SEGS) {
-        if(ok || !c->seen[seg]) memcpy(c->got[seg], pixels, SSTV_SEG_BYTES);
-        if(ok) c->seen[seg] = 2;
-        else if(!c->seen[seg]) c->seen[seg] = 1;
+    if(line < SSTV_HEIGHT) {
+        memcpy(c->got[line], pixels, SSTV_LINE_BYTES);
+        c->seen[line] = 1;
     }
 }
 
@@ -37,7 +33,7 @@ static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
 
 static capture* capture_new(void) {
     capture* c = calloc(1, sizeof *c);
-    sstv_rx_init(&c->rx, on_seg, c);
+    sstv_rx_init(&c->rx, on_line, c);
     return c;
 }
 
@@ -81,11 +77,10 @@ static void feed_chunked(sstv_demod* d, const int16_t* s, int n) {
     }
 }
 
-static int segs_matching(const capture* c, const uint8_t* image) {
+static int lines_matching(const capture* c, const uint8_t* image) {
     int ok = 0;
-    for(int s = 0; s < SSTV_NUM_SEGS; s++) {
-        const uint8_t* truth = image + sstv_seg_line(s) * SSTV_LINE_BYTES + sstv_seg_byte_offset(s);
-        if(c->seen[s] == 2 && memcmp(c->got[s], truth, SSTV_SEG_BYTES) == 0) ok++;
+    for(int y = 0; y < SSTV_HEIGHT; y++) {
+        if(c->seen[y] && memcmp(c->got[y], image + y * SSTV_LINE_BYTES, SSTV_LINE_BYTES) == 0) ok++;
     }
     return ok;
 }
@@ -119,7 +114,7 @@ static int run_image(sstv_mod* m, float demod_sr, const noise_spec* ns, capture*
     feed_chunked(&d, s, n);
     free(s);
     if(ns) printf("    (physical frames %d, flywheel %d)\n", d.frames, d.flywheel_frames);
-    return segs_matching(c, image);
+    return lines_matching(c, image);
 }
 
 static void test_single_block(void) {
@@ -127,7 +122,7 @@ static void test_single_block(void) {
     float sr = 44100.0f;
     uint8_t* image = calloc(SSTV_IMAGE_BYTES, 1);
     fill_random(image, SSTV_IMAGE_BYTES);
-    uint8_t* phys = malloc(SSTV_NUM_SEGS * SSTV_FRAME_BYTES);
+    uint8_t* phys = malloc(SSTV_MAX_FRAMES * SSTV_FRAME_BYTES);
     sstv_build_physical(image, phys);
     int cap = silence_samples(sr, 200) + SSTV_ILEAVE * 30000;
     int16_t* s = calloc((size_t)cap, sizeof(int16_t));
@@ -143,9 +138,8 @@ static void test_single_block(void) {
     sstv_demod_init(&d, sr, on_phys, c);
     feed_chunked(&d, s, n);
     CHECK_EQ_INT(d.frames, SSTV_ILEAVE);
-    CHECK_EQ_INT(c->count, SSTV_ILEAVE);
-    CHECK_EQ_INT(c->ok, SSTV_ILEAVE);
-    CHECK_EQ_INT(segs_matching(c, image), SSTV_ILEAVE);
+    CHECK_EQ_INT(c->count, 2); /* random rows: two raw lines per block */
+    CHECK_EQ_INT(lines_matching(c, image), c->count);
     /* the flywheel may already be waiting for a next frame; it must not have produced one */
     CHECK_EQ_INT(d.frames, SSTV_ILEAVE);
     free(s);
@@ -160,8 +154,31 @@ static void test_full_image_clean(void) {
     sstv_mod m;
     sstv_mod_init(&m, 44100.0f, AMP);
     int ok = run_image(&m, 44100.0f, NULL, c, image);
-    CHECK_EQ_INT(c->count, SSTV_NUM_SEGS);
-    CHECK_EQ_INT(ok, SSTV_NUM_SEGS);
+    CHECK_EQ_INT(c->count, SSTV_HEIGHT);
+    CHECK_EQ_INT(ok, SSTV_HEIGHT);
+    /* a compressible image needs fewer frames and still arrives intact */
+    for(int y = 0; y < SSTV_HEIGHT; y++) {
+        memset(image + y * SSTV_LINE_BYTES, 0, SSTV_LINE_BYTES);
+        if(y % 3 == 0) memset(image + y * SSTV_LINE_BYTES + 10, 0xFF, 20);
+    }
+    capture* c2 = capture_new();
+    float sr = 44100.0f;
+    uint8_t* phys = malloc(SSTV_MAX_FRAMES * SSTV_FRAME_BYTES);
+    int frames = sstv_build_physical(image, phys);
+    printf("  compressible image: %d physical frames (raw would be %d)\n", frames, SSTV_HEIGHT * SSTV_ILEAVE / 2);
+    CHECK(frames < SSTV_HEIGHT);
+    int cap = sstv_mod_image_capacity(sr);
+    int16_t* s = calloc((size_t)cap, sizeof(int16_t));
+    sstv_mod m2;
+    sstv_mod_init(&m2, sr, AMP);
+    int n = silence_samples(sr, 50) + sstv_mod_image(&m2, image, s + silence_samples(sr, 50), cap - 5000);
+    sstv_demod d;
+    sstv_demod_init(&d, sr, on_phys, c2);
+    feed_chunked(&d, s, n);
+    CHECK_EQ_INT(lines_matching(c2, image), SSTV_HEIGHT);
+    free(s);
+    free(phys);
+    free(c2);
     free(c);
     free(image);
 }
@@ -172,7 +189,7 @@ static void test_noise(const noise_spec* ns, const char* label, int min_ok) {
     sstv_mod m;
     sstv_mod_init(&m, 44100.0f, AMP);
     int ok = run_image(&m, 44100.0f, ns, c, image);
-    printf("  %s: %d/%d segments intact, %d delivered, rs fixed %d bytes\n", label, ok, SSTV_NUM_SEGS, c->count,
+    printf("  %s: %d/%d lines intact, %d delivered, rs fixed %d bytes\n", label, ok, SSTV_HEIGHT, c->count,
            c->rx.rs_corrected);
     CHECK(ok >= min_ok);
     free(c);
@@ -186,7 +203,7 @@ static void test_frequency_offset(void) {
     sstv_mod_init(&m, 44100.0f, AMP);
     for(int k = 0; k < SSTV_NUM_TONES; k++) m.tones[k] *= 1.015f; /* 0 stays 0 */
     m.fsync *= 1.015f;
-    CHECK_EQ_INT(run_image(&m, 44100.0f, NULL, c, image), SSTV_NUM_SEGS);
+    CHECK_EQ_INT(run_image(&m, 44100.0f, NULL, c, image), SSTV_HEIGHT);
     free(c);
     free(image);
 }
@@ -198,8 +215,8 @@ static void test_clock_offset(void) {
         sstv_mod m;
         sstv_mod_init(&m, 44100.0f * (1.0f + sign * 0.0015f), AMP);
         int ok = run_image(&m, 44100.0f, NULL, c, image);
-        printf("  clock %+d ppm: %d/%d segments intact\n", sign * 1500, ok, SSTV_NUM_SEGS);
-        CHECK(ok >= SSTV_NUM_SEGS * 95 / 100); /* 1500 ppm is 1.5x the measured Flipper/Playdate offset */
+        printf("  clock %+d ppm: %d/%d lines intact\n", sign * 1500, ok, SSTV_HEIGHT);
+        CHECK(ok >= SSTV_HEIGHT * 95 / 100); /* 1500 ppm is 1.5x the measured Flipper/Playdate offset */
         free(c);
     }
     free(image);
@@ -210,7 +227,7 @@ static void test_other_sample_rate(void) {
     capture* c = capture_new();
     sstv_mod m;
     sstv_mod_init(&m, 22050.0f, AMP);
-    CHECK_EQ_INT(run_image(&m, 22050.0f, NULL, c, image), SSTV_NUM_SEGS);
+    CHECK_EQ_INT(run_image(&m, 22050.0f, NULL, c, image), SSTV_HEIGHT);
     free(c);
     free(image);
 }
@@ -221,7 +238,7 @@ static void test_lost_sync(void) {
     float sr = 44100.0f;
     uint8_t* image = calloc(SSTV_IMAGE_BYTES, 1);
     fill_random(image, SSTV_IMAGE_BYTES);
-    uint8_t* phys = malloc(SSTV_NUM_SEGS * SSTV_FRAME_BYTES);
+    uint8_t* phys = malloc(SSTV_MAX_FRAMES * SSTV_FRAME_BYTES);
     sstv_build_physical(image, phys);
     int cap = 2 * SSTV_ILEAVE * 30000 + 20000;
     int16_t* s = calloc((size_t)cap, sizeof(int16_t));
@@ -241,13 +258,8 @@ static void test_lost_sync(void) {
     sstv_demod d;
     sstv_demod_init(&d, sr, on_phys, c);
     feed_chunked(&d, s, n);
-    int ok0 = 0, ok1 = 0;
-    for(int i = 0; i < SSTV_ILEAVE; i++) {
-        ok0 += c->seen[i] == 2;
-        ok1 += c->seen[SSTV_ILEAVE + i] == 2;
-    }
-    CHECK_EQ_INT(ok0, SSTV_ILEAVE);
-    CHECK_EQ_INT(ok1, SSTV_ILEAVE);
+    /* random rows: block 0 = lines 0,1, block 1 = lines 2,3; all must arrive */
+    CHECK(c->seen[0] && c->seen[1] && c->seen[2] && c->seen[3]);
     CHECK(d.flywheel_frames >= 1);
     free(s);
     free(phys);
@@ -276,12 +288,12 @@ int main(void) {
     noise_spec bursts = {(float)AMP / 4.0f, (float)AMP * 6.0f, 150, 2000};
     /* long bursts: 400 ms every 3 s */
     noise_spec long_bursts = {(float)AMP / 4.0f, (float)AMP * 6.0f, 400, 3000};
-    test_noise(&white6, "white 6 dB", SSTV_NUM_SEGS);
-    test_noise(&white0, "white 0 dB", SSTV_NUM_SEGS * 95 / 100);
-    test_noise(&bursts, "150 ms bursts / 2 s", SSTV_NUM_SEGS * 97 / 100);
-    test_noise(&long_bursts, "400 ms bursts / 3 s", SSTV_NUM_SEGS * 80 / 100);
+    test_noise(&white6, "white 6 dB", SSTV_HEIGHT);
+    test_noise(&white0, "white 0 dB", SSTV_HEIGHT * 95 / 100);
+    test_noise(&bursts, "150 ms bursts / 2 s", SSTV_HEIGHT * 97 / 100);
+    test_noise(&long_bursts, "400 ms bursts / 3 s", SSTV_HEIGHT * 80 / 100);
     noise_spec word_bursts = {(float)AMP / 4.0f, (float)AMP * 6.0f, 700, 3000};
-    test_noise(&word_bursts, "700 ms bursts / 3 s", SSTV_NUM_SEGS * 50 / 100);
+    test_noise(&word_bursts, "700 ms bursts / 3 s", SSTV_HEIGHT * 50 / 100);
     test_frequency_offset();
     test_clock_offset();
     test_other_sample_rate();

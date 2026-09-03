@@ -6,28 +6,27 @@
 #define SSTV_LINE_BYTES 50 /* ceil(400 / 8) */
 #define SSTV_IMAGE_BYTES (SSTV_LINE_BYTES * SSTV_HEIGHT) /* 12000 */
 
-/* Segments and frames. A line is split into SSTV_SEGS_PER_LINE segments so a burst of
- * noise costs part of a line, not all of it. Logical frame = [segment index, 2 bytes]
- * [SSTV_SEG_BYTES pixels][CRC-8] + SSTV_PARITY_BYTES Reed-Solomon parity (corrects
- * PARITY/2 unknown bytes, or PARITY erased ones). SSTV_ILEAVE consecutive logical frames
- * are byte-interleaved into SSTV_ILEAVE physical frames, so a noise burst hitting one
- * physical frame is spread thinly over SSTV_ILEAVE logical ones. */
-#ifndef SSTV_SEGS_PER_LINE
-#define SSTV_SEGS_PER_LINE 2 /* 200 px segments */
-#endif
-#define SSTV_SEG_PX (SSTV_WIDTH / SSTV_SEGS_PER_LINE)
-#define SSTV_SEG_BYTES (SSTV_SEG_PX / 8) /* 25 */
-#define SSTV_NUM_SEGS (SSTV_HEIGHT * SSTV_SEGS_PER_LINE) /* 480 */
-#define SSTV_DATA_BYTES (2 + SSTV_SEG_BYTES + 1) /* 28 */
+/* Frames and blocks. Lines are coded losslessly (sstv_codec: raw, run lengths, or run
+ * lengths against the previous line) and packed, as many consecutive lines as fit, into
+ * a block of SSTV_BLOCK_PAYLOAD bytes: [line count][first line#][record]... Each block is split into
+ * SSTV_ILEAVE logical frames = [block index, 2 bytes][SSTV_PAYLOAD_BYTES][CRC-8] +
+ * SSTV_PARITY_BYTES Reed-Solomon parity (corrects PARITY/2 unknown or PARITY erased bytes),
+ * byte-interleaved into SSTV_ILEAVE physical frames so a noise burst hitting one physical
+ * frame is spread thinly. Photographs (dithered) hardly compress: 2 lines per block, 120
+ * blocks; line art and flat areas pack 4-8 lines per block and finish that much sooner. */
+#define SSTV_PAYLOAD_BYTES 26 /* 4 x 26 = 104: two raw lines (1 + 1 + 2 x 51) fit in a block */
+#define SSTV_DATA_BYTES (2 + SSTV_PAYLOAD_BYTES + 1) /* 29 */
 #ifndef SSTV_PARITY_BYTES
 #define SSTV_PARITY_BYTES 12
 #endif
-#define SSTV_FRAME_BYTES (SSTV_DATA_BYTES + SSTV_PARITY_BYTES) /* 40 */
-#define SSTV_FRAME_BITS (SSTV_FRAME_BYTES * 8) /* 320 */
+#define SSTV_FRAME_BYTES (SSTV_DATA_BYTES + SSTV_PARITY_BYTES) /* 41 */
+#define SSTV_FRAME_BITS (SSTV_FRAME_BYTES * 8) /* 328 */
 #ifndef SSTV_ILEAVE
 #define SSTV_ILEAVE 4
 #endif
-#define SSTV_NUM_BLOCKS (SSTV_NUM_SEGS / SSTV_ILEAVE) /* 120 */
+#define SSTV_BLOCK_PAYLOAD (SSTV_ILEAVE * SSTV_PAYLOAD_BYTES) /* 104 */
+#define SSTV_MAX_BLOCKS (SSTV_HEIGHT / 2) /* worst case: raw lines, 2 per block */
+#define SSTV_MAX_FRAMES (SSTV_MAX_BLOCKS * SSTV_ILEAVE)
 
 /* Modulation: 4-FSK, 2 bits per 4 ms symbol, square-wave tones.
  *
@@ -95,7 +94,7 @@
 #define SSTV_SYNC_MIN_MS 6 /* net dominant run (of the long sync detector) to accept a sync */
 
 /* Derived. */
-#define SSTV_SYMBOLS_PER_FRAME (SSTV_FRAME_BITS / SSTV_BITS_PER_SYMBOL) /* 160 */
+#define SSTV_SYMBOLS_PER_FRAME (SSTV_FRAME_BITS / SSTV_BITS_PER_SYMBOL) /* 164 */
 #define SSTV_LEADER_SYMBOLS (SSTV_LEADER_US / SSTV_SYMBOL_US)
-#define SSTV_PHYS_US (SSTV_SYNC_US + SSTV_SYMBOLS_PER_FRAME * SSTV_SYMBOL_US) /* 656000 per physical frame */
-#define SSTV_LINE_US (SSTV_PHYS_US * SSTV_SEGS_PER_LINE) /* 1312000 */
+#define SSTV_PHYS_US (SSTV_SYNC_US + SSTV_SYMBOLS_PER_FRAME * SSTV_SYMBOL_US) /* 672000 per physical frame */
+#define SSTV_LINE_US (SSTV_PHYS_US * SSTV_SEGS_PER_LINE) /* 1344000 */

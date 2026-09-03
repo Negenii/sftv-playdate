@@ -81,9 +81,9 @@ int sstv_mod_image(sstv_mod* m, const uint8_t* image_bits, int16_t* out, int cap
         if(n < 0) return -1;
         total += n;
     }
-    static uint8_t phys[SSTV_NUM_SEGS * SSTV_FRAME_BYTES];
-    sstv_build_physical(image_bits, phys);
-    for(int p = 0; p < SSTV_NUM_SEGS; p++) {
+    static uint8_t phys[SSTV_MAX_FRAMES * SSTV_FRAME_BYTES];
+    int frames = sstv_build_physical(image_bits, phys);
+    for(int p = 0; p < frames; p++) {
         int n = sstv_mod_frame(m, phys + p * SSTV_FRAME_BYTES, out + total, cap - total);
         if(n < 0) return -1;
         total += n;
@@ -92,6 +92,6 @@ int sstv_mod_image(sstv_mod* m, const uint8_t* image_bits, int16_t* out, int cap
 }
 
 int sstv_mod_image_capacity(float sample_rate) {
-    double us = (double)SSTV_LEADER_SYMBOLS * SSTV_SYMBOL_US + (double)SSTV_NUM_SEGS * SSTV_PHYS_US;
+    double us = (double)SSTV_LEADER_SYMBOLS * SSTV_SYMBOL_US + (double)SSTV_MAX_FRAMES * SSTV_PHYS_US;
     return (int)(us * (double)sample_rate / 1e6) + 64;
 }
