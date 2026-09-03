@@ -81,14 +81,15 @@ static int try_block(sstv_rx* rx) {
         for(int i = 0; i < SSTV_ILEAVE; i++) {
             if(!ok[i]) continue;
             const uint8_t* m = payload + i * SSTV_PAYLOAD_BYTES;
-            if(m[0] == SSTV_META_PREVIEW || m[0] == SSTV_META_TINY) {
-                bool tiny = m[0] == SSTV_META_TINY;
+            if(m[0] == SSTV_META_PREVIEW || m[0] == SSTV_META_TINY || m[0] == SSTV_META_SCHEDULE) {
+                int layer = m[0] == SSTV_META_TINY ? 0 : m[0] == SSTV_META_PREVIEW ? 1 : 2;
+                static const int totals[3] = {SSTV_TINY_BYTES, SSTV_PREVIEW_BYTES, SSTV_MAX_CODED_BLOCKS};
+                static const int chunks[3] = {SSTV_TINY_CHUNKS, SSTV_PREVIEW_CHUNKS, SSTV_SCHEDULE_CHUNKS};
                 int chunk = sstv_hdr_index(hdr[i]);
-                int total = tiny ? SSTV_TINY_BYTES : SSTV_PREVIEW_BYTES;
-                if(chunk >= (tiny ? SSTV_TINY_CHUNKS : SSTV_PREVIEW_CHUNKS)) continue;
-                int n = total - chunk * SSTV_PREVIEW_CHUNK;
+                if(chunk >= chunks[layer]) continue;
+                int n = totals[layer] - chunk * SSTV_PREVIEW_CHUNK;
                 if(n > SSTV_PREVIEW_CHUNK) n = SSTV_PREVIEW_CHUNK;
-                if(rx->preview_cb) rx->preview_cb(rx->ctx, tiny ? 0 : 1, chunk, n, m + 1);
+                if(rx->preview_cb) rx->preview_cb(rx->ctx, layer, chunk, n, m + 1);
             } else if(!named) {
                 /* START / END: the same payload in every frame, report once */
                 memcpy(name, m + SSTV_META_NAME_OFFSET, SSTV_NAME_MAX);

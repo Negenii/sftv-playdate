@@ -27,7 +27,9 @@ Everything below this section is the original design plus revision notes; the se
     without extension, up to 23 chars]; subtype 1 = END, same layout, sent as the last block; subtype 3 = TINY, one block (4 frames, index = chunk) right after START carrying a 40x20
     preview (10x12 block black counts, Bayer-dithered), on screen 0.67 s in; subtype 2 =
     PREVIEW, 20 frames carrying the 80x48 layer (5x5 blocks) that replaces it, progressive-JPEG
-    style. 6 blocks = 4 s (+5 % on the checker image, +1 % on a photo).
+    style. 6 blocks = 4 s (+5 % on the checker image, +1 % on a photo). Coded passes add one
+    block of subtype 4 = SCHEDULE (lines per coded block, one byte each, so coded passes are
+    capped at 100 blocks) so the receiver's sheet moves at the real line rate.
     The receiver starts a new image on START (saving the previous one), shows the preview
     filling in and uses it, 5x upscaled and drawn as a 50 % checker, as a placeholder under
     the picture until real lines replace it; on END it saves and announces.
@@ -54,15 +56,18 @@ Everything below this section is the original design plus revision notes; the se
 - **Transmitter**: TIM16 driven through the repetition counter and preloaded registers, one
   interrupt per symbol. The RGB LED follows the symbol on the speaker (off for silence, blue
   for tones, red during sync) from a 2 ms polling thread. The screen shows the picture as an
-  80x48 framed sheet (same dither as the transmitted preview) that slides up and leaves through
-  the top edge as lines go out, like paper fed into a shredder.
+  80x48 framed sheet on the left (same dither as the transmitted preview) that slides up and
+  leaves through the top edge as lines go out, like paper fed into a shredder, uncovering a
+  dolphin resting under a palm (firmware `L1_Waves` frame, GPL-3) and the word "Sent!". A
+  panel on the right shows state, frames, lines and a vertical progress bar.
 - **Playdate UI**: main menu with two rounded tiles, Receive (Flipper dolphin, GPL-3 sprite
   from the firmware's `L3_Hijack_radio` animation, to be replaced by the user's own drawing)
   and Gallery (thumbnail of the latest saved picture). Receive shows an intro scene: the
   dolphin, a drawn Playdate, and once START arrives a water spout from the blowhole to the
   console whose screen fills with the preview chunk by chunk. The picture itself is a sheet
   that crawls in from the bottom edge, covering the scene. Its position follows the pass
-  timeline announced in START (frames x 672 ms, lines spread evenly over the data frames), or
+  timeline announced in START (frames x 672 ms; raw: two lines per block, coded: the SCHEDULE
+  block's lines per block, evenly spread where the schedule is missing), or
   the highest received line if that is further, so lost frames never stall it and their rows
   show the dimmed preview placeholder until real lines arrive. END pulls the whole sheet in;
   if END is lost, the timeline plus 4 s finishes the pass. Whatever screen is up, START

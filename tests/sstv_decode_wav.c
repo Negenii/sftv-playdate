@@ -34,7 +34,7 @@ static int preview_chunks, tiny_chunks;
 static void on_preview(void* ctx, int layer, int chunk, int nbytes, const uint8_t* data) {
     (void)ctx; (void)chunk; (void)nbytes; (void)data;
     if(layer == 0) tiny_chunks++;
-    else preview_chunks++;
+    else if(layer == 1) preview_chunks++;
 }
 
 static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {

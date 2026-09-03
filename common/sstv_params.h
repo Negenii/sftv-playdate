@@ -24,6 +24,9 @@
  *                 receiver time the whole pass (every physical frame is SSTV_PHYS_US) and
  *                 animate independently of lost frames. Then, progressive-JPEG style, one
  *                 block of SSTV_META_TINY frames carries a 40x20 dithered preview (0.67 s) and
+ *                 SSTV_META_PREVIEW frames carry (see below). In coded passes one block of
+ *                 SSTV_META_SCHEDULE frames follows with the number of lines in each coded
+ *                 block, so the receiver can animate at the real line rate.
  *                 SSTV_META_PREVIEW frames carry
  *                 SSTV_PREVIEW_CHUNK bytes of an 80x48 dithered preview of the image, header
  *                 index = chunk number. They follow START so the receiver can show what is
@@ -50,7 +53,11 @@
 #define SSTV_PREVIEW_BYTES (SSTV_PREVIEW_LINE_BYTES * SSTV_PREVIEW_H) /* 480 */
 #define SSTV_PREVIEW_CHUNK (SSTV_PAYLOAD_BYTES - 1) /* 25 */
 #define SSTV_PREVIEW_CHUNKS ((SSTV_PREVIEW_BYTES + SSTV_PREVIEW_CHUNK - 1) / SSTV_PREVIEW_CHUNK) /* 20 = 5 blocks */
-#define SSTV_INTRO_FRAMES (SSTV_TINY_CHUNKS + SSTV_PREVIEW_CHUNKS) /* preview frames between START and data */
+#define SSTV_META_SCHEDULE 4 /* coded passes only: lines per block, one byte each, one block */
+#define SSTV_SCHEDULE_CHUNKS 4
+#define SSTV_MAX_CODED_BLOCKS (SSTV_SCHEDULE_CHUNKS * SSTV_PREVIEW_CHUNK) /* 100: the schedule must fit one block */
+#define SSTV_INTRO_FRAMES (SSTV_TINY_CHUNKS + SSTV_PREVIEW_CHUNKS) /* preview frames between START and data (raw) */
+#define SSTV_INTRO_FRAMES_CODED (SSTV_INTRO_FRAMES + SSTV_SCHEDULE_CHUNKS) /* coded passes add the schedule block */
 #define SSTV_DATA_BYTES (2 + SSTV_PAYLOAD_BYTES + 1) /* 29 */
 #ifndef SSTV_PARITY_BYTES
 #define SSTV_PARITY_BYTES 12
@@ -67,7 +74,7 @@
 #define SSTV_FT_SHIFT 14
 #define SSTV_INDEX_MASK 0x3FFF
 #define SSTV_MAX_BLOCKS (SSTV_HEIGHT / 2) /* coded worst case: raw lines, 2 per block */
-#define SSTV_MAX_FRAMES (SSTV_NUM_SEGS + 2 * SSTV_ILEAVE + SSTV_INTRO_FRAMES) /* raw: 480 + start, end, previews */
+#define SSTV_MAX_FRAMES (SSTV_NUM_SEGS + 2 * SSTV_ILEAVE + SSTV_INTRO_FRAMES) /* raw: 480 + start, end, previews (coded passes are shorter) */
 #define SSTV_CODED_MIN_GAIN 0.85f /* use coding only when frames <= 85% of raw */
 
 /* Modulation: 4-FSK, 2 bits per 4 ms symbol, square-wave tones.

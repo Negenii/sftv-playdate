@@ -12,8 +12,9 @@ block (0.67 s) and an 80x48 one in five (progressive, 4 s total) so the receiver
 lossless line codec saves at least 15 %, as CODED blocks; the transmitter picks per image. The
 receiver tracks the symbol clock from the sync period and flywheels through buried syncs. The
 Flipper LED follows the data (blue = tone, off = silence, red = sync); on its screen the
-picture is a framed sheet that slides out through the top edge as lines go out, and on the
-Playdate the same sheet crawls in from the bottom edge. Design and measurement notes:
+picture is a framed sheet that slides out through the top edge as lines go out (uncovering a
+resting dolphin), and on the Playdate the same sheet crawls in from the bottom edge at the real
+line rate (coded passes announce their per-block line schedule). Design and measurement notes:
 `docs/2026-09-03-sstv-flipper-playdate-design.md` (the "Current protocol"
 section on top is authoritative).
 
@@ -56,8 +57,8 @@ is saved as `Data/com.negenii.sstvrx/<name>.pbm` (same name overwrites). Gallery
 thumbnails, d-pad moves the cursor, A opens full screen, B goes back. A in receive mode clears
 the image, B returns to the menu, Up records 30 s of raw microphone audio to `rec.wav`.
 
-The dolphin sprite is cropped from the Flipper firmware's `L3_Hijack_radio` animation
-(GPL-3, flipperdevices/flipperzero-firmware) as a placeholder.
+The dolphin sprites are cropped from the Flipper firmware's `L3_Hijack_radio` and `L1_Waves`
+animations (GPL-3, flipperdevices/flipperzero-firmware) as placeholders.
 
 ## Debugging
 

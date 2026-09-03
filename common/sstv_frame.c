@@ -126,21 +126,26 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
 
     /* How many blocks would coding need? */
     int coded_blocks = 0;
+    uint8_t schedule[SSTV_MAX_BLOCKS];
+    memset(schedule, 0, sizeof schedule);
     for(int line = 0; line < SSTV_HEIGHT && coded_blocks < SSTV_MAX_BLOCKS;) {
         int n = sstv_block_pack(image_bits, line, payload);
         if(n <= 0) break;
+        schedule[coded_blocks] = (uint8_t)n;
         line += n;
         coded_blocks++;
     }
     int raw_frames = SSTV_NUM_SEGS;
-    bool use_coded = (float)(coded_blocks * SSTV_ILEAVE) <= SSTV_CODED_MIN_GAIN * (float)raw_frames;
+    bool use_coded = (float)(coded_blocks * SSTV_ILEAVE) <= SSTV_CODED_MIN_GAIN * (float)raw_frames &&
+                     coded_blocks <= SSTV_MAX_CODED_BLOCKS;
     if(coded) *coded = use_coded;
 
     int blocks = 0;
     /* Start meta block: [SSTV_META_START][total frames | coded flag][file name] in every
      * logical frame. Total = start + preview + data + end blocks. */
     int data_blocks = use_coded ? coded_blocks : SSTV_NUM_SEGS / SSTV_ILEAVE;
-    uint16_t total = (uint16_t)((1 + SSTV_INTRO_FRAMES / SSTV_ILEAVE + data_blocks + 1) * SSTV_ILEAVE);
+    int intro = use_coded ? SSTV_INTRO_FRAMES_CODED : SSTV_INTRO_FRAMES;
+    uint16_t total = (uint16_t)((1 + intro / SSTV_ILEAVE + data_blocks + 1) * SSTV_ILEAVE);
     uint16_t word = total | (use_coded ? SSTV_META_CODED_FLAG : 0);
     uint8_t meta[SSTV_PAYLOAD_BYTES];
     memset(meta, 0, SSTV_PAYLOAD_BYTES);
@@ -190,6 +195,16 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
     }
 
     if(use_coded) {
+        /* Schedule: lines per coded block, one byte each, 100 bytes in one block. */
+        for(int i = 0; i < SSTV_ILEAVE; i++) {
+            payload[0] = SSTV_META_SCHEDULE;
+            memcpy(payload + 1, schedule + i * SSTV_PREVIEW_CHUNK, SSTV_PREVIEW_CHUNK);
+            sstv_frame_pack(sstv_hdr(SSTV_FT_META, i), payload, logical + i * SSTV_FRAME_BYTES);
+        }
+        emit_block(logical, out, blocks);
+        for(int f = 0; f < SSTV_ILEAVE && lines_after; f++) lines_after[blocks * SSTV_ILEAVE + f] = 0;
+        blocks++;
+
         int line = 0;
         while(line < SSTV_HEIGHT) {
             int n = sstv_block_pack(image_bits, line, payload);

@@ -57,6 +57,8 @@ static bool tiny_have[SSTV_TINY_CHUNKS];
 static uint8_t preview_bits[SSTV_PREVIEW_BYTES];
 static bool preview_have[SSTV_PREVIEW_CHUNKS];
 static int preview_chunks; /* of SSTV_INTRO_FRAMES, both layers */
+static uint8_t schedule[SSTV_MAX_CODED_BLOCKS]; /* coded pass: lines per data block */
+static bool schedule_have[SSTV_SCHEDULE_CHUNKS];
 static LCDBitmap* preview_bitmap; /* 80x48 for the console icon in the intro scene */
 
 /* Screens. */
@@ -307,6 +309,13 @@ static void preview_refresh_bitmap(void) {
 
 static void on_preview(void* ctx, int layer, int chunk, int nbytes, const uint8_t* data) {
     (void)ctx;
+    if(layer == 2) {
+        if(chunk < 0 || chunk >= SSTV_SCHEDULE_CHUNKS) return;
+        memcpy(schedule + chunk * SSTV_PREVIEW_CHUNK, data, (size_t)nbytes);
+        schedule_have[chunk] = true;
+        last_data_ms = pd->system->getCurrentTimeMilliseconds();
+        return;
+    }
     if(layer == 0) {
         if(chunk < 0 || chunk >= SSTV_TINY_CHUNKS) return;
         memcpy(tiny_bits + chunk * SSTV_PREVIEW_CHUNK, data, (size_t)nbytes);
@@ -345,6 +354,8 @@ static void clear_image(void) {
     memset(preview_have, 0, sizeof preview_have);
     memset(tiny_bits, 0, sizeof tiny_bits);
     memset(tiny_have, 0, sizeof tiny_have);
+    memset(schedule, 0, sizeof schedule);
+    memset(schedule_have, 0, sizeof schedule_have);
     preview_chunks = 0;
     if(preview_bitmap) preview_refresh_bitmap();
     segs_done = 0;
@@ -367,17 +378,32 @@ static void finish(unsigned now) {
 }
 
 /* Lines the transmitter has sent by now according to the announced timeline: the START block
- * ended at started_ms, then 20 preview frames, then the data frames (lines spread evenly over
- * them), then the END block. Drives the sheet so lost frames do not stall it. */
+ * ended at started_ms, then the preview frames (and, coded, the schedule block), then the data
+ * frames, then the END block. Raw passes carry two lines per block; coded passes follow the
+ * schedule (lines per block) where it arrived and spread lines evenly where it did not.
+ * Drives the sheet so lost frames do not stall it. */
 static int expected_lines(unsigned now) {
     if(!started || total_frames <= 0) return 0;
-    float frames = (float)(now - started_ms) * 1000.0f / (float)SSTV_PHYS_US;
-    float data_frames = (float)(total_frames - 2 * SSTV_ILEAVE - SSTV_INTRO_FRAMES);
+    int intro = rx.coded ? SSTV_INTRO_FRAMES_CODED : SSTV_INTRO_FRAMES;
+    int data_frames = total_frames - 2 * SSTV_ILEAVE - intro;
     if(data_frames <= 0) return 0;
-    float f = (frames - (float)SSTV_INTRO_FRAMES) / data_frames;
-    if(f < 0) f = 0;
-    if(f > 1) f = 1;
-    return (int)(f * (float)SSTV_HEIGHT);
+    float frames = (float)(now - started_ms) * 1000.0f / (float)SSTV_PHYS_US - (float)intro;
+    if(frames <= 0) return 0;
+    if(frames >= (float)data_frames) return SSTV_HEIGHT;
+    int blocks = data_frames / SSTV_ILEAVE;
+    float fblock = frames / (float)SSTV_ILEAVE; /* data blocks elapsed, fractional */
+    int b = (int)fblock;
+    float frac = fblock - (float)b;
+    float lines = 0;
+    for(int i = 0; i <= b && i < blocks; i++) {
+        float n;
+        if(!rx.coded) n = (float)SSTV_HEIGHT / (float)blocks;
+        else if(i < SSTV_MAX_CODED_BLOCKS && schedule_have[i / SSTV_PREVIEW_CHUNK]) n = (float)schedule[i];
+        else n = (float)SSTV_HEIGHT / (float)blocks;
+        lines += (i < b) ? n : n * frac;
+    }
+    if(lines > (float)SSTV_HEIGHT) lines = (float)SSTV_HEIGHT;
+    return (int)lines;
 }
 
 static void on_meta(void* ctx, const char* name, bool is_end, int frames, bool coded) {
@@ -577,7 +603,11 @@ static void draw_menu(void) {
         pd->graphics->fillRoundRect(tx[i], ty, tile_w, tile_h, 14, kColorBlack);
         pd->graphics->fillRoundRect(tx[i] + (sel ? 3 : 1), ty + (sel ? 3 : 1), tile_w - (sel ? 6 : 2), tile_h - (sel ? 6 : 2), sel ? 11 : 13, kColorWhite);
         if(i == 0) {
-            if(dolphin) pd->graphics->drawBitmap(dolphin, tx[i] + (tile_w - 124) / 2, ty + 6, kBitmapUnflipped);
+            if(dolphin) {
+                pd->graphics->setDrawMode(kDrawModeInverted);
+                pd->graphics->drawBitmap(dolphin, tx[i] + (tile_w - 124) / 2, ty + 6, kBitmapUnflipped);
+                pd->graphics->setDrawMode(kDrawModeCopy);
+            }
         } else if(menu_thumb) {
             pd->graphics->drawBitmap(menu_thumb, tx[i] + (tile_w - THUMB_W) / 2, ty + 38, kBitmapUnflipped);
             pd->graphics->drawRoundRect(tx[i] + (tile_w - THUMB_W) / 2 - 1, ty + 37, THUMB_W + 2, THUMB_H + 2, THUMB_R, 1, kColorBlack);
@@ -614,7 +644,11 @@ static void draw_scene(void) {
     pd->graphics->clear(kColorWhite);
     const int dx = 24, dy = 60; /* dolphin */
     const int cx = 256, cy = 84; /* console */
-    if(dolphin) pd->graphics->drawBitmap(dolphin, dx, dy, kBitmapUnflipped);
+    if(dolphin) {
+        pd->graphics->setDrawMode(kDrawModeInverted);
+        pd->graphics->drawBitmap(dolphin, dx, dy, kBitmapUnflipped);
+        pd->graphics->setDrawMode(kDrawModeCopy);
+    }
     draw_console(cx, cy, started ? preview_bitmap : NULL);
     use_font(font_ui);
     char t[64], nm[NAME_CAP];

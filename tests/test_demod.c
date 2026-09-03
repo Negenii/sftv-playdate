@@ -41,12 +41,16 @@ static void on_meta(void* ctx, const char* name, bool is_end, int total_frames, 
 
 static uint8_t preview_got[SSTV_PREVIEW_BYTES];
 static uint8_t tiny_got[SSTV_TINY_BYTES];
-static int preview_chunks, tiny_chunks;
+static uint8_t schedule_got[SSTV_MAX_CODED_BLOCKS];
+static int preview_chunks, tiny_chunks, schedule_chunks;
 static void on_preview(void* ctx, int layer, int chunk, int nbytes, const uint8_t* data) {
     (void)ctx;
     if(layer == 0) {
         memcpy(tiny_got + chunk * SSTV_PREVIEW_CHUNK, data, (size_t)nbytes);
         tiny_chunks++;
+    } else if(layer == 2) {
+        memcpy(schedule_got + chunk * SSTV_PREVIEW_CHUNK, data, (size_t)nbytes);
+        schedule_chunks++;
     } else {
         memcpy(preview_got + chunk * SSTV_PREVIEW_CHUNK, data, (size_t)nbytes);
         preview_chunks++;
@@ -217,8 +221,17 @@ static void test_full_image_clean(void) {
     int n = silence_samples(sr, 50) + sstv_mod_image(&m2, image, s + silence_samples(sr, 50), cap - 5000);
     sstv_demod d;
     sstv_demod_init(&d, sr, on_phys, c2);
+    schedule_chunks = 0;
     feed_chunked(&d, s, n);
     CHECK_EQ_INT(lines_matching(c2, image), SSTV_HEIGHT);
+    /* the schedule arrived and describes exactly the data blocks */
+    CHECK_EQ_INT(schedule_chunks, SSTV_SCHEDULE_CHUNKS);
+    int sum = 0, nblocks = 0;
+    for(int i = 0; i < SSTV_MAX_CODED_BLOCKS; i++) { sum += schedule_got[i]; if(schedule_got[i]) nblocks++; }
+    CHECK_EQ_INT(sum, SSTV_HEIGHT);
+    CHECK_EQ_INT(nblocks * SSTV_ILEAVE, frames - 2 * SSTV_ILEAVE - SSTV_INTRO_FRAMES_CODED);
+    CHECK(last_coded);
+    CHECK_EQ_INT(last_total, frames);
     free(s);
     free(phys);
     free(c2);

@@ -94,7 +94,7 @@ int main(void) {
     int frames = sstv_build_physical(image, "white.pbm", phys, lines_after, &coded);
     CHECK(coded);
     CHECK_EQ_INT(frames % SSTV_ILEAVE, 0);
-    CHECK(frames <= 88 + SSTV_INTRO_FRAMES);
+    CHECK(frames <= 88 + SSTV_INTRO_FRAMES_CODED);
     CHECK_EQ_INT(lines_after[frames - 1], SSTV_HEIGHT);
     /* meta block first: name in every logical frame */
     sstv_deinterleave(phys, back);
@@ -106,6 +106,22 @@ int main(void) {
         int word = pl[i * SSTV_PAYLOAD_BYTES + 1] | (pl[i * SSTV_PAYLOAD_BYTES + 2] << 8);
         CHECK_EQ_INT(word, frames | SSTV_META_CODED_FLAG); /* announces the pass length and mode */
         CHECK(memcmp(pl + i * SSTV_PAYLOAD_BYTES + SSTV_META_NAME_OFFSET, "white.pbm", 9) == 0);
+    }
+    /* schedule block after the previews: lines per coded block, summing to the height */
+    {
+        sstv_deinterleave(phys + (SSTV_ILEAVE + SSTV_INTRO_FRAMES) * SSTV_FRAME_BYTES, back);
+        int sum = 0, nblocks = 0;
+        for(int i = 0; i < SSTV_ILEAVE; i++) {
+            CHECK(sstv_frame_unpack(back + i * SSTV_FRAME_BYTES, &blk, pl));
+            CHECK_EQ_INT(sstv_hdr_type(blk), SSTV_FT_META);
+            CHECK_EQ_INT(pl[0], SSTV_META_SCHEDULE);
+            for(int k = 1; k <= SSTV_PREVIEW_CHUNK; k++) {
+                sum += pl[k];
+                if(pl[k]) nblocks++;
+            }
+        }
+        CHECK_EQ_INT(sum, SSTV_HEIGHT);
+        CHECK_EQ_INT(nblocks * SSTV_ILEAVE, frames - 2 * SSTV_ILEAVE - SSTV_INTRO_FRAMES_CODED);
     }
     /* preview: a white image gives an all-zero preview, chunks 0..19 follow the start block */
     {

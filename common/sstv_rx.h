@@ -14,9 +14,10 @@ extern "C" {
  *             raw mode, a whole line in coded mode);
  *   meta_cb:  start (is_end false) or end (is_end true) of a transmission: file name, total
  *             physical frames of the pass (each SSTV_PHYS_US long) and whether it is coded;
- *   preview_cb: one preview chunk: layer 0 = 40x20 tiny (SSTV_TINY_BYTES), layer 1 = 80x48
- *             (SSTV_PREVIEW_BYTES); `nbytes` bytes at offset chunk * SSTV_PREVIEW_CHUNK of that
- *             layer's bitmap (may be NULL). */
+ *   preview_cb: one meta data chunk: layer 0 = 40x20 tiny preview (SSTV_TINY_BYTES), layer 1 =
+ *             80x48 preview (SSTV_PREVIEW_BYTES), layer 2 = schedule (lines per coded block,
+ *             SSTV_MAX_CODED_BLOCKS bytes); `nbytes` bytes at offset chunk * SSTV_PREVIEW_CHUNK
+ *             of that layer (may be NULL). */
 typedef void (*sstv_pixel_cb)(void* ctx, uint16_t line, int x_byte, int nbytes, const uint8_t* pixels);
 typedef void (*sstv_meta_cb)(void* ctx, const char* name, bool is_end, int total_frames, bool coded);
 typedef void (*sstv_preview_cb)(void* ctx, int layer, int chunk, int nbytes, const uint8_t* data);
