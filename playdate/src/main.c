@@ -28,6 +28,8 @@ static int distinct_segs;
 static int good_segs;
 static unsigned last_seg_ms;
 static int mic_state; /* 0 asking, 1 allowed, -1 denied */
+static unsigned led_frame_ms; /* virtual LED: last physical frame time */
+static unsigned led_block_ms; /* last decoded block time */
 static bool show_status = true;
 
 /* Debug recording: Up starts a REC_SECONDS capture of the raw mic stream, saved as
@@ -71,7 +73,10 @@ static void on_seg(void* ctx, uint16_t seg, const uint8_t* pixels, bool ok, int 
 
 static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
     (void)ctx;
+    led_frame_ms = pd->system->getCurrentTimeMilliseconds();
+    int before = rx.blocks_ok;
     sstv_rx_phys(&rx, frame, soft);
+    if(rx.blocks_ok != before) led_block_ms = led_frame_ms;
 }
 
 static void clear_image(void) {
@@ -156,6 +161,20 @@ static void draw_status(void) {
         }
     }
     pd->graphics->drawText(text, strlen(text), kASCIIEncoding, 4, y + 3);
+
+    /* virtual LED (the Playdate has no user LED): a dot that lights for 150 ms on every
+     * received frame and turns into a ring for 400 ms when a block decodes. */
+    {
+        unsigned now = pd->system->getCurrentTimeMilliseconds();
+        int cx = LCD_COLUMNS - 96, cy = y + 10;
+        if(now - led_block_ms < 400) {
+            pd->graphics->drawEllipse(cx - 6, cy - 6, 12, 12, 3, 0.0f, 0.0f, kColorBlack);
+        } else if(now - led_frame_ms < 150) {
+            pd->graphics->fillEllipse(cx - 5, cy - 5, 10, 10, 0.0f, 0.0f, kColorBlack);
+        } else {
+            pd->graphics->drawEllipse(cx - 5, cy - 5, 10, 10, 1, 0.0f, 0.0f, kColorBlack);
+        }
+    }
 
     /* level bar, right side */
     int bar_w = 80, bar_x = LCD_COLUMNS - bar_w - 4, bar_y = y + 6;
