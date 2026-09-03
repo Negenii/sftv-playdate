@@ -24,3 +24,6 @@ ULIBDIR =
 ULIBS =
 
 include $(SDK)/C_API/buildsupport/common.mk
+
+# Rebuild everything when any header changes (common.mk only tracks .c files)
+$(OBJS): $(wildcard ../common/*.h) $(wildcard src/*.h)

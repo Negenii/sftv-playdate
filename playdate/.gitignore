@@ -1,3 +1,4 @@
 *.pdx/
 build/
 Source/pdex.*
+common/
