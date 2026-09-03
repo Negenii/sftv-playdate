@@ -40,9 +40,12 @@ static bool rec_saved;
 
 /* ---- audio thread ---- */
 
+static volatile unsigned mic_dropped; /* samples the ring buffer could not take */
+
 static int mic_cb(void* context, int16_t* data, int len) {
     (void)context;
-    mic_ring_write(&ring, data, len);
+    int stored = mic_ring_write(&ring, data, len);
+    if(stored < len) mic_dropped += (unsigned)(len - stored);
     return 1;
 }
 
@@ -147,8 +150,9 @@ static void draw_status(void) {
             snprintf(text, sizeof text, "signal lost  good %d/%d  noisy %d%s", good_segs, SSTV_NUM_SEGS, noisy,
                      rec_saved ? "  (rec.wav saved)" : "");
         } else {
-            snprintf(text, sizeof text, "good %d/%d  noisy %d  rs %d  fw %d  %s", good_segs, SSTV_NUM_SEGS, noisy,
-                     rx.rs_corrected, demod.flywheel_frames, tone);
+            snprintf(text, sizeof text, "good %d/%d noisy %d rs %d fw %d/%d st%d drop %u %s", good_segs,
+                     SSTV_NUM_SEGS, noisy, rx.rs_corrected, demod.flywheel_frames, demod.flywheel_left,
+                     (int)demod.state, mic_dropped, tone);
         }
     }
     pd->graphics->drawText(text, strlen(text), kASCIIEncoding, 4, y + 3);

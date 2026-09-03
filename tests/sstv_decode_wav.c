@@ -59,9 +59,9 @@ int main(int argc, char** argv) {
     if(argc > 4) d.edge_adjust = (float)atof(argv[4]);
     sstv_demod_feed(&d, s, n);
 
-    printf("phys_frames=%d blocks=%d segs_ok=%d segs_bad=%d good=%d/%d distinct=%d rs_fixed=%d sample_rate=%d\n",
-           d.frames, c->rx.blocks_ok, c->rx.segs_ok, c->rx.segs_bad, c->good, SSTV_NUM_SEGS, c->distinct,
-           c->rx.rs_corrected, sr);
+    printf("phys_frames=%d flywheel=%d blocks=%d segs_ok=%d segs_bad=%d good=%d/%d distinct=%d rs_fixed=%d sample_rate=%d\n",
+           d.frames, d.flywheel_frames, c->rx.blocks_ok, c->rx.segs_ok, c->rx.segs_bad, c->good, SSTV_NUM_SEGS,
+           c->distinct, c->rx.rs_corrected, sr);
 
     FILE* f = fopen(argv[2], "wb");
     if(!f) {

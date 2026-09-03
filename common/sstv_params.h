@@ -51,7 +51,9 @@
 #define SSTV_TONE2_HZ 4000
 #define SSTV_TONE3_HZ 4500
 #define SSTV_TONES_INIT {SSTV_TONE0_HZ, SSTV_TONE1_HZ, SSTV_TONE2_HZ, SSTV_TONE3_HZ}
-#define SSTV_FSYNC_HZ 5000 /* frame sync; 16 ms is long enough for its slower tail */
+#ifndef SSTV_FSYNC_HZ
+#define SSTV_FSYNC_HZ 5500 /* frame sync: 500 Hz grid, no 2x/3x relation, 1.3 ms decay (5000 Hz rang for 5 ms and blurred the sync edge) */
+#endif
 
 /* Timing, microseconds. Every duration is a whole number of cycles of its tone. */
 #ifndef SSTV_SYMBOL_US

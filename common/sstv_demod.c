@@ -138,25 +138,11 @@ static void decide_symbol(sstv_demod* d) {
 
 #define SSTV_FLYWHEEL_FRAMES 3
 
-/* Starts a frame whose first data sample is at t0. */
+/* Starts a frame whose first data sample is at t0. real_edge: a sync burst was seen (re-arms
+ * the flywheel). */
 static void start_frame(sstv_demod* d, double t0, bool real_edge) {
     const double symbols = (double)SSTV_PHYS_US / (double)SSTV_SYMBOL_US;
     if(real_edge) {
-        /* Clock tracking: consecutive syncs are exactly one physical frame apart in
-         * transmitter time, so the interval measures the symbol length in our samples
-         * (absorbing both devices' clock errors, ~0.1 % in practice). Missed frames give
-         * integer multiples; anything else is ignored. */
-        if(d->last_edge >= 0.0) {
-            double interval = t0 - d->last_edge;
-            double nominal = (double)d->bit_len_nominal * symbols;
-            double r = interval / nominal;
-            int k = (int)(r + 0.5);
-            if(k >= 1 && k <= 4 && r > k * 0.98 && r < k * 1.02) {
-                float measured = (float)(interval / (k * symbols));
-                d->bit_len = 0.5f * d->bit_len + 0.5f * measured;
-            }
-        }
-        d->last_edge = t0;
         d->flywheel_left = SSTV_FLYWHEEL_FRAMES;
     } else {
         d->flywheel_left--;
@@ -168,6 +154,40 @@ static void start_frame(sstv_demod* d, double t0, bool real_edge) {
     memset(d->frame, 0, sizeof d->frame);
     d->sync_run = 0; /* a resync during DATA needs a fresh burst */
     d->state = SSTV_DEMOD_DATA;
+}
+
+/* A sync->data crossover was measured at t_meas. Second-order tracking loop: the frame is
+ * started between the prediction and the measurement (halving crossover jitter), and the
+ * symbol clock is nudged by the remaining error, so both devices' clock offsets and the
+ * jitter of the edge estimate are absorbed instead of accumulating. */
+static void on_measured_edge(sstv_demod* d, double t_meas) {
+    const double symbols = (double)SSTV_PHYS_US / (double)SSTV_SYMBOL_US;
+    if(d->predicted_edge < 0.0 || d->flywheel_left <= 0) {
+        /* Not locked: take the edge as is; a second edge gives the first clock estimate. */
+        if(d->last_edge >= 0.0) {
+            double interval = t_meas - d->last_edge;
+            double nominal = (double)d->bit_len_nominal * symbols;
+            double r = interval / nominal;
+            int k = (int)(r + 0.5);
+            if(k >= 1 && k <= 4 && r > k * 0.98 && r < k * 1.02) {
+                d->bit_len = (float)(interval / (k * symbols));
+            }
+        }
+        d->last_edge = t_meas;
+        start_frame(d, t_meas, true);
+        return;
+    }
+    double err = t_meas - d->predicted_edge;
+    if(err > 1.5 * (double)d->bit_len || err < -1.5 * (double)d->bit_len) {
+        /* Far from where a sync can be: noise shaped like the sync tone. Keep the prediction
+         * but treat the burst as seen. */
+        start_frame(d, d->predicted_edge, true);
+        return;
+    }
+    double t0 = d->predicted_edge + 0.5 * err;
+    d->bit_len += (float)(0.1 * err / symbols);
+    d->last_edge = t0;
+    start_frame(d, t0, true);
 }
 
 /* Flywheel: a sync buried in noise is replaced by the predicted frame start, so only the
@@ -230,19 +250,7 @@ void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n) {
             /* The window [n-W+1, n] straddles the sync->data edge; energies cross when it
              * is half in each, so the first data sample is about n - W/2. */
             if(es < edata) {
-                double t0 = (double)d->n - (double)W / 2.0 + (double)d->edge_adjust;
-                /* Once locked, a crossover that disagrees with the prediction by more than a
-                 * third of a symbol is noise on the sync edge: trust the prediction. */
-                if(d->predicted_edge >= 0.0 && d->flywheel_left > 0) {
-                    double err = t0 - d->predicted_edge;
-                    if(err < 0) err = -err;
-                    if(err > 0.3 * (double)d->bit_len) {
-                        start_frame(d, d->predicted_edge, false);
-                        d->flywheel_left = SSTV_FLYWHEEL_FRAMES; /* the sync itself was seen */
-                        break;
-                    }
-                }
-                start_frame(d, t0, true);
+                on_measured_edge(d, (double)d->n - (double)W / 2.0 + (double)d->edge_adjust);
             } else {
                 maybe_flywheel(d);
             }
