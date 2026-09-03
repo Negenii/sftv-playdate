@@ -68,9 +68,12 @@ Everything below this section is the original design plus revision notes; the se
   hints with the firmware OK and Back icons. Pictures are picked in a tile grid (three 40x20
   thumbnails per page, the same dither as the tiny preview, Left/Right/Up/Down, OK opens, Back
   exits) instead of the system file browser.
-- **Playdate UI**: main menu with two rounded tiles, Receive (Flipper dolphin, GPL-3 sprite
-  from the firmware's `L3_Hijack_radio` animation, to be replaced by the user's own drawing)
-  and Gallery (thumbnail of the latest saved picture). Receive shows an intro scene: the
+- **Playdate UI**: main menu ("RX" pill + "Slow Flipper TV", a microphone switch pill reachable
+  with Up) with two rounded tiles, each an icon band over a label band: Receive (Flipper dolphin,
+  GPL-3 sprite from the firmware's `L3_Hijack_radio` animation reduced to its outline, drawn at
+  2x; to be replaced by the user's own drawing) and Gallery (a stack of pictures with the latest
+  thumbnail on top). In the intro scene the dolphin is rendered the way the Flipper's LCD shows
+  it: every lit sprite pixel a 2x2 dot on a 3 px grid with transparent gutters (186x192). Receive shows an intro scene: the
   dolphin, a drawn Playdate, and once START arrives a water spout from the blowhole to the
   console whose screen fills with the preview chunk by chunk. The picture itself is a sheet
   that crawls in from the bottom edge, covering the scene. Its position follows the pass

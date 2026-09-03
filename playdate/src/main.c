@@ -23,7 +23,12 @@ static int image_rowbytes;
 static LCDFont* font_ui; /* Roobert 10 Bold: panel, labels */
 static LCDFont* font_num; /* Roobert 9 Mono Condensed: counters */
 static LCDFont* font_big; /* Roobert 20 Medium: titles */
-static LCDBitmap* dolphin; /* 124x128, faces right */
+static LCDBitmap* dolphin_src; /* 62x64 Flipper sprite, white = ink (filled body) */
+static LCDBitmap* dolphin_lines_src; /* same sprite reduced to its outline */
+static LCDBitmap* dolphin; /* scene: LCD-style rendering, 2x2 dots on a 3 px pitch, 186x192 */
+static LCDBitmap* dolphin_tile; /* menu tile: outline at 2x, 124x128 */
+#define LCD_PITCH 3
+#define LCD_DOT 2
 static LCDBitmap* console; /* 140x118 Playdate silhouette, screen interior at (7,7) 88x53 */
 static LCDBitmap* thumb_mask; /* rounded corners for thumbnails */
 
@@ -545,6 +550,23 @@ static void fit_text(char* out, size_t cap, const char* in, int max_w) {
     }
 }
 
+/* Renders a Flipper sprite (white = ink) the way its LCD shows it: every lit pixel a dot x dot
+ * square on a `pitch` grid, gutters and unlit pixels transparent. pitch == dot gives a plain
+ * integer upscale. */
+static LCDBitmap* render_lcd(LCDBitmap* src, int pitch, int dot) {
+    int w, h, rb;
+    uint8_t* data;
+    pd->graphics->getBitmapData(src, &w, &h, &rb, NULL, &data);
+    LCDBitmap* out = pd->graphics->newBitmap(w * pitch, h * pitch, kColorClear);
+    pd->graphics->pushContext(out);
+    for(int y = 0; y < h; y++)
+        for(int x = 0; x < w; x++)
+            if(data[y * rb + (x >> 3)] & (0x80 >> (x & 7)))
+                pd->graphics->fillRect(x * pitch, y * pitch, dot, dot, kColorBlack);
+    pd->graphics->popContext();
+    return out;
+}
+
 static void draw_led(void) {
     /* Virtual LED in the top-right corner: filled on every received frame, ring when a block
      * decodes, outline otherwise. Always visible. */
@@ -617,45 +639,55 @@ static void draw_menu(void) {
     const char* mic = mic_state < 0 ? "mic denied" : mic_state == 0 ? "mic?" : mic_enabled ? "mic on" : "mic off";
     draw_pill(mic, LCD_COLUMNS - 32 - text_width(mic) - 12, 10, menu_focus == 1);
 
-    const int tile_w = 170, tile_h = 170, ty = 52;
-    const int tx[2] = {20, LCD_COLUMNS - 20 - tile_w};
+    /* two tiles: an icon band and a label band under a separator */
+    const int tile_w = 190, tile_h = 186, ty = 46, label_h = 40;
+    const int tx[2] = {5, LCD_COLUMNS - 5 - tile_w};
     const char* labels[2] = {"Receive", "Gallery"};
     for(int i = 0; i < 2; i++) {
         bool sel = i == menu_index && menu_focus == 0;
+        int bw = sel ? 3 : 1; /* border */
         pd->graphics->fillRoundRect(tx[i], ty, tile_w, tile_h, 14, kColorBlack);
-        pd->graphics->fillRoundRect(tx[i] + (sel ? 3 : 1), ty + (sel ? 3 : 1), tile_w - (sel ? 6 : 2), tile_h - (sel ? 6 : 2), sel ? 11 : 13, kColorWhite);
+        pd->graphics->fillRoundRect(tx[i] + bw, ty + bw, tile_w - 2 * bw, tile_h - 2 * bw, 14 - bw, kColorWhite);
+        int band_h = tile_h - label_h; /* icon band height */
         if(i == 0) {
-            if(dolphin) {
-                pd->graphics->setDrawMode(kDrawModeInverted);
-                pd->graphics->drawBitmap(dolphin, tx[i] + (tile_w - 124) / 2, ty + 6, kBitmapUnflipped);
-                pd->graphics->setDrawMode(kDrawModeCopy);
+            if(dolphin_tile) {
+                int iw, ih, irb;
+                uint8_t* idata;
+                pd->graphics->getBitmapData(dolphin_tile, &iw, &ih, &irb, NULL, &idata);
+                pd->graphics->drawBitmap(dolphin_tile, tx[i] + (tile_w - iw) / 2, ty + (band_h - ih) / 2 + 2, kBitmapUnflipped);
             }
-        } else if(menu_thumb) {
-            pd->graphics->drawBitmap(menu_thumb, tx[i] + (tile_w - THUMB_W) / 2, ty + 38, kBitmapUnflipped);
-            pd->graphics->drawRoundRect(tx[i] + (tile_w - THUMB_W) / 2 - 1, ty + 37, THUMB_W + 2, THUMB_H + 2, THUMB_R, 1, kColorBlack);
         } else {
-            /* empty gallery: a stack of frames */
-            for(int k = 2; k >= 0; k--) {
-                int ox = tx[i] + (tile_w - 80) / 2 + k * 6, oy = ty + 40 + k * 6;
-                pd->graphics->fillRoundRect(ox, oy, 80, 48, 5, kColorWhite);
-                pd->graphics->drawRoundRect(ox, oy, 80, 48, 5, 1, kColorBlack);
+            /* stack of pictures, the latest on top */
+            int sx = tx[i] + (tile_w - THUMB_W) / 2 - 6, sy = ty + (band_h - THUMB_H) / 2 - 6;
+            for(int k = 2; k >= 1; k--) {
+                pd->graphics->fillRoundRect(sx + k * 6, sy + k * 6, THUMB_W, THUMB_H, THUMB_R, kColorWhite);
+                pd->graphics->drawRoundRect(sx + k * 6, sy + k * 6, THUMB_W, THUMB_H, THUMB_R, 1, kColorBlack);
             }
+            pd->graphics->fillRoundRect(sx, sy, THUMB_W, THUMB_H, THUMB_R, kColorWhite);
+            if(menu_thumb) pd->graphics->drawBitmap(menu_thumb, sx, sy, kBitmapUnflipped);
+            pd->graphics->drawRoundRect(sx, sy, THUMB_W, THUMB_H, THUMB_R, 1, kColorBlack);
         }
+        /* label band */
+        int ly = ty + band_h;
+        pd->graphics->drawLine(tx[i] + bw, ly, tx[i] + tile_w - bw, ly, 1, kColorBlack);
         use_font(font_big);
         if(sel) {
-            int w = text_width(labels[i]) + 20, h = 30;
-            int px = tx[i] + (tile_w - w) / 2, py = ty + tile_h - 40;
-            pd->graphics->fillRoundRect(px, py, w, h, 15, kColorBlack);
-            draw_text_white(labels[i], px + 10, py + 3);
+            pd->graphics->fillRect(tx[i] + bw, ly + 1, tile_w - 2 * bw, label_h - bw - 1, kColorBlack);
+            pd->graphics->fillRoundRect(tx[i] + bw, ly - 8, tile_w - 2 * bw, label_h + 8 - bw, 14 - bw, kColorBlack);
+            pd->graphics->fillRect(tx[i] + bw, ly - 8, tile_w - 2 * bw, 8, kColorWhite);
+            pd->graphics->drawLine(tx[i] + bw, ly, tx[i] + tile_w - bw, ly, 1, kColorBlack);
+            pd->graphics->setDrawMode(kDrawModeFillWhite);
+            draw_text_centered(labels[i], tx[i] + tile_w / 2, ly + (label_h - 20) / 2 - 4);
+            pd->graphics->setDrawMode(kDrawModeCopy);
         } else {
-            draw_text_centered(labels[i], tx[i] + tile_w / 2, ty + tile_h - 37);
+            draw_text_centered(labels[i], tx[i] + tile_w / 2, ly + (label_h - 20) / 2 - 4);
         }
     }
     use_font(font_ui);
     if(gallery_count > 0) {
         char t[32];
         snprintf(t, sizeof t, "%d saved", gallery_count);
-        draw_text_centered(t, tx[1] + tile_w / 2, ty + tile_h + 4);
+        draw_pill(t, tx[1] + tile_w - 12 - text_width(t) - 12, ty + 10, false);
     }
 }
 
@@ -664,31 +696,31 @@ static void draw_menu(void) {
 static void draw_scene(void) {
     unsigned now = pd->system->getCurrentTimeMilliseconds();
     pd->graphics->clear(kColorWhite);
-    const int dx = 24, dy = 60; /* dolphin */
-    const int cx = 236, cy = 56; /* console */
-    if(dolphin) {
-        pd->graphics->setDrawMode(kDrawModeInverted);
-        pd->graphics->drawBitmap(dolphin, dx, dy, kBitmapUnflipped);
-        pd->graphics->setDrawMode(kDrawModeCopy);
-    }
+    const int dx = 14, dy = 34; /* dolphin, 186x192 */
+    const int cx = 236, cy = 40; /* console */
+    const int text_cx = cx + CONSOLE_W / 2; /* texts sit under the console */
+    if(dolphin) pd->graphics->drawBitmap(dolphin, dx, dy, kBitmapUnflipped);
     draw_console(cx, cy, started ? preview_bitmap : NULL);
     use_font(font_ui);
     char t[64], nm[NAME_CAP];
     if(started) {
-        draw_spout(dx + 78, dy + 14, cx + CONSOLE_SCREEN_X + CONSOLE_SCREEN_W / 2, cy + CONSOLE_SCREEN_Y + CONSOLE_SCREEN_H / 2, (float)(now % 1200) / 1200.0f);
+        draw_spout(dx + 117, dy + 21, cx + CONSOLE_SCREEN_X + CONSOLE_SCREEN_W / 2, cy + CONSOLE_SCREEN_Y + CONSOLE_SCREEN_H / 2, (float)(now % 1200) / 1200.0f);
         display_name(nm, sizeof nm, current_name);
         use_font(font_big);
-        draw_text_centered(nm, LCD_COLUMNS / 2, 190);
+        fit_text(t, sizeof t, nm, 160);
+        draw_text_centered(t, text_cx, 172);
         use_font(font_ui);
         int secs = total_frames > 0 ? (int)((unsigned)total_frames * (SSTV_PHYS_US / 1000) / 1000) : 0;
-        snprintf(t, sizeof t, "%s, %d:%02d, preview %d/%d", rx.coded ? "compressed" : "raw", secs / 60, secs % 60, preview_chunks, SSTV_INTRO_FRAMES);
-        draw_text_centered(t, LCD_COLUMNS / 2, 218);
+        snprintf(t, sizeof t, "%s, %d:%02d", rx.coded ? "compressed" : "raw", secs / 60, secs % 60);
+        draw_text_centered(t, text_cx, 200);
+        snprintf(t, sizeof t, "preview %d/%d", preview_chunks, SSTV_INTRO_FRAMES);
+        draw_text_centered(t, text_cx, 218);
     } else {
         use_font(font_big);
-        draw_text_centered("Listening", LCD_COLUMNS / 2, 190);
+        draw_text_centered("Listening", text_cx, 172);
         use_font(font_ui);
         const char* hint = mic_state < 0 ? "microphone access denied" : mic_state == 0 ? "waiting for microphone permission" : !mic_enabled ? "microphone is off" : "start a transmission on the Flipper";
-        draw_text_centered(hint, LCD_COLUMNS / 2, 218);
+        draw_text_centered(hint, text_cx, 204);
     }
 }
 
@@ -918,7 +950,10 @@ static void init(void) {
     font_big = pd->graphics->loadFont("fonts/Roobert-20-Medium", &err);
     if(!font_num) font_num = font_ui;
     if(!font_big) font_big = font_ui;
-    dolphin = pd->graphics->loadBitmap("images/dolphin", &err);
+    dolphin_src = pd->graphics->loadBitmap("images/dolphin", &err);
+    dolphin_lines_src = pd->graphics->loadBitmap("images/dolphin_lines", &err);
+    if(dolphin_src) dolphin = render_lcd(dolphin_src, LCD_PITCH, LCD_DOT);
+    if(dolphin_lines_src) dolphin_tile = render_lcd(dolphin_lines_src, 2, 2);
     console = pd->graphics->loadBitmap("images/console", &err);
 
     thumb_mask = pd->graphics->newBitmap(THUMB_W, THUMB_H, kColorBlack);
