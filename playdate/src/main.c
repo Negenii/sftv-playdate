@@ -25,6 +25,7 @@ static LCDFont* font_num; /* Roobert 9 Mono Condensed: counters */
 static LCDFont* font_big; /* Roobert 20 Medium: titles */
 static LCDBitmap* dolphin_src; /* 71x49 outline dolphin (firmware L1_Furippa1 frame 0), faces right */
 static LCDBitmap* dolphin_tile; /* menu tile and scene: 2x, 142x98 */
+static LCDBitmap* dolphin_open_tile; /* same at 2x with the mouth open (signal heard, pre-pass) */
 #define DOLPHIN_W 71
 #define DOLPHIN_H 49
 static LCDBitmap* console; /* 140x118 Playdate silhouette, screen interior at (7,7) 88x53 */
@@ -731,12 +732,10 @@ static void draw_scene(void) {
     const int cx = 240, cy = 40; /* console */
     const int dx = 20, dy = cy + (CONSOLE_H - DOLPHIN_H * 2) / 2; /* dolphin */
     const int text_cx = LCD_COLUMNS / 2; /* texts run under both figures */
-    if(dolphin_tile) pd->graphics->drawBitmap(dolphin_tile, dx, dy, kBitmapUnflipped);
-    /* A signal is coming in but not yet decoded: the dolphin opens its mouth. Placeholder
-     * mouth position (lower-left snout of the 2x dolphin); adjust when the real sprite lands. */
-    if(!started && now - hearing_ms < 500) {
-        pd->graphics->fillEllipse(dx + 4, dy + 52, 20, 11, 0.0f, 0.0f, kColorBlack);
-    }
+    /* A signal is coming in but not yet decoded: the dolphin opens its mouth. */
+    bool hearing = !started && now - hearing_ms < 500;
+    LCDBitmap* dfin = (hearing && dolphin_open_tile) ? dolphin_open_tile : dolphin_tile;
+    if(dfin) pd->graphics->drawBitmap(dfin, dx, dy, kBitmapUnflipped);
     draw_console(cx, cy, started ? preview_bitmap : NULL);
     use_font(font_ui);
     char t[64], nm[NAME_CAP];
@@ -994,6 +993,8 @@ static void init(void) {
     if(!font_big) font_big = font_ui;
     dolphin_src = pd->graphics->loadBitmap("images/dolphin", &err);
     if(dolphin_src) dolphin_tile = render_scaled(dolphin_src, 2, 2);
+    LCDBitmap* dolphin_open_src = pd->graphics->loadBitmap("images/dolphin_open", &err);
+    if(dolphin_open_src) dolphin_open_tile = render_scaled(dolphin_open_src, 2, 2);
     console = pd->graphics->loadBitmap("images/console", &err);
 
     thumb_mask = pd->graphics->newBitmap(THUMB_W, THUMB_H, kColorBlack);
