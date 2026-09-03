@@ -52,7 +52,7 @@ int main(void) {
     }
     CHECK(!sstv_frame_unpack_soft(bad, NULL, &blk, out, &corrected));
     CHECK(sstv_frame_unpack_soft(bad, conf, &blk, out, &corrected));
-    CHECK_EQ_INT(blk, 77);
+    CHECK_EQ_INT(sstv_hdr_index(blk), 77);
 
     /* interleave round trip */
     uint8_t logical[SSTV_ILEAVE * SSTV_FRAME_BYTES], physical[SSTV_ILEAVE * SSTV_FRAME_BYTES],
