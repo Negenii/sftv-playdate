@@ -50,7 +50,7 @@ void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_line_cb cb, void* ct
     }
 
     d->dominance = 3.0f;
-    d->sync_min_run = 3 * d->window; /* 3 ms */
+    d->sync_min_run = SSTV_SYNC_MIN_MS * d->window;
     d->edge_adjust = sample_rate * (float)SSTV_EDGE_ADJUST_US / 1000000.0f;
     d->sample_point = SSTV_SAMPLE_POINT;
     d->gain_decay = 1.0f - 1.0f / (SSTV_GAIN_TAU_S * sample_rate);
@@ -59,7 +59,7 @@ void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_line_cb cb, void* ct
      * |I| ~= A * (4/pi) * (W/2) * 32767. Noise floor: A = 150 LSB. */
     float full = 32767.0f * 0.6366f * (float)d->window * 32767.0f;
     d->level_norm = 1.0f / (full * full);
-    float floor_amp = 150.0f * 0.6366f * (float)d->window * 32767.0f;
+    float floor_amp = SSTV_NOISE_FLOOR_LSB * 0.6366f * (float)d->window * 32767.0f;
     d->min_energy = floor_amp * floor_amp;
     d->gain[0] = d->gain[1] = d->min_energy;
 
@@ -96,8 +96,11 @@ static inline void track_gains(sstv_demod* d, float e0, float e1) {
     float g1 = d->gain[1] * d->gain_decay;
     if(e0 > g0) g0 = e0;
     if(e1 > g1) g1 = e1;
-    if(g0 < d->min_energy) g0 = d->min_energy;
-    if(g1 < d->min_energy) g1 = d->min_energy;
+    /* Keep the trackers away from zero in silence, but well below the noise floor so a
+     * weak tone is still normalised against its own peak rather than the floor. */
+    float g_min = d->min_energy * 0.01f;
+    if(g0 < g_min) g0 = g_min;
+    if(g1 < g_min) g1 = g_min;
     if(g1 * SSTV_GAIN_CLAMP < g0) g1 = g0 / SSTV_GAIN_CLAMP;
     if(g0 * SSTV_GAIN_CLAMP < g1) g0 = g1 / SSTV_GAIN_CLAMP;
     d->gain[0] = g0;

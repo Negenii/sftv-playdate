@@ -40,8 +40,12 @@
 #ifndef SSTV_EDGE_ADJUST_US
 #define SSTV_EDGE_ADJUST_US -300 /* echoes delay the sync->data crossover; pull the edge back */
 #endif
+#ifndef SSTV_NOISE_FLOOR_LSB
+#define SSTV_NOISE_FLOOR_LSB 40.0f /* square-wave amplitude below which detectors are ignored */
+#endif
 #define SSTV_GAIN_TAU_S 0.3f /* per-tone peak tracker decay time constant */
 #define SSTV_GAIN_CLAMP 30.0f /* max tracked gain ratio between tones (~15 dB) */
+#define SSTV_SYNC_MIN_MS 2 /* net dominant run needed to accept a sync burst */
 
 /* Derived. */
 #define SSTV_LEADER_SYMBOLS (SSTV_LEADER_US / SSTV_BIT_US)
