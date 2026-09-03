@@ -81,12 +81,14 @@ static int try_block(sstv_rx* rx) {
         for(int i = 0; i < SSTV_ILEAVE; i++) {
             if(!ok[i]) continue;
             const uint8_t* m = payload + i * SSTV_PAYLOAD_BYTES;
-            if(m[0] == SSTV_META_PREVIEW) {
+            if(m[0] == SSTV_META_PREVIEW || m[0] == SSTV_META_TINY) {
+                bool tiny = m[0] == SSTV_META_TINY;
                 int chunk = sstv_hdr_index(hdr[i]);
-                if(chunk >= SSTV_PREVIEW_CHUNKS) continue;
-                int n = SSTV_PREVIEW_BYTES - chunk * SSTV_PREVIEW_CHUNK;
+                int total = tiny ? SSTV_TINY_BYTES : SSTV_PREVIEW_BYTES;
+                if(chunk >= (tiny ? SSTV_TINY_CHUNKS : SSTV_PREVIEW_CHUNKS)) continue;
+                int n = total - chunk * SSTV_PREVIEW_CHUNK;
                 if(n > SSTV_PREVIEW_CHUNK) n = SSTV_PREVIEW_CHUNK;
-                if(rx->preview_cb) rx->preview_cb(rx->ctx, chunk, n, m + 1);
+                if(rx->preview_cb) rx->preview_cb(rx->ctx, tiny ? 0 : 1, chunk, n, m + 1);
             } else if(!named) {
                 /* START / END: the same payload in every frame, report once */
                 memcpy(name, m + SSTV_META_NAME_OFFSET, SSTV_NAME_MAX);

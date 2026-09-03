@@ -22,7 +22,9 @@
  *                 set when the picture goes as CODED blocks][file name, SSTV_NAME_MAX bytes],
  *                 repeated in all four logical frames of the block. The frame count lets the
  *                 receiver time the whole pass (every physical frame is SSTV_PHYS_US) and
- *                 animate independently of lost frames. SSTV_META_PREVIEW frames carry
+ *                 animate independently of lost frames. Then, progressive-JPEG style, one
+ *                 block of SSTV_META_TINY frames carries a 40x20 dithered preview (0.67 s) and
+ *                 SSTV_META_PREVIEW frames carry
  *                 SSTV_PREVIEW_CHUNK bytes of an 80x48 dithered preview of the image, header
  *                 index = chunk number. They follow START so the receiver can show what is
  *                 coming (and use it as a blurred placeholder) 3.4 s into the transfer. */
@@ -36,12 +38,19 @@
 #define SSTV_META_START 0
 #define SSTV_META_END 1
 #define SSTV_META_PREVIEW 2
+#define SSTV_META_TINY 3 /* first, coarser preview layer: 40x20 in one block */
+#define SSTV_TINY_W 40 /* SSTV_WIDTH / 10 */
+#define SSTV_TINY_H 20 /* SSTV_HEIGHT / 12 */
+#define SSTV_TINY_LINE_BYTES 5
+#define SSTV_TINY_BYTES (SSTV_TINY_LINE_BYTES * SSTV_TINY_H) /* 100 = exactly one block */
+#define SSTV_TINY_CHUNKS 4
 #define SSTV_PREVIEW_W 80 /* SSTV_WIDTH / 5 */
 #define SSTV_PREVIEW_H 48 /* SSTV_HEIGHT / 5 */
 #define SSTV_PREVIEW_LINE_BYTES 10
 #define SSTV_PREVIEW_BYTES (SSTV_PREVIEW_LINE_BYTES * SSTV_PREVIEW_H) /* 480 */
 #define SSTV_PREVIEW_CHUNK (SSTV_PAYLOAD_BYTES - 1) /* 25 */
 #define SSTV_PREVIEW_CHUNKS ((SSTV_PREVIEW_BYTES + SSTV_PREVIEW_CHUNK - 1) / SSTV_PREVIEW_CHUNK) /* 20 = 5 blocks */
+#define SSTV_INTRO_FRAMES (SSTV_TINY_CHUNKS + SSTV_PREVIEW_CHUNKS) /* preview frames between START and data */
 #define SSTV_DATA_BYTES (2 + SSTV_PAYLOAD_BYTES + 1) /* 29 */
 #ifndef SSTV_PARITY_BYTES
 #define SSTV_PARITY_BYTES 12
@@ -58,7 +67,7 @@
 #define SSTV_FT_SHIFT 14
 #define SSTV_INDEX_MASK 0x3FFF
 #define SSTV_MAX_BLOCKS (SSTV_HEIGHT / 2) /* coded worst case: raw lines, 2 per block */
-#define SSTV_MAX_FRAMES (SSTV_NUM_SEGS + 2 * SSTV_ILEAVE + SSTV_PREVIEW_CHUNKS) /* raw: 480 + start, end, preview */
+#define SSTV_MAX_FRAMES (SSTV_NUM_SEGS + 2 * SSTV_ILEAVE + SSTV_INTRO_FRAMES) /* raw: 480 + start, end, previews */
 #define SSTV_CODED_MIN_GAIN 0.85f /* use coding only when frames <= 85% of raw */
 
 /* Modulation: 4-FSK, 2 bits per 4 ms symbol, square-wave tones.

@@ -24,9 +24,10 @@ Everything below this section is the original design plus revision notes; the se
   so a noise burst is spread across four codewords. Frame types:
   - `META` (2): payload [subtype][data]. Subtype 0 = START, sent as the first block of every
     pass, data = [total physical frames of the pass, 16-bit LE, bit 15 = coded][file name
-    without extension, up to 23 chars]; subtype 1 = END, same layout, sent as the last block; subtype 2 = PREVIEW, 20 independent frames (index = chunk, 25 bytes each) right after
-    START carrying an 80x48 preview of the picture: each preview pixel is the black count of a
-    5x5 block, Bayer-dithered. 5 blocks = 3.4 s (+4 % on the checker image, +1 % on a photo).
+    without extension, up to 23 chars]; subtype 1 = END, same layout, sent as the last block; subtype 3 = TINY, one block (4 frames, index = chunk) right after START carrying a 40x20
+    preview (10x12 block black counts, Bayer-dithered), on screen 0.67 s in; subtype 2 =
+    PREVIEW, 20 frames carrying the 80x48 layer (5x5 blocks) that replaces it, progressive-JPEG
+    style. 6 blocks = 4 s (+5 % on the checker image, +1 % on a photo).
     The receiver starts a new image on START (saving the previous one), shows the preview
     filling in and uses it, 5x upscaled and drawn as a 50 % checker, as a placeholder under
     the picture until real lines replace it; on END it saves and announces.

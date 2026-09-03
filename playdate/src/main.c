@@ -50,10 +50,13 @@ static unsigned led_frame_ms; /* virtual LED: last physical frame time */
 static unsigned led_block_ms; /* last decoded block time */
 static volatile unsigned mic_dropped;
 
-/* Preview (80x48, PBM packing) arriving in 20 chunks right after START. */
+/* Previews (PBM packing) arriving right after START, progressive-JPEG style: first the 40x20
+ * tiny layer (one block), then the 80x48 layer (five blocks). */
+static uint8_t tiny_bits[SSTV_TINY_BYTES];
+static bool tiny_have[SSTV_TINY_CHUNKS];
 static uint8_t preview_bits[SSTV_PREVIEW_BYTES];
 static bool preview_have[SSTV_PREVIEW_CHUNKS];
-static int preview_chunks;
+static int preview_chunks; /* of SSTV_INTRO_FRAMES, both layers */
 static LCDBitmap* preview_bitmap; /* 80x48 for the console icon in the intro scene */
 
 /* Screens. */
@@ -245,47 +248,78 @@ static void menu_open(void) {
 
 /* ---- receive callbacks (main thread) ---- */
 
-/* Paints preview row `py` (5 image lines) into the picture wherever no real pixels have
- * arrived: black preview pixels become a 50 % checker so real lines read as sharper. */
-static void paint_placeholder_row(int py) {
-    for(int dy = 0; dy < 5; dy++) {
-        int line = py * 5 + dy;
-        uint8_t* dst = image_data + line * image_rowbytes;
-        for(int half = 0; half < 2; half++) {
-            if(seg_seen[line] & (1 << half)) continue;
-            for(int i = half * SSTV_SEG_BYTES; i < (half + 1) * SSTV_SEG_BYTES; i++) {
-                uint8_t v = 0xFF;
-                for(int b = 0; b < 8; b++) {
-                    int x = i * 8 + b;
-                    int px = x / 5;
-                    int black = (preview_bits[py * SSTV_PREVIEW_LINE_BYTES + (px >> 3)] >> (7 - (px & 7))) & 1;
-                    if(black && ((x + line) & 1) == 0) v &= (uint8_t)~(0x80 >> b);
-                }
-                dst[i] = v;
+/* Best preview bit for picture pixel (x, line): the 80x48 layer if its row has arrived, else
+ * the 40x20 layer, else white (0). */
+static bool preview_row_ok(int py) {
+    return preview_have[py * SSTV_PREVIEW_LINE_BYTES / SSTV_PREVIEW_CHUNK] &&
+           preview_have[(py * SSTV_PREVIEW_LINE_BYTES + SSTV_PREVIEW_LINE_BYTES - 1) / SSTV_PREVIEW_CHUNK];
+}
+
+static bool tiny_row_ok(int ty) {
+    return tiny_have[ty * SSTV_TINY_LINE_BYTES / SSTV_PREVIEW_CHUNK];
+}
+
+static int placeholder_bit(int x, int line) {
+    int py = line / (SSTV_HEIGHT / SSTV_PREVIEW_H);
+    if(preview_row_ok(py)) {
+        int px = x / (SSTV_WIDTH / SSTV_PREVIEW_W);
+        return (preview_bits[py * SSTV_PREVIEW_LINE_BYTES + (px >> 3)] >> (7 - (px & 7))) & 1;
+    }
+    int ty = line / (SSTV_HEIGHT / SSTV_TINY_H);
+    if(tiny_row_ok(ty)) {
+        int tx = x / (SSTV_WIDTH / SSTV_TINY_W);
+        return (tiny_bits[ty * SSTV_TINY_LINE_BYTES + (tx >> 3)] >> (7 - (tx & 7))) & 1;
+    }
+    return 0;
+}
+
+/* Paints the placeholder into picture line `line` wherever no real pixels have arrived:
+ * black preview pixels become a 50 % checker so real lines read as sharper. */
+static void paint_placeholder_line(int line) {
+    uint8_t* dst = image_data + line * image_rowbytes;
+    for(int half = 0; half < 2; half++) {
+        if(seg_seen[line] & (1 << half)) continue;
+        for(int i = half * SSTV_SEG_BYTES; i < (half + 1) * SSTV_SEG_BYTES; i++) {
+            uint8_t v = 0xFF;
+            for(int b = 0; b < 8; b++) {
+                int x = i * 8 + b;
+                if(placeholder_bit(x, line) && ((x + line) & 1) == 0) v &= (uint8_t)~(0x80 >> b);
             }
+            dst[i] = v;
         }
     }
 }
 
+/* The console icon's screen: the 80x48 layer where it has arrived, the tiny layer elsewhere. */
 static void preview_refresh_bitmap(void) {
     if(!preview_bitmap) preview_bitmap = pd->graphics->newBitmap(SSTV_PREVIEW_W, SSTV_PREVIEW_H, kColorWhite);
     int w, h, rb;
     uint8_t* data;
     pd->graphics->getBitmapData(preview_bitmap, &w, &h, &rb, NULL, &data);
-    for(int y = 0; y < SSTV_PREVIEW_H; y++)
-        for(int i = 0; i < SSTV_PREVIEW_LINE_BYTES; i++) data[y * rb + i] = (uint8_t)~preview_bits[y * SSTV_PREVIEW_LINE_BYTES + i];
+    for(int y = 0; y < SSTV_PREVIEW_H; y++) {
+        for(int x = 0; x < SSTV_PREVIEW_W; x++) {
+            int bit = placeholder_bit(x * (SSTV_WIDTH / SSTV_PREVIEW_W), y * (SSTV_HEIGHT / SSTV_PREVIEW_H));
+            if(bit) data[y * rb + (x >> 3)] &= (uint8_t)~(0x80 >> (x & 7));
+            else data[y * rb + (x >> 3)] |= (uint8_t)(0x80 >> (x & 7));
+        }
+    }
 }
 
-static void on_preview(void* ctx, int chunk, int nbytes, const uint8_t* data) {
+static void on_preview(void* ctx, int layer, int chunk, int nbytes, const uint8_t* data) {
     (void)ctx;
-    if(chunk < 0 || chunk >= SSTV_PREVIEW_CHUNKS) return;
-    memcpy(preview_bits + chunk * SSTV_PREVIEW_CHUNK, data, (size_t)nbytes);
-    if(!preview_have[chunk]) preview_chunks++;
-    preview_have[chunk] = true;
+    if(layer == 0) {
+        if(chunk < 0 || chunk >= SSTV_TINY_CHUNKS) return;
+        memcpy(tiny_bits + chunk * SSTV_PREVIEW_CHUNK, data, (size_t)nbytes);
+        if(!tiny_have[chunk]) preview_chunks++;
+        tiny_have[chunk] = true;
+    } else {
+        if(chunk < 0 || chunk >= SSTV_PREVIEW_CHUNKS) return;
+        memcpy(preview_bits + chunk * SSTV_PREVIEW_CHUNK, data, (size_t)nbytes);
+        if(!preview_have[chunk]) preview_chunks++;
+        preview_have[chunk] = true;
+    }
     preview_refresh_bitmap();
-    int first = chunk * SSTV_PREVIEW_CHUNK / SSTV_PREVIEW_LINE_BYTES;
-    int last = (chunk * SSTV_PREVIEW_CHUNK + nbytes - 1) / SSTV_PREVIEW_LINE_BYTES;
-    for(int py = first; py <= last && py < SSTV_PREVIEW_H; py++) paint_placeholder_row(py);
+    for(int line = 0; line < SSTV_HEIGHT; line++) paint_placeholder_line(line);
     last_data_ms = pd->system->getCurrentTimeMilliseconds();
 }
 
@@ -309,6 +343,8 @@ static void clear_image(void) {
     memset(seg_seen, 0, sizeof seg_seen);
     memset(preview_bits, 0, sizeof preview_bits);
     memset(preview_have, 0, sizeof preview_have);
+    memset(tiny_bits, 0, sizeof tiny_bits);
+    memset(tiny_have, 0, sizeof tiny_have);
     preview_chunks = 0;
     if(preview_bitmap) preview_refresh_bitmap();
     segs_done = 0;
@@ -336,9 +372,9 @@ static void finish(unsigned now) {
 static int expected_lines(unsigned now) {
     if(!started || total_frames <= 0) return 0;
     float frames = (float)(now - started_ms) * 1000.0f / (float)SSTV_PHYS_US;
-    float data_frames = (float)(total_frames - 2 * SSTV_ILEAVE - SSTV_PREVIEW_CHUNKS);
+    float data_frames = (float)(total_frames - 2 * SSTV_ILEAVE - SSTV_INTRO_FRAMES);
     if(data_frames <= 0) return 0;
-    float f = (frames - (float)SSTV_PREVIEW_CHUNKS) / data_frames;
+    float f = (frames - (float)SSTV_INTRO_FRAMES) / data_frames;
     if(f < 0) f = 0;
     if(f > 1) f = 1;
     return (int)(f * (float)SSTV_HEIGHT);
@@ -589,7 +625,7 @@ static void draw_scene(void) {
         draw_text_centered(nm, LCD_COLUMNS / 2, 190);
         use_font(font_ui);
         int secs = total_frames > 0 ? (int)((unsigned)total_frames * (SSTV_PHYS_US / 1000) / 1000) : 0;
-        snprintf(t, sizeof t, "%s, %d:%02d, preview %d/%d", rx.coded ? "compressed" : "raw", secs / 60, secs % 60, preview_chunks, SSTV_PREVIEW_CHUNKS);
+        snprintf(t, sizeof t, "%s, %d:%02d, preview %d/%d", rx.coded ? "compressed" : "raw", secs / 60, secs % 60, preview_chunks, SSTV_INTRO_FRAMES);
         draw_text_centered(t, LCD_COLUMNS / 2, 218);
     } else {
         use_font(font_big);

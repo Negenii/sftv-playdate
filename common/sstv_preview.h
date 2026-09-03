@@ -12,6 +12,9 @@ extern "C" {
  * turning to noise. `out` receives SSTV_PREVIEW_BYTES, same packing. */
 void sstv_preview_make(const uint8_t* image_bits, uint8_t* out);
 
+/* Same for the 40x20 first layer (10x12 blocks); `out` receives SSTV_TINY_BYTES. */
+void sstv_preview_make_tiny(const uint8_t* image_bits, uint8_t* out);
+
 #ifdef __cplusplus
 }
 #endif

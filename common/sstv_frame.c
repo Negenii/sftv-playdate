@@ -140,7 +140,7 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
     /* Start meta block: [SSTV_META_START][total frames | coded flag][file name] in every
      * logical frame. Total = start + preview + data + end blocks. */
     int data_blocks = use_coded ? coded_blocks : SSTV_NUM_SEGS / SSTV_ILEAVE;
-    uint16_t total = (uint16_t)((1 + SSTV_PREVIEW_CHUNKS / SSTV_ILEAVE + data_blocks + 1) * SSTV_ILEAVE);
+    uint16_t total = (uint16_t)((1 + SSTV_INTRO_FRAMES / SSTV_ILEAVE + data_blocks + 1) * SSTV_ILEAVE);
     uint16_t word = total | (use_coded ? SSTV_META_CODED_FLAG : 0);
     uint8_t meta[SSTV_PAYLOAD_BYTES];
     memset(meta, 0, SSTV_PAYLOAD_BYTES);
@@ -155,6 +155,18 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
     for(int i = 0; i < SSTV_ILEAVE; i++) sstv_frame_pack(sstv_hdr(SSTV_FT_META, 0), meta, logical + i * SSTV_FRAME_BYTES);
     emit_block(logical, out, blocks++);
     for(int f = 0; f < SSTV_ILEAVE && lines_after; f++) lines_after[f] = 0;
+
+    /* Tiny preview: one block of [SSTV_META_TINY][25 bytes], index = chunk. */
+    uint8_t tiny[SSTV_TINY_BYTES];
+    sstv_preview_make_tiny(image_bits, tiny);
+    for(int i = 0; i < SSTV_ILEAVE; i++) {
+        payload[0] = SSTV_META_TINY;
+        memcpy(payload + 1, tiny + i * SSTV_PREVIEW_CHUNK, SSTV_PREVIEW_CHUNK);
+        sstv_frame_pack(sstv_hdr(SSTV_FT_META, i), payload, logical + i * SSTV_FRAME_BYTES);
+    }
+    emit_block(logical, out, blocks);
+    for(int f = 0; f < SSTV_ILEAVE && lines_after; f++) lines_after[blocks * SSTV_ILEAVE + f] = 0;
+    blocks++;
 
     /* Preview: SSTV_PREVIEW_CHUNKS independent frames [SSTV_META_PREVIEW][25 bytes], index = chunk. */
     uint8_t preview[SSTV_PREVIEW_BYTES];

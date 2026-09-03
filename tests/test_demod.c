@@ -40,11 +40,17 @@ static void on_meta(void* ctx, const char* name, bool is_end, int total_frames, 
 }
 
 static uint8_t preview_got[SSTV_PREVIEW_BYTES];
-static int preview_chunks;
-static void on_preview(void* ctx, int chunk, int nbytes, const uint8_t* data) {
+static uint8_t tiny_got[SSTV_TINY_BYTES];
+static int preview_chunks, tiny_chunks;
+static void on_preview(void* ctx, int layer, int chunk, int nbytes, const uint8_t* data) {
     (void)ctx;
-    memcpy(preview_got + chunk * SSTV_PREVIEW_CHUNK, data, (size_t)nbytes);
-    preview_chunks++;
+    if(layer == 0) {
+        memcpy(tiny_got + chunk * SSTV_PREVIEW_CHUNK, data, (size_t)nbytes);
+        tiny_chunks++;
+    } else {
+        memcpy(preview_got + chunk * SSTV_PREVIEW_CHUNK, data, (size_t)nbytes);
+        preview_chunks++;
+    }
 }
 
 static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
@@ -55,8 +61,8 @@ static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
 /* Removes the preview blocks so the first data block directly follows the START block
  * (tests that send only the first few frames). */
 static void drop_preview(uint8_t* phys, int frames) {
-    memmove(phys + SSTV_ILEAVE * SSTV_FRAME_BYTES, phys + (SSTV_ILEAVE + SSTV_PREVIEW_CHUNKS) * SSTV_FRAME_BYTES,
-            (size_t)(frames - SSTV_ILEAVE - SSTV_PREVIEW_CHUNKS) * SSTV_FRAME_BYTES);
+    memmove(phys + SSTV_ILEAVE * SSTV_FRAME_BYTES, phys + (SSTV_ILEAVE + SSTV_INTRO_FRAMES) * SSTV_FRAME_BYTES,
+            (size_t)(frames - SSTV_ILEAVE - SSTV_INTRO_FRAMES) * SSTV_FRAME_BYTES);
 }
 
 static capture* capture_new(void) {
@@ -189,7 +195,7 @@ static void test_full_image_clean(void) {
     CHECK_EQ_INT(ok, SSTV_HEIGHT);
     CHECK_EQ_INT(end_seen, 1);
     CHECK(strcmp(last_name, "image") == 0);
-    CHECK_EQ_INT(last_total, SSTV_NUM_SEGS + 2 * SSTV_ILEAVE + SSTV_PREVIEW_CHUNKS); /* raw pass length announced */
+    CHECK_EQ_INT(last_total, SSTV_NUM_SEGS + 2 * SSTV_ILEAVE + SSTV_INTRO_FRAMES); /* raw pass length announced */
     CHECK(!last_coded);
     /* a compressible image needs fewer frames and still arrives intact */
     for(int y = 0; y < SSTV_HEIGHT; y++) {
@@ -240,14 +246,18 @@ static void test_frequency_offset(void) {
     sstv_mod_init(&m, 44100.0f, AMP);
     for(int k = 0; k < SSTV_NUM_TONES; k++) m.tones[k] *= 1.015f; /* 0 stays 0 */
     m.fsync *= 1.015f;
-    preview_chunks = 0;
+    preview_chunks = tiny_chunks = 0;
     memset(preview_got, 0, sizeof preview_got);
+    memset(tiny_got, 0, sizeof tiny_got);
     CHECK_EQ_INT(run_image(&m, 44100.0f, NULL, c, image), SSTV_HEIGHT);
     /* the preview arrived whole and matches what the transmitter computed */
     CHECK_EQ_INT(preview_chunks, SSTV_PREVIEW_CHUNKS);
-    uint8_t pv[SSTV_PREVIEW_BYTES];
+    CHECK_EQ_INT(tiny_chunks, SSTV_TINY_CHUNKS);
+    uint8_t pv[SSTV_PREVIEW_BYTES], tn[SSTV_TINY_BYTES];
     sstv_preview_make(image, pv);
+    sstv_preview_make_tiny(image, tn);
     CHECK(memcmp(pv, preview_got, SSTV_PREVIEW_BYTES) == 0);
+    CHECK(memcmp(tn, tiny_got, SSTV_TINY_BYTES) == 0);
     free(c);
     free(image);
 }

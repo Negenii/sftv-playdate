@@ -94,7 +94,7 @@ int main(void) {
     int frames = sstv_build_physical(image, "white.pbm", phys, lines_after, &coded);
     CHECK(coded);
     CHECK_EQ_INT(frames % SSTV_ILEAVE, 0);
-    CHECK(frames <= 88 + SSTV_PREVIEW_CHUNKS);
+    CHECK(frames <= 88 + SSTV_INTRO_FRAMES);
     CHECK_EQ_INT(lines_after[frames - 1], SSTV_HEIGHT);
     /* meta block first: name in every logical frame */
     sstv_deinterleave(phys, back);
@@ -123,19 +123,29 @@ int main(void) {
         CHECK(set > SSTV_PREVIEW_BYTES * 8 * 4 / 10 && set < SSTV_PREVIEW_BYTES * 8 * 6 / 10);
         memset(image, 0, SSTV_IMAGE_BYTES);
     }
-    /* a random image is sent raw: start block, 5 preview blocks, 480 segment frames, end block */
+    /* a random image is sent raw: start, tiny, 5 preview blocks, 480 segment frames, end */
     for(int i = 0; i < SSTV_IMAGE_BYTES; i++) image[i] = (uint8_t)((i * 2654435761u) >> 13);
     frames = sstv_build_physical(image, "noise", phys, lines_after, &coded);
     CHECK(!coded);
-    CHECK_EQ_INT(frames, SSTV_NUM_SEGS + 2 * SSTV_ILEAVE + SSTV_PREVIEW_CHUNKS);
+    CHECK_EQ_INT(frames, SSTV_NUM_SEGS + 2 * SSTV_ILEAVE + SSTV_INTRO_FRAMES);
     CHECK_EQ_INT(lines_after[frames - 1], SSTV_HEIGHT);
-    const int data0 = SSTV_ILEAVE + SSTV_PREVIEW_CHUNKS; /* first data frame */
+    const int data0 = SSTV_ILEAVE + SSTV_INTRO_FRAMES; /* first data frame */
     CHECK_EQ_INT(lines_after[data0 - 1], 0);
     CHECK_EQ_INT(lines_after[data0 + 3], 2); /* first data block = lines 0,1 */
     {
+        uint8_t tn[SSTV_TINY_BYTES];
+        sstv_preview_make_tiny(image, tn);
+        sstv_deinterleave(phys + SSTV_ILEAVE * SSTV_FRAME_BYTES, back); /* tiny block */
+        for(int i = 0; i < SSTV_ILEAVE; i++) {
+            CHECK(sstv_frame_unpack(back + i * SSTV_FRAME_BYTES, &blk, pl));
+            CHECK_EQ_INT(sstv_hdr_type(blk), SSTV_FT_META);
+            CHECK_EQ_INT(sstv_hdr_index(blk), i);
+            CHECK_EQ_INT(pl[0], SSTV_META_TINY);
+            CHECK(memcmp(pl + 1, tn + i * SSTV_PREVIEW_CHUNK, SSTV_PREVIEW_CHUNK) == 0);
+        }
         uint8_t pv[SSTV_PREVIEW_BYTES];
         sstv_preview_make(image, pv);
-        sstv_deinterleave(phys + SSTV_ILEAVE * SSTV_FRAME_BYTES, back); /* first preview block */
+        sstv_deinterleave(phys + (SSTV_ILEAVE + SSTV_TINY_CHUNKS) * SSTV_FRAME_BYTES, back); /* first preview block */
         for(int i = 0; i < SSTV_ILEAVE; i++) {
             CHECK(sstv_frame_unpack(back + i * SSTV_FRAME_BYTES, &blk, pl));
             CHECK_EQ_INT(sstv_hdr_type(blk), SSTV_FT_META);
