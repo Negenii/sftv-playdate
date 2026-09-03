@@ -86,7 +86,7 @@ static LCDBitmap* menu_thumb; /* latest saved image, for the gallery tile */
 #define THUMB_H 60
 #define THUMB_R 8
 
-/* Debug recording: Up starts a REC_SECONDS capture of the raw mic stream (Data/rec.wav). */
+/* Debug recording: Up starts a REC_SECONDS capture of the raw mic stream (Data/recN.wav, first free N). */
 #define REC_SECONDS 30
 #define REC_RATE 44100
 static int16_t* rec_buf;
@@ -467,7 +467,14 @@ static void put_u32(uint8_t* p, uint32_t v) {
 }
 
 static void save_recording(void) {
-    SDFile* f = pd->file->open("rec.wav", kFileWrite);
+    /* First free name: rec1.wav, rec2.wav, ... so several takes can be fetched together. */
+    char path[16];
+    FileStat st;
+    int n = 1;
+    do {
+        snprintf(path, sizeof path, "rec%d.wav", n++);
+    } while(n < 100 && pd->file->stat(path, &st) == 0);
+    SDFile* f = pd->file->open(path, kFileWrite);
     if(!f) return;
     uint32_t data_bytes = (uint32_t)rec_len * 2;
     uint8_t h[44];

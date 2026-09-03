@@ -55,7 +55,7 @@ Right toggles the side panel (name, state and ZIP/RAW pills, line progress, coun
 level). When the END frame arrives a banner shows the file name and line count, and the image
 is saved as `Data/com.negenii.sftvrx/<name>.pbm` (same name overwrites). Gallery: a grid of
 thumbnails, d-pad moves the cursor, A opens full screen, B goes back. A in receive mode clears
-the image, B returns to the menu, Up records 30 s of raw microphone audio to `rec.wav`.
+the image, B returns to the menu, Up records 30 s of raw microphone audio to `recN.wav` (first free N).
 
 The dolphin sprites are cropped from the Flipper firmware's `L1_Furippa1` (Playdate) and
 `L1_Waves` (Flipper) animations (GPL-3, flipperdevices/flipperzero-firmware) as placeholders.
@@ -63,8 +63,8 @@ The dolphin sprites are cropped from the Flipper firmware's `L1_Furippa1` (Playd
 ## Debugging
 
 1. `cd tests && make test` — loopback with white noise, noise bursts, clock offsets.
-2. Record on the Playdate (Up), fetch `rec.wav` over the data disk, then
-   `tests/bin/sstv_decode_wav rec.wav out.pbm` prints frames, flywheel count, blocks, segments.
+2. Record on the Playdate (Up), fetch `recN.wav` over the data disk, then
+   `tests/bin/sstv_decode_wav rec1.wav out.pbm` prints frames, flywheel count, blocks, segments.
    `SSTV_DUMP=file` writes raw physical frames and soft bits.
 3. Protocol constants live in `common/sstv_params.h`; transmitter and receiver must agree.
 
