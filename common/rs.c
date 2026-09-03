@@ -75,9 +75,14 @@ static uint8_t poly_eval(const uint8_t* p, int n, uint8_t x) {
     return y;
 }
 
-int rs_decode(uint8_t* block, int n) {
+static uint8_t gf_inv(uint8_t a) {
+    return gf_exp[255 - gf_log[a]];
+}
+
+int rs_decode_erasures(uint8_t* block, int n, const int* erasures, int num_erasures) {
     tables_init();
     if(n <= RS_PARITY || n > 255) return -1;
+    if(num_erasures < 0 || num_erasures > RS_PARITY) return -1;
 
     /* Syndromes S_i = R(alpha^i), i = 0..RS_PARITY-1. */
     uint8_t S[RS_PARITY];
@@ -88,7 +93,30 @@ int rs_decode(uint8_t* block, int n) {
     }
     if(!nonzero) return 0;
 
-    /* Berlekamp-Massey: error locator Lambda (lowest degree first, Lambda[0] = 1). */
+    /* Erasure locator Gamma(x) = prod (1 - X_j x), lowest degree first. */
+    uint8_t G[RS_PARITY + 1];
+    memset(G, 0, sizeof G);
+    G[0] = 1;
+    int e = 0;
+    for(int j = 0; j < num_erasures; j++) {
+        int k = erasures[j];
+        if(k < 0 || k >= n) return -1;
+        int dup = 0;
+        for(int q = 0; q < j; q++) dup |= (erasures[q] == k);
+        if(dup) continue;
+        uint8_t X = gf_pow(n - 1 - k);
+        for(int d = e + 1; d > 0; d--) G[d] ^= gf_mul(G[d - 1], X);
+        e++;
+    }
+
+    /* Modified syndromes Xi(x) = S(x) * Gamma(x) mod x^RS_PARITY. */
+    uint8_t Xi[RS_PARITY];
+    memset(Xi, 0, sizeof Xi);
+    for(int i = 0; i < RS_PARITY; i++) {
+        for(int j = 0; j <= e && i + j < RS_PARITY; j++) Xi[i + j] ^= gf_mul(S[i], G[j]);
+    }
+
+    /* Berlekamp-Massey on the RS_PARITY - e modified syndromes Xi[e..]: error locator. */
     uint8_t C[RS_PARITY + 1], B[RS_PARITY + 1], T[RS_PARITY + 1];
     memset(C, 0, sizeof C);
     memset(B, 0, sizeof B);
@@ -96,9 +124,10 @@ int rs_decode(uint8_t* block, int n) {
     B[0] = 1;
     int L = 0, m = 1;
     uint8_t b = 1;
-    for(int k = 0; k < RS_PARITY; k++) {
-        uint8_t d = S[k];
-        for(int i = 1; i <= L; i++) d ^= gf_mul(C[i], S[k - i]);
+    int nsyn = RS_PARITY - e;
+    for(int k = 0; k < nsyn; k++) {
+        uint8_t d = Xi[e + k];
+        for(int i = 1; i <= L; i++) d ^= gf_mul(C[i], Xi[e + k - i]);
         if(d == 0) {
             m++;
         } else if(2 * L <= k) {
@@ -115,58 +144,69 @@ int rs_decode(uint8_t* block, int n) {
             m++;
         }
     }
-    if(L > RS_MAX_ERRORS) return -1;
+    if(2 * L + e > RS_PARITY) return -1;
 
-    /* Chien search: position k (0 = highest degree) has X_k = alpha^(n-1-k);
-     * error there iff Lambda(X_k^-1) == 0. */
-    int pos[RS_MAX_ERRORS];
+    /* Combined locator Psi(x) = Lambda(x) * Gamma(x), degree L + e. */
+    uint8_t Psi[2 * RS_PARITY + 2];
+    memset(Psi, 0, sizeof Psi);
+    for(int i = 0; i <= L; i++) {
+        for(int j = 0; j <= e; j++) Psi[i + j] ^= gf_mul(C[i], G[j]);
+    }
+    int deg = L + e;
+
+    /* Chien search over all positions: roots of Psi(X_k^-1). */
+    int pos[RS_PARITY];
     int count = 0;
     for(int k = 0; k < n; k++) {
         uint8_t xinv = gf_pow(-(n - 1 - k));
         uint8_t v = 0, xp = 1;
-        for(int i = 0; i <= L; i++) {
-            v ^= gf_mul(C[i], xp);
+        for(int i = 0; i <= deg; i++) {
+            v ^= gf_mul(Psi[i], xp);
             xp = gf_mul(xp, xinv);
         }
         if(v == 0) {
-            if(count >= RS_MAX_ERRORS) return -1;
+            if(count >= RS_PARITY) return -1;
             pos[count++] = k;
         }
     }
-    if(count != L) return -1;
+    if(count != deg) return -1;
 
-    /* Omega(x) = S(x) * Lambda(x) mod x^RS_PARITY, S(x) = sum S_i x^i. */
+    /* Omega(x) = Xi(x) * Lambda(x) mod x^RS_PARITY  (= S * Psi mod x^RS_PARITY). */
     uint8_t Om[RS_PARITY];
     memset(Om, 0, sizeof Om);
     for(int i = 0; i < RS_PARITY; i++) {
-        for(int j = 0; j <= L && i + j < RS_PARITY; j++) Om[i + j] ^= gf_mul(S[i], C[j]);
+        for(int j = 0; j <= L && i + j < RS_PARITY; j++) Om[i + j] ^= gf_mul(Xi[i], C[j]);
     }
 
-    /* Forney with first consecutive root alpha^0: Y = X * Omega(X^-1) / Lambda'(X^-1). */
-    for(int e = 0; e < count; e++) {
-        int k = pos[e];
+    /* Forney with first consecutive root alpha^0: Y = X * Omega(X^-1) / Psi'(X^-1). */
+    int corrected = 0;
+    for(int q = 0; q < count; q++) {
+        int k = pos[q];
         uint8_t X = gf_pow(n - 1 - k);
-        uint8_t xinv = gf_pow(-(n - 1 - k));
+        uint8_t xinv = gf_inv(X);
         uint8_t om = 0, xp = 1;
         for(int i = 0; i < RS_PARITY; i++) {
             om ^= gf_mul(Om[i], xp);
             xp = gf_mul(xp, xinv);
         }
-        /* Lambda'(x): odd-degree terms only, degree lowered by one. */
         uint8_t dl = 0;
         xp = 1;
-        for(int i = 1; i <= L; i += 2) {
-            dl ^= gf_mul(C[i], xp);
+        for(int i = 1; i <= deg; i += 2) {
+            dl ^= gf_mul(Psi[i], xp);
             xp = gf_mul(xp, gf_mul(xinv, xinv));
         }
         if(dl == 0) return -1;
         uint8_t Y = gf_mul(X, gf_div(om, dl));
+        if(Y) corrected++;
         block[k] ^= Y;
     }
 
-    /* Verify: all syndromes must now vanish. */
     for(int i = 0; i < RS_PARITY; i++) {
         if(poly_eval(block, n, gf_pow(i)) != 0) return -1;
     }
-    return count;
+    return corrected;
+}
+
+int rs_decode(uint8_t* block, int n) {
+    return rs_decode_erasures(block, n, NULL, 0);
 }

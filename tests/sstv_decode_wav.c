@@ -1,35 +1,41 @@
 #include "wav_io.h"
 #include "sstv_demod.h"
+#include "sstv_rx.h"
+#include "sstv_frame.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 typedef struct {
+    sstv_rx rx;
     uint8_t image[SSTV_IMAGE_BYTES];
-    uint8_t seen[SSTV_HEIGHT];
+    uint8_t seen[SSTV_NUM_SEGS]; /* 1 bad copy, 2 good copy */
+    int good;
     int distinct;
-    int good; /* CRC-ok lines */
 } decoder_ctx;
 
-static sstv_demod d;
-static FILE* dump; /* SSTV_DUMP=path: per line "line_no crc_ok margin[416]" */
+static FILE* dump; /* SSTV_DUMP=path: per physical frame "hex bytes | soft values" */
 
-static void on_line(void* ctx, uint8_t line_no, const uint8_t* pixels, bool crc_ok, const float* soft, int corrected) {
-    (void)soft;
+static void on_seg(void* ctx, uint16_t seg, const uint8_t* pixels, bool ok, int corrected) {
     (void)corrected;
     decoder_ctx* c = ctx;
-    if(crc_ok) c->good++;
+    if(seg >= SSTV_NUM_SEGS) return;
+    if(c->seen[seg] == 2 && !ok) return;
+    memcpy(c->image + sstv_seg_line(seg) * SSTV_LINE_BYTES + sstv_seg_byte_offset(seg), pixels, SSTV_SEG_BYTES);
+    if(!c->seen[seg]) c->distinct++;
+    if(ok && c->seen[seg] != 2) c->good++;
+    c->seen[seg] = ok ? 2 : 1;
+}
+
+static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
+    decoder_ctx* c = ctx;
     if(dump) {
-        fprintf(dump, "%d %d", line_no, crc_ok ? 1 : 0);
-        for(int i = 0; i < SSTV_FRAME_BITS; i++) fprintf(dump, " %.4f", (double)d.margin[i]);
+        for(int i = 0; i < SSTV_FRAME_BYTES; i++) fprintf(dump, "%02x", frame[i]);
+        fprintf(dump, " |");
+        for(int i = 0; i < SSTV_FRAME_BITS; i++) fprintf(dump, " %.3f", (double)soft[i]);
         fprintf(dump, "\n");
     }
-    if(line_no >= SSTV_HEIGHT) return;
-    memcpy(c->image + line_no * SSTV_LINE_BYTES, pixels, SSTV_LINE_BYTES);
-    if(!c->seen[line_no]) {
-        c->seen[line_no] = 1;
-        c->distinct++;
-    }
+    sstv_rx_phys(&c->rx, frame, soft);
 }
 
 int main(int argc, char** argv) {
@@ -45,16 +51,17 @@ int main(int argc, char** argv) {
     }
 
     decoder_ctx* c = calloc(1, sizeof *c);
+    sstv_rx_init(&c->rx, on_seg, c);
     if(getenv("SSTV_DUMP")) dump = fopen(getenv("SSTV_DUMP"), "w");
-    sstv_demod_init(&d, (float)sr, on_line, c);
+    sstv_demod d;
+    sstv_demod_init(&d, (float)sr, on_phys, c);
     if(argc > 3) d.sample_point = (float)atof(argv[3]); /* tuning experiments */
     if(argc > 4) d.edge_adjust = (float)atof(argv[4]);
     sstv_demod_feed(&d, s, n);
 
-    sstv_demod_status_t st;
-    sstv_demod_status(&d, &st);
-    printf("lines=%d good=%d distinct=%d crc_errors=%d rs_fixed=%d missing=%d sample_rate=%d\n", st.lines,
-           c->good, c->distinct, st.crc_errors, st.rs_corrected, SSTV_HEIGHT - c->distinct, sr);
+    printf("phys_frames=%d blocks=%d segs_ok=%d segs_bad=%d good=%d/%d distinct=%d rs_fixed=%d sample_rate=%d\n",
+           d.frames, c->rx.blocks_ok, c->rx.segs_ok, c->rx.segs_bad, c->good, SSTV_NUM_SEGS, c->distinct,
+           c->rx.rs_corrected, sr);
 
     FILE* f = fopen(argv[2], "wb");
     if(!f) {

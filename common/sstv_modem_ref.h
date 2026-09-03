@@ -23,10 +23,10 @@ void sstv_mod_init(sstv_mod* m, float sample_rate, int16_t amplitude);
 /* Appends a tone. Returns samples written, or -1 (nothing written) if cap is too small. */
 int sstv_mod_tone(sstv_mod* m, float freq_hz, int duration_us, int16_t* out, int cap);
 
-/* Sync burst followed by the symbols of a packed frame. */
+/* Sync burst followed by the symbols of one physical frame. */
 int sstv_mod_frame(sstv_mod* m, const uint8_t* frame, int16_t* out, int cap);
 
-/* Leader (cycling symbols) followed by all SSTV_HEIGHT lines of a P4 raster. */
+/* Leader (cycling symbols) followed by every physical frame of a P4 raster (interleaved). */
 int sstv_mod_image(sstv_mod* m, const uint8_t* image_bits, int16_t* out, int cap);
 
 /* Samples needed by sstv_mod_image at this sample rate (with a little slack). */

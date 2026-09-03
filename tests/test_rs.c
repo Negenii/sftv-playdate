@@ -9,7 +9,7 @@ static uint32_t rnd(void) {
 }
 
 int main(void) {
-    enum { K = 52, N = K + RS_PARITY };
+    enum { K = 28, N = K + RS_PARITY };
     uint8_t data[K], block[N], ref[N];
 
     /* Clean block decodes with 0 corrections and no change. */
@@ -52,6 +52,35 @@ int main(void) {
     printf("  rs: %d/%d blocks with 1..%d errors corrected exactly\n", ok, trials, RS_MAX_ERRORS);
     CHECK_EQ_INT(ok, trials);
 
+    /* Errors and erasures: 2t + e <= RS_PARITY must decode exactly. */
+    int ee_trials = 0, ee_ok = 0;
+    for(int e = 0; e <= RS_PARITY; e++) {
+        for(int t = 0; 2 * t + e <= RS_PARITY; t++) {
+            for(int rep = 0; rep < 60; rep++) {
+                for(int i = 0; i < K; i++) data[i] = (uint8_t)rnd();
+                memcpy(ref, data, K);
+                rs_encode(data, K, ref + K);
+                memcpy(block, ref, N);
+                int pos[RS_PARITY];
+                int np = 0;
+                while(np < e + t) {
+                    int p = (int)(rnd() % N);
+                    int dup = 0;
+                    for(int q = 0; q < np; q++) dup |= (pos[q] == p);
+                    if(!dup) pos[np++] = p;
+                }
+                /* erasures: corrupt (or not: an erased byte may be right) the first e */
+                for(int q = 0; q < e; q++) if(rnd() & 1) block[pos[q]] ^= (uint8_t)(1 + rnd() % 255);
+                for(int q = e; q < e + t; q++) block[pos[q]] ^= (uint8_t)(1 + rnd() % 255);
+                int r = rs_decode_erasures(block, N, pos, e);
+                ee_trials++;
+                if(r >= 0 && memcmp(block, ref, N) == 0) ee_ok++;
+            }
+        }
+    }
+    printf("  rs: errors+erasures %d/%d exact\n", ee_ok, ee_trials);
+    CHECK_EQ_INT(ee_ok, ee_trials);
+
     /* Too many errors: must not claim success silently (returns -1) most of the time. */
     int flagged = 0, silent_wrong = 0;
     for(int t = 0; t < 300; t++) {
@@ -59,12 +88,12 @@ int main(void) {
         memcpy(ref, data, K);
         rs_encode(data, K, ref + K);
         memcpy(block, ref, N);
-        for(int e = 0; e < 9; e++) block[rnd() % N] ^= (uint8_t)(1 + rnd() % 255);
+        for(int e = 0; e < RS_PARITY + 2; e++) block[rnd() % N] ^= (uint8_t)(1 + rnd() % 255);
         int r = rs_decode(block, N);
         if(r < 0) flagged++;
         else if(memcmp(block, ref, N) != 0) silent_wrong++;
     }
-    printf("  rs: 9 errors -> flagged %d/300, miscorrected %d/300\n", flagged, silent_wrong);
+    printf("  rs: %d errors -> flagged %d/300, miscorrected %d/300\n", RS_PARITY + 2, flagged, silent_wrong);
     CHECK(flagged >= 250); /* miscorrections are caught by the CRC one layer up */
     TEST_MAIN_END();
 }

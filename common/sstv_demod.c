@@ -34,7 +34,7 @@ static inline int32_t tcos(uint32_t ph) {
                       (SSTV_DEMOD_TABLE_SIZE - 1)];
 }
 
-void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_line_cb cb, void* ctx) {
+void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_phys_cb cb, void* ctx) {
     table_init();
     memset(d, 0, sizeof *d);
     d->sample_rate = sample_rate;
@@ -42,6 +42,7 @@ void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_line_cb cb, void* ct
     d->bit_len = sample_rate * (float)SSTV_SYMBOL_US / 1000000.0f;
     d->bit_len_nominal = d->bit_len;
     d->last_edge = -1.0;
+    d->predicted_edge = -1.0;
     float win = sample_rate * (float)SSTV_WINDOW_US / 1000000.0f;
     d->window = (int)(win + 0.5f);
     if(d->window > SSTV_DEMOD_MAX_WINDOW) d->window = SSTV_DEMOD_MAX_WINDOW;
@@ -75,9 +76,7 @@ void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_line_cb cb, void* ct
 }
 
 void sstv_demod_reset_counters(sstv_demod* d) {
-    d->lines = 0;
-    d->crc_errors = 0;
-    d->rs_corrected = 0;
+    d->frames = 0;
 }
 
 static inline void det_push(sstv_det* dt, int16_t new_s, int16_t old_s, int window) {
@@ -87,14 +86,9 @@ static inline void det_push(sstv_det* dt, int16_t new_s, int16_t old_s, int wind
     dt->phase += dt->step;
 }
 
-static void finish_line(sstv_demod* d) {
-    uint8_t line_no, pixels[SSTV_LINE_BYTES];
-    int corrected = 0;
-    bool ok = sstv_frame_unpack_ex(d->frame, &line_no, pixels, &corrected);
-    d->lines++;
-    if(!ok) d->crc_errors++;
-    if(corrected > 0) d->rs_corrected += corrected;
-    if(d->cb) d->cb(d->ctx, line_no, pixels, ok, d->margin, corrected);
+static void finish_frame(sstv_demod* d) {
+    d->frames++;
+    if(d->cb) d->cb(d->ctx, d->frame, d->margin);
     d->state = SSTV_DEMOD_IDLE;
 }
 
@@ -142,6 +136,49 @@ static void decide_symbol(sstv_demod* d) {
     d->symbol_index++;
 }
 
+#define SSTV_FLYWHEEL_FRAMES 3
+
+/* Starts a frame whose first data sample is at t0. */
+static void start_frame(sstv_demod* d, double t0, bool real_edge) {
+    const double symbols = (double)SSTV_PHYS_US / (double)SSTV_SYMBOL_US;
+    if(real_edge) {
+        /* Clock tracking: consecutive syncs are exactly one physical frame apart in
+         * transmitter time, so the interval measures the symbol length in our samples
+         * (absorbing both devices' clock errors, ~0.1 % in practice). Missed frames give
+         * integer multiples; anything else is ignored. */
+        if(d->last_edge >= 0.0) {
+            double interval = t0 - d->last_edge;
+            double nominal = (double)d->bit_len_nominal * symbols;
+            double r = interval / nominal;
+            int k = (int)(r + 0.5);
+            if(k >= 1 && k <= 4 && r > k * 0.98 && r < k * 1.02) {
+                float measured = (float)(interval / (k * symbols));
+                d->bit_len = 0.5f * d->bit_len + 0.5f * measured;
+            }
+        }
+        d->last_edge = t0;
+        d->flywheel_left = SSTV_FLYWHEEL_FRAMES;
+    } else {
+        d->flywheel_left--;
+        d->flywheel_frames++;
+    }
+    d->predicted_edge = t0 + symbols * (double)d->bit_len;
+    d->next_decision = t0 + (double)(d->sample_point * d->bit_len) - 1.0;
+    d->symbol_index = 0;
+    memset(d->frame, 0, sizeof d->frame);
+    d->sync_run = 0; /* a resync during DATA needs a fresh burst */
+    d->state = SSTV_DEMOD_DATA;
+}
+
+/* Flywheel: a sync buried in noise is replaced by the predicted frame start, so only the
+ * symbols under the noise are lost (and mostly repaired by the block decoder). */
+static void maybe_flywheel(sstv_demod* d) {
+    if(d->predicted_edge < 0.0 || d->flywheel_left <= 0) return;
+    /* The real crossover shows up W/2 samples after the edge; give it half a symbol. */
+    double tolerance = 0.5 * (double)d->bit_len;
+    if((double)d->n > d->predicted_edge + tolerance) start_frame(d, d->predicted_edge, false);
+}
+
 void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n) {
     const int W = d->window;
     const int WL = W * SSTV_SYNC_WINDOW_MULT;
@@ -182,7 +219,11 @@ void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n) {
 
         switch(d->state) {
         case SSTV_DEMOD_IDLE:
-            if(d->sync_run >= d->sync_min_run) d->state = SSTV_DEMOD_SYNC;
+            if(d->sync_run >= d->sync_min_run) {
+                d->state = SSTV_DEMOD_SYNC;
+            } else {
+                maybe_flywheel(d);
+            }
             break;
 
         case SSTV_DEMOD_SYNC:
@@ -190,40 +231,40 @@ void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n) {
              * is half in each, so the first data sample is about n - W/2. */
             if(es < edata) {
                 double t0 = (double)d->n - (double)W / 2.0 + (double)d->edge_adjust;
-                /* Clock tracking: consecutive syncs are exactly one line apart in
-                 * transmitter time, so the interval measures the symbol length in our
-                 * samples (absorbing both devices' clock errors, ~0.1 % in practice).
-                 * Missed lines give integer multiples; anything else is ignored. */
-                if(d->last_edge >= 0.0) {
-                    const double symbols = (double)SSTV_LINE_US / (double)SSTV_SYMBOL_US;
-                    double interval = t0 - d->last_edge;
-                    double nominal = (double)d->bit_len_nominal * symbols;
-                    double r = interval / nominal;
-                    int k = (int)(r + 0.5);
-                    if(k >= 1 && k <= 4 && r > k * 0.98 && r < k * 1.02) {
-                        float measured = (float)(interval / (k * symbols));
-                        d->bit_len = 0.5f * d->bit_len + 0.5f * measured;
+                /* Once locked, a crossover that disagrees with the prediction by more than a
+                 * third of a symbol is noise on the sync edge: trust the prediction. */
+                if(d->predicted_edge >= 0.0 && d->flywheel_left > 0) {
+                    double err = t0 - d->predicted_edge;
+                    if(err < 0) err = -err;
+                    if(err > 0.3 * (double)d->bit_len) {
+                        start_frame(d, d->predicted_edge, false);
+                        d->flywheel_left = SSTV_FLYWHEEL_FRAMES; /* the sync itself was seen */
+                        break;
                     }
                 }
-                d->last_edge = t0;
-                d->next_decision = t0 + (double)(d->sample_point * d->bit_len) - 1.0;
-                d->symbol_index = 0;
-                memset(d->frame, 0, sizeof d->frame);
-                d->sync_run = 0; /* a resync during DATA needs a fresh burst */
-                d->state = SSTV_DEMOD_DATA;
+                start_frame(d, t0, true);
+            } else {
+                maybe_flywheel(d);
             }
             break;
 
         case SSTV_DEMOD_DATA:
             if(d->sync_run >= d->sync_min_run) {
-                /* A new sync in the middle of a line: abandon it, resync. */
-                d->state = SSTV_DEMOD_SYNC;
+                /* A sync burst can only legitimately start SSTV_SYNC_US before the predicted
+                 * edge; anything earlier is noise that happens to look like the sync tone. */
+                double sync_len = (double)d->sample_rate * (double)SSTV_SYNC_US / 1000000.0;
+                if(d->predicted_edge >= 0.0 && d->flywheel_left > 0 &&
+                   (double)d->n < d->predicted_edge - sync_len - 0.5 * (double)d->bit_len) {
+                    d->sync_run = 0;
+                } else {
+                    d->state = SSTV_DEMOD_SYNC; /* abandon the frame, resync */
+                }
                 break;
             }
             if((double)d->n >= d->next_decision) {
                 decide_symbol(d);
                 d->next_decision += (double)d->bit_len;
-                if(d->symbol_index >= SSTV_SYMBOLS_PER_FRAME) finish_line(d);
+                if(d->symbol_index >= SSTV_SYMBOLS_PER_FRAME) finish_frame(d);
             }
             break;
         }
@@ -255,8 +296,6 @@ void sstv_demod_status(const sstv_demod* d, sstv_demod_status_t* out) {
     if(lvl > 1.0f) lvl = 1.0f;
     out->level = lvl;
     out->tone = best;
-    out->lines = d->lines;
-    out->crc_errors = d->crc_errors;
-    out->rs_corrected = d->rs_corrected;
+    out->frames = d->frames;
     out->state = d->state;
 }

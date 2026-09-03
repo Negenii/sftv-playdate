@@ -1,5 +1,6 @@
 #include "test_util.h"
 #include "sstv_demod.h"
+#include "sstv_rx.h"
 #include "sstv_modem_ref.h"
 #include "sstv_frame.h"
 #include <math.h>
@@ -8,27 +9,36 @@
 
 #define AMP 8000
 
+/* demod -> rx -> segments */
 typedef struct {
-    int count;
-    int crc_ok;
-    int in_order;
-    uint8_t last_line;
-    uint8_t got[SSTV_HEIGHT][SSTV_LINE_BYTES];
-    uint8_t seen[SSTV_HEIGHT];
+    sstv_rx rx;
+    int count; /* segments delivered */
+    int ok;
+    uint8_t got[SSTV_NUM_SEGS][SSTV_SEG_BYTES];
+    uint8_t seen[SSTV_NUM_SEGS]; /* 1 delivered bad, 2 delivered ok */
 } capture;
 
-static void on_line(void* ctx, uint8_t line_no, const uint8_t* pixels, bool crc_ok, const float* soft, int corrected) {
-    (void)soft;
+static void on_seg(void* ctx, uint16_t seg, const uint8_t* pixels, bool ok, int corrected) {
     (void)corrected;
     capture* c = ctx;
-    if(c->count > 0 && line_no == (uint8_t)(c->last_line + 1)) c->in_order++;
-    c->last_line = line_no;
     c->count++;
-    if(crc_ok) c->crc_ok++;
-    if(line_no < SSTV_HEIGHT) {
-        memcpy(c->got[line_no], pixels, SSTV_LINE_BYTES);
-        c->seen[line_no] = 1;
+    if(ok) c->ok++;
+    if(seg < SSTV_NUM_SEGS) {
+        if(ok || !c->seen[seg]) memcpy(c->got[seg], pixels, SSTV_SEG_BYTES);
+        if(ok) c->seen[seg] = 2;
+        else if(!c->seen[seg]) c->seen[seg] = 1;
     }
+}
+
+static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
+    capture* c = ctx;
+    sstv_rx_phys(&c->rx, frame, soft);
+}
+
+static capture* capture_new(void) {
+    capture* c = calloc(1, sizeof *c);
+    sstv_rx_init(&c->rx, on_seg, c);
+    return c;
 }
 
 /* Deterministic pseudo random bytes. */
@@ -71,89 +81,99 @@ static void feed_chunked(sstv_demod* d, const int16_t* s, int n) {
     }
 }
 
-static void test_single_line(void) {
-    uint8_t pixels[SSTV_LINE_BYTES], frame[SSTV_FRAME_BYTES];
-    fill_random(pixels, SSTV_LINE_BYTES);
-    sstv_frame_pack(7, pixels, frame);
-
-    float sr = 44100.0f;
-    int pre = silence_samples(sr, 20), post = silence_samples(sr, 20);
-    int cap = pre + 4000 + 80000 + post;
-    int16_t* s = calloc((size_t)cap, sizeof(int16_t));
-    sstv_mod m;
-    sstv_mod_init(&m, sr, AMP);
-    int n = pre;
-    n += sstv_mod_tone(&m, m.tones[1], 50000, s + n, cap - n); /* short leader */
-    n += sstv_mod_frame(&m, frame, s + n, cap - n);
-    n += post;
-
-    capture c = {0};
-    sstv_demod d;
-    sstv_demod_init(&d, sr, on_line, &c);
-    feed_chunked(&d, s, n);
-
-    CHECK_EQ_INT(c.count, 1);
-    CHECK_EQ_INT(c.crc_ok, 1);
-    CHECK_EQ_INT(c.last_line, 7);
-    CHECK(memcmp(c.got[7], pixels, SSTV_LINE_BYTES) == 0);
-
-    sstv_demod_status_t st;
-    sstv_demod_status(&d, &st);
-    CHECK_EQ_INT(st.lines, 1);
-    CHECK_EQ_INT(st.crc_errors, 0);
-    CHECK(st.state == SSTV_DEMOD_IDLE);
-    free(s);
-}
-
-/* Modulates a whole random image with the given modulator settings, demodulates at
- * demod_sr, returns the capture. */
-static void run_image(sstv_mod* m, float demod_sr, float noise_sigma, capture* c, uint8_t* image) {
-    fill_random(image, SSTV_IMAGE_BYTES);
-    int cap = sstv_mod_image_capacity(m->sample_rate) + silence_samples(m->sample_rate, 100);
-    int16_t* s = calloc((size_t)cap, sizeof(int16_t));
-    int pre = silence_samples(m->sample_rate, 50);
-    int n = pre + sstv_mod_image(m, image, s + pre, cap - pre);
-    n += silence_samples(m->sample_rate, 50);
-    if(noise_sigma > 0) add_noise(s, n, noise_sigma);
-
-    memset(c, 0, sizeof *c);
-    sstv_demod d;
-    sstv_demod_init(&d, demod_sr, on_line, c);
-    feed_chunked(&d, s, n);
-    free(s);
-}
-
-static int lines_matching(const capture* c, const uint8_t* image) {
+static int segs_matching(const capture* c, const uint8_t* image) {
     int ok = 0;
-    for(int y = 0; y < SSTV_HEIGHT; y++) {
-        if(c->seen[y] && memcmp(c->got[y], image + y * SSTV_LINE_BYTES, SSTV_LINE_BYTES) == 0) ok++;
+    for(int s = 0; s < SSTV_NUM_SEGS; s++) {
+        const uint8_t* truth = image + sstv_seg_line(s) * SSTV_LINE_BYTES + sstv_seg_byte_offset(s);
+        if(c->seen[s] == 2 && memcmp(c->got[s], truth, SSTV_SEG_BYTES) == 0) ok++;
     }
     return ok;
 }
 
+/* Modulates a whole random image, optionally adds noise (continuous sigma and/or periodic
+ * bursts), demodulates at demod_sr, returns segments matching. */
+typedef struct {
+    float sigma; /* continuous white noise */
+    float burst_sigma; /* burst noise level */
+    int burst_ms; /* burst length */
+    int burst_period_ms; /* burst repetition */
+} noise_spec;
+
+static int run_image(sstv_mod* m, float demod_sr, const noise_spec* ns, capture* c, uint8_t* image) {
+    fill_random(image, SSTV_IMAGE_BYTES);
+    float sr = m->sample_rate;
+    int cap = sstv_mod_image_capacity(sr) + silence_samples(sr, 100);
+    int16_t* s = calloc((size_t)cap, sizeof(int16_t));
+    int pre = silence_samples(sr, 50);
+    int n = pre + sstv_mod_image(m, image, s + pre, cap - pre);
+    n += silence_samples(sr, 50);
+    if(ns) {
+        if(ns->sigma > 0) add_noise(s, n, ns->sigma);
+        if(ns->burst_sigma > 0) {
+            int period = silence_samples(sr, ns->burst_period_ms), len = silence_samples(sr, ns->burst_ms);
+            for(int start = period / 2; start + len < n; start += period) add_noise(s + start, len, ns->burst_sigma);
+        }
+    }
+    sstv_demod d;
+    sstv_demod_init(&d, demod_sr, on_phys, c);
+    feed_chunked(&d, s, n);
+    free(s);
+    if(ns) printf("    (physical frames %d, flywheel %d)\n", d.frames, d.flywheel_frames);
+    return segs_matching(c, image);
+}
+
+static void test_single_block(void) {
+    /* One interleave block of random segments, preceded by a short leader. */
+    float sr = 44100.0f;
+    uint8_t* image = calloc(SSTV_IMAGE_BYTES, 1);
+    fill_random(image, SSTV_IMAGE_BYTES);
+    uint8_t* phys = malloc(SSTV_NUM_SEGS * SSTV_FRAME_BYTES);
+    sstv_build_physical(image, phys);
+    int cap = silence_samples(sr, 200) + SSTV_ILEAVE * 30000;
+    int16_t* s = calloc((size_t)cap, sizeof(int16_t));
+    sstv_mod m;
+    sstv_mod_init(&m, sr, AMP);
+    int n = silence_samples(sr, 20);
+    n += sstv_mod_tone(&m, m.tones[1], 50000, s + n, cap - n);
+    for(int p = 0; p < SSTV_ILEAVE; p++) n += sstv_mod_frame(&m, phys + p * SSTV_FRAME_BYTES, s + n, cap - n);
+    n += silence_samples(sr, 20);
+
+    capture* c = capture_new();
+    sstv_demod d;
+    sstv_demod_init(&d, sr, on_phys, c);
+    feed_chunked(&d, s, n);
+    CHECK_EQ_INT(d.frames, SSTV_ILEAVE);
+    CHECK_EQ_INT(c->count, SSTV_ILEAVE);
+    CHECK_EQ_INT(c->ok, SSTV_ILEAVE);
+    CHECK_EQ_INT(segs_matching(c, image), SSTV_ILEAVE);
+    /* the flywheel may already be waiting for a next frame; it must not have produced one */
+    CHECK_EQ_INT(d.frames, SSTV_ILEAVE);
+    free(s);
+    free(phys);
+    free(image);
+    free(c);
+}
+
 static void test_full_image_clean(void) {
     uint8_t* image = malloc(SSTV_IMAGE_BYTES);
-    capture* c = malloc(sizeof *c);
+    capture* c = capture_new();
     sstv_mod m;
     sstv_mod_init(&m, 44100.0f, AMP);
-    run_image(&m, 44100.0f, 0.0f, c, image);
-    CHECK_EQ_INT(c->count, SSTV_HEIGHT);
-    CHECK_EQ_INT(c->crc_ok, SSTV_HEIGHT);
-    CHECK_EQ_INT(c->in_order, SSTV_HEIGHT - 1);
-    CHECK_EQ_INT(lines_matching(c, image), SSTV_HEIGHT);
+    int ok = run_image(&m, 44100.0f, NULL, c, image);
+    CHECK_EQ_INT(c->count, SSTV_NUM_SEGS);
+    CHECK_EQ_INT(ok, SSTV_NUM_SEGS);
     free(c);
     free(image);
 }
 
-static void test_full_image_noise(float sigma, const char* label, int min_ok) {
+static void test_noise(const noise_spec* ns, const char* label, int min_ok) {
     uint8_t* image = malloc(SSTV_IMAGE_BYTES);
-    capture* c = malloc(sizeof *c);
+    capture* c = capture_new();
     sstv_mod m;
     sstv_mod_init(&m, 44100.0f, AMP);
-    run_image(&m, 44100.0f, sigma, c, image);
-    int ok = lines_matching(c, image);
-    printf("  noise %s: %d/%d lines intact, %d received, %d crc errors\n",
-           label, ok, SSTV_HEIGHT, c->count, c->count - c->crc_ok);
+    int ok = run_image(&m, 44100.0f, ns, c, image);
+    printf("  %s: %d/%d segments intact, %d delivered, rs fixed %d bytes\n", label, ok, SSTV_NUM_SEGS, c->count,
+           c->rx.rs_corrected);
     CHECK(ok >= min_ok);
     free(c);
     free(image);
@@ -161,106 +181,105 @@ static void test_full_image_noise(float sigma, const char* label, int min_ok) {
 
 static void test_frequency_offset(void) {
     uint8_t* image = malloc(SSTV_IMAGE_BYTES);
-    capture* c = malloc(sizeof *c);
+    capture* c = capture_new();
     sstv_mod m;
     sstv_mod_init(&m, 44100.0f, AMP);
     for(int k = 0; k < SSTV_NUM_TONES; k++) m.tones[k] *= 1.015f;
     m.fsync *= 1.015f;
-    run_image(&m, 44100.0f, 0.0f, c, image);
-    CHECK_EQ_INT(lines_matching(c, image), SSTV_HEIGHT);
+    CHECK_EQ_INT(run_image(&m, 44100.0f, NULL, c, image), SSTV_NUM_SEGS);
     free(c);
     free(image);
 }
 
 static void test_clock_offset(void) {
     uint8_t* image = malloc(SSTV_IMAGE_BYTES);
-    capture* c = malloc(sizeof *c);
-    sstv_mod m;
-    /* Transmitter 1500 ppm slow relative to the receiver (a Flipper vs Playdate pair
-     * measured 1000 ppm): 0.8 symbol of drift per line without clock tracking. The
-     * receiver learns the symbol length from the first sync-to-sync interval, so only
-     * line 0 may be lost. */
-    sstv_mod_init(&m, 44100.0f * (1.0f - 0.0015f), AMP);
-    run_image(&m, 44100.0f, 0.0f, c, image);
-    int ok = lines_matching(c, image);
-    printf("  clock -1500ppm: %d/%d lines intact\n", ok, SSTV_HEIGHT);
-    CHECK(ok >= SSTV_HEIGHT - 1);
-    sstv_mod_init(&m, 44100.0f * (1.0f + 0.0015f), AMP);
-    run_image(&m, 44100.0f, 0.0f, c, image);
-    ok = lines_matching(c, image);
-    printf("  clock +1500ppm: %d/%d lines intact\n", ok, SSTV_HEIGHT);
-    CHECK(ok >= SSTV_HEIGHT - 1);
-    free(c);
+    for(int sign = -1; sign <= 1; sign += 2) {
+        capture* c = capture_new();
+        sstv_mod m;
+        sstv_mod_init(&m, 44100.0f * (1.0f + sign * 0.0015f), AMP);
+        int ok = run_image(&m, 44100.0f, NULL, c, image);
+        printf("  clock %+d ppm: %d/%d segments intact\n", sign * 1500, ok, SSTV_NUM_SEGS);
+        CHECK(ok >= SSTV_NUM_SEGS - SSTV_ILEAVE); /* the first block may be lost */
+        free(c);
+    }
     free(image);
 }
 
 static void test_other_sample_rate(void) {
     uint8_t* image = malloc(SSTV_IMAGE_BYTES);
-    capture* c = malloc(sizeof *c);
+    capture* c = capture_new();
     sstv_mod m;
     sstv_mod_init(&m, 22050.0f, AMP);
-    run_image(&m, 22050.0f, 0.0f, c, image);
-    CHECK_EQ_INT(lines_matching(c, image), SSTV_HEIGHT);
+    CHECK_EQ_INT(run_image(&m, 22050.0f, NULL, c, image), SSTV_NUM_SEGS);
     free(c);
     free(image);
 }
 
 static void test_lost_sync(void) {
-    /* Three lines; the middle one's sync is cut to 2 ms. Expect lines 0 and 2 only. */
+    /* Two blocks; the second physical frame of block 0 loses most of its sync. The
+     * flywheel must start that frame from the predicted edge, so both blocks survive. */
     float sr = 44100.0f;
-    uint8_t pixels[3][SSTV_LINE_BYTES], frame[SSTV_FRAME_BYTES];
-    for(int i = 0; i < 3; i++) fill_random(pixels[i], SSTV_LINE_BYTES);
-    int cap = 4 * 60000;
+    uint8_t* image = calloc(SSTV_IMAGE_BYTES, 1);
+    fill_random(image, SSTV_IMAGE_BYTES);
+    uint8_t* phys = malloc(SSTV_NUM_SEGS * SSTV_FRAME_BYTES);
+    sstv_build_physical(image, phys);
+    int cap = 2 * SSTV_ILEAVE * 30000 + 20000;
     int16_t* s = calloc((size_t)cap, sizeof(int16_t));
     sstv_mod m;
     sstv_mod_init(&m, sr, AMP);
     int n = silence_samples(sr, 20);
-    int start[3];
-    for(int i = 0; i < 3; i++) {
-        sstv_frame_pack((uint8_t)i, pixels[i], frame);
-        start[i] = n;
-        n += sstv_mod_frame(&m, frame, s + n, cap - n);
+    int start[2 * SSTV_ILEAVE];
+    for(int p = 0; p < 2 * SSTV_ILEAVE; p++) {
+        start[p] = n;
+        n += sstv_mod_frame(&m, phys + p * SSTV_FRAME_BYTES, s + n, cap - n);
     }
     n += silence_samples(sr, 20);
-    int cut_ms = SSTV_SYNC_US / 1000 - 2; /* leave 2 ms of the burst */
+    int cut_ms = SSTV_SYNC_US / 1000 - 2;
     memset(s + start[1], 0, sizeof(int16_t) * (size_t)silence_samples(sr, cut_ms));
 
-    capture c = {0};
+    capture* c = capture_new();
     sstv_demod d;
-    sstv_demod_init(&d, sr, on_line, &c);
+    sstv_demod_init(&d, sr, on_phys, c);
     feed_chunked(&d, s, n);
-    CHECK(c.seen[0]);
-    CHECK(!c.seen[1]);
-    CHECK(c.seen[2]);
-    CHECK(memcmp(c.got[0], pixels[0], SSTV_LINE_BYTES) == 0);
-    CHECK(memcmp(c.got[2], pixels[2], SSTV_LINE_BYTES) == 0);
+    int ok0 = 0, ok1 = 0;
+    for(int i = 0; i < SSTV_ILEAVE; i++) {
+        ok0 += c->seen[i] == 2;
+        ok1 += c->seen[SSTV_ILEAVE + i] == 2;
+    }
+    CHECK_EQ_INT(ok0, SSTV_ILEAVE);
+    CHECK_EQ_INT(ok1, SSTV_ILEAVE);
+    CHECK(d.flywheel_frames >= 1);
     free(s);
+    free(phys);
+    free(image);
+    free(c);
 }
 
 static void test_silence_and_reset(void) {
     sstv_demod d;
-    sstv_demod_init(&d, 44100.0f, on_line, NULL);
+    sstv_demod_init(&d, 44100.0f, on_phys, NULL);
     int16_t zeros[4410] = {0};
     sstv_demod_feed(&d, zeros, 4410);
     sstv_demod_status_t st;
     sstv_demod_status(&d, &st);
     CHECK_EQ_INT(st.tone, -1);
     CHECK(st.level < 0.01f);
-    CHECK_EQ_INT(st.lines, 0);
-    d.lines = 5;
-    d.crc_errors = 2;
-    sstv_demod_reset_counters(&d);
-    sstv_demod_status(&d, &st);
-    CHECK_EQ_INT(st.lines, 0);
-    CHECK_EQ_INT(st.crc_errors, 0);
+    CHECK_EQ_INT(st.frames, 0);
 }
 
 int main(void) {
-    test_single_line();
+    test_single_block();
     test_full_image_clean();
-    /* sigma relative to the square-wave amplitude: 6 dB and 0 dB SNR. */
-    test_full_image_noise((float)AMP / 2.0f, "6 dB", SSTV_HEIGHT * 95 / 100);
-    test_full_image_noise((float)AMP, "0 dB", SSTV_HEIGHT * 85 / 100);
+    noise_spec white6 = {(float)AMP / 2.0f, 0, 0, 0};
+    noise_spec white0 = {(float)AMP, 0, 0, 0};
+    /* speech-like: 150 ms bursts at 6x the signal amplitude every 2 s, on top of 12 dB SNR */
+    noise_spec bursts = {(float)AMP / 4.0f, (float)AMP * 6.0f, 150, 2000};
+    /* long bursts: 400 ms every 3 s */
+    noise_spec long_bursts = {(float)AMP / 4.0f, (float)AMP * 6.0f, 400, 3000};
+    test_noise(&white6, "white 6 dB", SSTV_NUM_SEGS);
+    test_noise(&white0, "white 0 dB", SSTV_NUM_SEGS * 95 / 100);
+    test_noise(&bursts, "150 ms bursts / 2 s", SSTV_NUM_SEGS * 97 / 100);
+    test_noise(&long_bursts, "400 ms bursts / 3 s", SSTV_NUM_SEGS * 80 / 100);
     test_frequency_offset();
     test_clock_offset();
     test_other_sample_rate();

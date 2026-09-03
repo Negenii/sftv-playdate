@@ -5,12 +5,12 @@
 #include "pd_api.h"
 #include "sstv_params.h"
 #include "sstv_demod.h"
+#include "sstv_rx.h"
 #include "sstv_frame.h"
 #include "mic_ring.h"
 
 #define STATUS_H 20
 #define LOST_TIMEOUT_MS 5000
-#define LINE_MS (SSTV_LINE_US / 1000)
 
 static PlaydateAPI* pd;
 static LCDBitmap* image;
@@ -18,19 +18,15 @@ static uint8_t* image_data;
 static int image_rowbytes;
 
 static sstv_demod demod;
+static sstv_rx rx;
 static mic_ring ring;
 
-/* Per-row state. The transmitter loops over the image, so every row gets several chances:
- * a row is "good" once a copy passes Reed-Solomon + CRC; until then soft decisions from
- * each pass are accumulated and re-decoded, so weak receptions add up. */
-static float* acc; /* SSTV_HEIGHT * SSTV_FRAME_BITS soft sums */
-static uint8_t row_state[SSTV_HEIGHT]; /* 0 none, 1 noisy, 2 good */
-static int distinct_lines; /* rows with anything drawn */
-static int good_lines; /* rows with a verified copy */
-static int accumulated_lines; /* noisy lines merged into the accumulator */
-static int ref_line = -1; /* last confidently identified line ... */
-static unsigned ref_ms; /* ... and when it arrived: predicts the next line number */
-static unsigned last_line_ms;
+/* Per-segment state: a segment is "good" once a copy passed Reed-Solomon + CRC. Bad copies
+ * are drawn (that is the "satellite noise" look) but never over a good one. */
+static uint8_t seg_state[SSTV_NUM_SEGS]; /* 0 none, 1 noisy, 2 good */
+static int distinct_segs;
+static int good_segs;
+static unsigned last_seg_ms;
 static int mic_state; /* 0 asking, 1 allowed, -1 denied */
 static bool show_status = true;
 
@@ -52,92 +48,36 @@ static int mic_cb(void* context, int16_t* data, int len) {
 
 /* ---- main thread ---- */
 
-static void draw_row(int row, const uint8_t* pixels) {
-    uint8_t* dst = image_data + row * image_rowbytes;
+static void draw_segment(int seg, const uint8_t* pixels) {
+    uint8_t* dst = image_data + sstv_seg_line(seg) * image_rowbytes + sstv_seg_byte_offset(seg);
     /* PBM: 1 = black. Playdate bitmap: 1 = white. */
-    for(int i = 0; i < SSTV_LINE_BYTES; i++) dst[i] = (uint8_t)~pixels[i];
-    if(row_state[row] == 0) distinct_lines++;
+    for(int i = 0; i < SSTV_SEG_BYTES; i++) dst[i] = (uint8_t)~pixels[i];
 }
 
-static void mark_good(int row, const uint8_t* pixels) {
-    draw_row(row, pixels);
-    if(row_state[row] != 2) good_lines++;
-    row_state[row] = 2;
-    /* Pin the accumulator so later noisy copies cannot flip a verified row. */
-    float* a = acc + row * SSTV_FRAME_BITS;
-    for(int i = 0; i < SSTV_FRAME_BITS; i++) a[i] = 0.0f;
-}
-
-static int hamming8(uint8_t a, uint8_t b) {
-    uint8_t x = a ^ b;
-    int n = 0;
-    while(x) {
-        n += x & 1;
-        x >>= 1;
-    }
-    return n;
-}
-
-static void on_line(void* ctx, uint8_t line_no, const uint8_t* pixels, bool crc_ok, const float* soft, int corrected) {
+static void on_seg(void* ctx, uint16_t seg, const uint8_t* pixels, bool ok, int corrected) {
     (void)ctx;
     (void)corrected;
-    unsigned now = pd->system->getCurrentTimeMilliseconds();
-    last_line_ms = now;
+    last_seg_ms = pd->system->getCurrentTimeMilliseconds();
+    if(seg >= SSTV_NUM_SEGS) return;
+    if(seg_state[seg] == 2 && !ok) return;
+    draw_segment(seg, pixels);
+    if(seg_state[seg] == 0) distinct_segs++;
+    if(ok && seg_state[seg] != 2) good_segs++;
+    seg_state[seg] = ok ? 2 : 1;
+}
 
-    if(crc_ok) {
-        if(line_no < SSTV_HEIGHT) {
-            mark_good(line_no, pixels);
-            ref_line = line_no;
-            ref_ms = now;
-        }
-        return;
-    }
-
-    /* Corrupted line: the line-number byte itself may be wrong. Lines are sent in order
-     * every LINE_MS, so predict the number from the last verified line and only accept
-     * the decoded byte if it agrees (within 2 bits) with the prediction. */
-    int row;
-    if(ref_line < 0) {
-        if(line_no >= SSTV_HEIGHT) return;
-        row = line_no;
-    } else {
-        unsigned elapsed = now - ref_ms;
-        int steps = (int)((elapsed + LINE_MS / 2) / LINE_MS);
-        row = (ref_line + steps) % SSTV_HEIGHT;
-        if(hamming8((uint8_t)row, line_no) > 2) return;
-    }
-    if(row_state[row] == 2) return; /* already verified, nothing to add */
-
-    float* a = acc + row * SSTV_FRAME_BITS;
-    for(int i = 0; i < SSTV_FRAME_BITS; i++) a[i] += soft[i];
-    accumulated_lines++;
-
-    /* Re-decide the row from everything heard so far. */
-    uint8_t frame[SSTV_FRAME_BYTES];
-    memset(frame, 0, sizeof frame);
-    for(int i = 0; i < SSTV_FRAME_BITS; i++) {
-        if(a[i] > 0.0f) frame[i >> 3] |= (uint8_t)(0x80 >> (i & 7));
-    }
-    uint8_t got_line, px[SSTV_LINE_BYTES];
-    if(sstv_frame_unpack_ex(frame, &got_line, px, NULL) && got_line == row) {
-        mark_good(row, px);
-        ref_line = row;
-        ref_ms = now;
-        return;
-    }
-    draw_row(row, px);
-    row_state[row] = 1;
+static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
+    (void)ctx;
+    sstv_rx_phys(&rx, frame, soft);
 }
 
 static void clear_image(void) {
     memset(image_data, 0xFF, (size_t)image_rowbytes * SSTV_HEIGHT);
-    memset(row_state, 0, sizeof row_state);
-    memset(acc, 0, sizeof(float) * SSTV_HEIGHT * SSTV_FRAME_BITS);
-    distinct_lines = 0;
-    good_lines = 0;
-    accumulated_lines = 0;
-    ref_line = -1;
+    memset(seg_state, 0, sizeof seg_state);
+    distinct_segs = 0;
+    good_segs = 0;
     sstv_demod_reset_counters(&demod);
+    sstv_rx_reset_counters(&rx);
 }
 
 static void start_mic(void) {
@@ -193,23 +133,22 @@ static void draw_status(void) {
     } else if(mic_state == 0) {
         snprintf(text, sizeof text, "waiting for microphone permission...");
     } else {
-        const char* tone = st.tone == SSTV_NUM_TONES ? "sync" : st.tone == 3 ? "3" : st.tone == 2 ? "2" :
-                           st.tone == 1 ? "1" : st.tone == 0 ? "0" : "-";
         unsigned now = pd->system->getCurrentTimeMilliseconds();
-        bool quiet = distinct_lines > 0 && now - last_line_ms > LOST_TIMEOUT_MS;
-        int noisy = distinct_lines - good_lines;
+        bool quiet = distinct_segs > 0 && now - last_seg_ms > LOST_TIMEOUT_MS;
+        int noisy = distinct_segs - good_segs;
+        static const char tone_names[] = "0123S";
+        char tone[2] = {st.tone >= 0 && st.tone <= SSTV_NUM_TONES ? tone_names[st.tone] : '-', 0};
         if(rec_len >= 0) {
-            snprintf(text, sizeof text, "REC %d s  good %d/%d", rec_len / REC_RATE, good_lines, SSTV_HEIGHT);
-        } else if(rec_saved) {
-            snprintf(text, sizeof text, "saved rec.wav  good %d/%d  noisy %d", good_lines, SSTV_HEIGHT,
-                     distinct_lines - good_lines);
-        } else if(good_lines == SSTV_HEIGHT) {
-            snprintf(text, sizeof text, "complete 240/240  rs fixed %d  A: clear", st.rs_corrected);
+            snprintf(text, sizeof text, "REC %d s  good %d/%d", rec_len / REC_RATE, good_segs, SSTV_NUM_SEGS);
+        } else if(good_segs == SSTV_NUM_SEGS) {
+            snprintf(text, sizeof text, "complete %d/%d  rs fixed %d  A: clear", good_segs, SSTV_NUM_SEGS,
+                     rx.rs_corrected);
         } else if(quiet) {
-            snprintf(text, sizeof text, "signal lost  good %d/%d  noisy %d", good_lines, SSTV_HEIGHT, noisy);
+            snprintf(text, sizeof text, "signal lost  good %d/%d  noisy %d%s", good_segs, SSTV_NUM_SEGS, noisy,
+                     rec_saved ? "  (rec.wav saved)" : "");
         } else {
-            snprintf(text, sizeof text, "good %d/%d  noisy %d  rs %d  tone %s", good_lines, SSTV_HEIGHT,
-                     noisy, st.rs_corrected, tone);
+            snprintf(text, sizeof text, "good %d/%d  noisy %d  rs %d  fw %d  %s", good_segs, SSTV_NUM_SEGS, noisy,
+                     rx.rs_corrected, demod.flywheel_frames, tone);
         }
     }
     pd->graphics->drawText(text, strlen(text), kASCIIEncoding, 4, y + 3);
@@ -228,7 +167,6 @@ static int update(void* userdata) {
     pd->system->getButtonState(NULL, &pushed, NULL);
     if(pushed & kButtonA) clear_image();
     if(pushed & kButtonB) show_status = !show_status;
-
     if((pushed & kButtonUp) && rec_len < 0) {
         rec_len = 0;
         rec_saved = false;
@@ -261,11 +199,11 @@ static void init(void) {
     image = pd->graphics->newBitmap(SSTV_WIDTH, SSTV_HEIGHT, kColorWhite);
     int w, h;
     pd->graphics->getBitmapData(image, &w, &h, &image_rowbytes, NULL, &image_data);
-    acc = pd->system->realloc(NULL, sizeof(float) * SSTV_HEIGHT * SSTV_FRAME_BITS);
     rec_buf = pd->system->realloc(NULL, sizeof(int16_t) * REC_SECONDS * REC_RATE);
     rec_len = -1;
     mic_ring_init(&ring);
-    sstv_demod_init(&demod, 44100.0f, on_line, NULL);
+    sstv_rx_init(&rx, on_seg, NULL);
+    sstv_demod_init(&demod, 44100.0f, on_phys, NULL);
     clear_image();
 
     enum accessReply r = pd->sound->requestMicAccess(

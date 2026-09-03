@@ -13,10 +13,9 @@ extern "C" {
 #define SSTV_DEMOD_TABLE_SIZE (1 << SSTV_DEMOD_TABLE_BITS)
 #define SSTV_DEMOD_SYNC_DET SSTV_NUM_TONES /* index of the sync detector */
 
-/* soft: SSTV_FRAME_BITS per-bit decisions in [-1, 1], positive = 1, magnitude = confidence.
- * corrected: bytes fixed by Reed-Solomon, -1 if RS gave up (then crc_ok is false). */
-typedef void (*sstv_line_cb)(
-    void* ctx, uint8_t line_no, const uint8_t* pixels, bool crc_ok, const float* soft, int corrected);
+/* One demodulated physical frame: SSTV_FRAME_BYTES raw bytes and SSTV_FRAME_BITS soft
+ * decisions in [-1, 1] (positive = 1, magnitude = confidence). Feed it to sstv_rx. */
+typedef void (*sstv_phys_cb)(void* ctx, const uint8_t* frame, const float* soft);
 
 typedef enum {
     SSTV_DEMOD_IDLE = 0, /* waiting for a sync burst */
@@ -38,6 +37,9 @@ typedef struct {
     float bit_len; /* samples per symbol, tracked from the sync-to-sync interval */
     float bit_len_nominal; /* samples per symbol at the nominal sample rate */
     double last_edge; /* sample index of the previous accepted sync->data edge, <0 none */
+    double predicted_edge; /* where the next edge should be, <0 none (flywheel sync) */
+    int flywheel_left; /* frames the flywheel may still start without a real sync */
+    int flywheel_frames; /* frames started by prediction (stats) */
     float min_energy; /* noise floor on detector energy */
     float dominance; /* sync energy must exceed data energies by this factor */
     int sync_min_run; /* net dominant samples to accept a sync */
@@ -62,23 +64,19 @@ typedef struct {
     float energy_sync_long; /* scaled to the short window's energy units */
     float margin[SSTV_FRAME_BITS]; /* per-bit soft decision of the last line */
     float gain[SSTV_NUM_TONES]; /* tracked peak energy per tone (channel gain) */
-    int lines;
-    int crc_errors;
-    int rs_corrected; /* total bytes fixed by RS */
-    sstv_line_cb cb;
+    int frames; /* physical frames delivered */
+    sstv_phys_cb cb;
     void* ctx;
 } sstv_demod;
 
 typedef struct {
     float level; /* 0..1, strongest detector, amplitude scale */
     int tone; /* -1 none, 0..SSTV_NUM_TONES-1 data tone, SSTV_NUM_TONES sync */
-    int lines;
-    int crc_errors;
-    int rs_corrected;
+    int frames;
     sstv_demod_state state;
 } sstv_demod_status_t;
 
-void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_line_cb cb, void* ctx);
+void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_phys_cb cb, void* ctx);
 void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n);
 void sstv_demod_status(const sstv_demod* d, sstv_demod_status_t* out);
 void sstv_demod_reset_counters(sstv_demod* d);
