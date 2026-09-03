@@ -12,9 +12,9 @@ extern "C" {
  * Reed-Solomon errors-and-erasures and reports image data:
  *   pixel_cb: `nbytes` pixel bytes for line `line` starting at byte `x_byte` (a half line in
  *             raw mode, a whole line in coded mode);
- *   meta_cb:  the file name announced at the start of a transmission. */
+ *   meta_cb:  the file name at the start (is_end false) and end (is_end true) of a transmission. */
 typedef void (*sstv_pixel_cb)(void* ctx, uint16_t line, int x_byte, int nbytes, const uint8_t* pixels);
-typedef void (*sstv_meta_cb)(void* ctx, const char* name);
+typedef void (*sstv_meta_cb)(void* ctx, const char* name, bool is_end);
 
 typedef struct {
     uint8_t phys[SSTV_ILEAVE][SSTV_FRAME_BYTES];

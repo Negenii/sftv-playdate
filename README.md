@@ -4,12 +4,15 @@ Flipper Zero plays a 400×240 1-bit image through its buzzer; a Playdate decodes
 microphone and draws it line by line while the sound is playing. One pass takes 1.5–5.4 minutes
 depending on how well the image compresses (dithered photos: 5.4 min; line art: much less).
 
-Signal: 4-FSK, 2 bits per 4 ms symbol; symbol 0 is silence, 1..3 are 2500/3000/3500 Hz,
-5500 Hz frame sync. Lines are losslessly coded and packed into blocks protected by Reed-Solomon
-(12 parity bytes per 41-byte frame) with CRC, four frames byte-interleaved, so a noise burst is
-spread thin and repaired. The receiver tracks the symbol clock from the sync period and
-flywheels through buried syncs. The Flipper LED follows the data (blue = tone, off = silence,
-violet = sync). Design and measurement notes:
+Signal: 4-FSK, 2 bits per 4 ms symbol; symbol 0 is silence, 1..3 are 3000/3500/4000 Hz,
+5500 Hz frame sync. Frames are 41 bytes: header (type + index), 26 payload bytes, CRC-8 and
+12 Reed-Solomon parity bytes; four frames are byte-interleaved so a noise burst is spread thin
+and repaired. A pass starts with a META frame carrying the file name and ends with an END META
+frame. Pixels go either as RAW half-line segments (a lost frame costs half a line) or, when the
+lossless line codec saves at least 15 %, as CODED blocks; the transmitter picks per image. The
+receiver tracks the symbol clock from the sync period and flywheels through buried syncs. The
+Flipper LED follows the data (blue = tone, off = silence, red = sync) and the preview inverts
+line by line as lines go out. Design and measurement notes:
 `docs/2026-09-03-sstv-flipper-playdate-design.md` (the "Current protocol"
 section on top is authoritative).
 
@@ -42,8 +45,12 @@ and copy the `.pbm` to the Flipper SD card at `/ext/apps_data/sstv_tx/`.
 
 Flipper: Apps → Tools → SSTV TX → pick a `.pbm` → OK sends one pass, Back stops.
 Playdate: SSTV RX, allow the microphone, put the Flipper 10–30 cm from the Playdate mic (bottom
-edge). Status bar: `lines N/240 bad B rs K fw F/L drop D tone`, plus a dot that flashes per frame and rings per decoded block. A clears, B hides the bar,
-Up records 30 s of raw microphone audio to `Data/com.negenii.sstvrx/rec.wav` for analysis.
+edge). A dot in the corner flashes per frame. Right toggles the side panel (name, state and
+ZIP/RAW pills, line progress, counters, tone level). When the END frame arrives a banner shows
+the file name and line count, and the image is saved as `Data/com.negenii.sstvrx/<name>.pbm`
+(same name overwrites). B opens the gallery: a grid of thumbnails, d-pad moves the cursor,
+A opens full screen, B goes back. A in receive mode clears the image, Up records 30 s of raw
+microphone audio to `rec.wav` for analysis.
 
 ## Debugging
 

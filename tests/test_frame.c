@@ -93,7 +93,7 @@ int main(void) {
     int frames = sstv_build_physical(image, "white.pbm", phys, lines_after, &coded);
     CHECK(coded);
     CHECK_EQ_INT(frames % SSTV_ILEAVE, 0);
-    CHECK(frames <= 84);
+    CHECK(frames <= 88);
     CHECK_EQ_INT(lines_after[frames - 1], SSTV_HEIGHT);
     /* meta block first: name in every logical frame */
     sstv_deinterleave(phys, back);
@@ -101,13 +101,14 @@ int main(void) {
     for(int i = 0; i < SSTV_ILEAVE; i++) {
         CHECK(sstv_frame_unpack(back + i * SSTV_FRAME_BYTES, &blk, pl + i * SSTV_PAYLOAD_BYTES));
         CHECK_EQ_INT(sstv_hdr_type(blk), SSTV_FT_META);
-        CHECK(memcmp(pl + i * SSTV_PAYLOAD_BYTES, "white.pbm", 9) == 0);
+        CHECK_EQ_INT(pl[i * SSTV_PAYLOAD_BYTES], SSTV_META_START);
+        CHECK(memcmp(pl + i * SSTV_PAYLOAD_BYTES + 1, "white.pbm", 9) == 0);
     }
     /* a random image is sent raw: 480 segment frames + the meta block */
     for(int i = 0; i < SSTV_IMAGE_BYTES; i++) image[i] = (uint8_t)((i * 2654435761u) >> 13);
     frames = sstv_build_physical(image, "noise", phys, lines_after, &coded);
     CHECK(!coded);
-    CHECK_EQ_INT(frames, SSTV_NUM_SEGS + SSTV_ILEAVE);
+    CHECK_EQ_INT(frames, SSTV_NUM_SEGS + 2 * SSTV_ILEAVE);
     CHECK_EQ_INT(lines_after[frames - 1], SSTV_HEIGHT);
     CHECK_EQ_INT(lines_after[SSTV_ILEAVE + 3], 2); /* first data block = lines 0,1 */
     sstv_deinterleave(phys + SSTV_ILEAVE * SSTV_FRAME_BYTES, back);

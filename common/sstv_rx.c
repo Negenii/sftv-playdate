@@ -75,12 +75,13 @@ static int try_block(sstv_rx* rx) {
         }
     }
     if(type == SSTV_FT_META) {
-        char name[SSTV_PAYLOAD_BYTES + 1];
+        char name[SSTV_PAYLOAD_BYTES];
         for(int i = 0; i < SSTV_ILEAVE; i++) {
             if(!ok[i]) continue;
-            memcpy(name, payload + i * SSTV_PAYLOAD_BYTES, SSTV_PAYLOAD_BYTES);
-            name[SSTV_PAYLOAD_BYTES] = 0;
-            if(rx->meta_cb) rx->meta_cb(rx->ctx, name);
+            const uint8_t* m = payload + i * SSTV_PAYLOAD_BYTES;
+            memcpy(name, m + 1, SSTV_PAYLOAD_BYTES - 1);
+            name[SSTV_PAYLOAD_BYTES - 1] = 0;
+            if(rx->meta_cb) rx->meta_cb(rx->ctx, name, m[0] == SSTV_META_END);
             break;
         }
     } else if(type == SSTV_FT_RAW) {

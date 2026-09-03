@@ -3,27 +3,37 @@
 Date: 2026-09-03
 Status: approved design
 
-## Current protocol (revision 4, 2026-09-03 night) — supersedes the signal sections below
+## Current protocol (revision 5, 2026-09-03) — supersedes the signal sections below
 
 Everything below this section is the original design plus revision notes; the sections
 "Signal format", "Line frame" and the demodulator algorithm are historical. What runs now:
 
 - **Modulation**: 4-FSK, 2 bits per 4 ms symbol. Symbol 0 is silence (0 % PWM duty), symbols
-  1..3 are square-wave tones 2500 / 3000 / 3500 Hz; frame sync 5500 Hz for 16 ms. Tones sit on
+  1..3 are square-wave tones 3000 / 3500 / 4000 Hz; frame sync 5500 Hz for 16 ms. Tones sit on
   a 500 Hz grid so a 2 ms detector window sees them (and the buzzer's 3 kHz ringing) as
   orthogonal; none is 2x or 3x another (the buzzer is nonlinear). Per-tone PWM duty on the
-  Flipper (30 / 12 / 30 %) attenuates the loud resonance tone by 10 dB so the tones arrive
-  within a few dB of each other at the Playdate. White image areas are therefore quiet; only
-  drawn pixels sound, plus a short sync beep every 0.67 s.
+  Flipper (12 / 30 / 50 %) attenuates the loud resonance tone so the tones arrive within a few
+  dB of each other at the Playdate. 2500 Hz was dropped: it had only ~5 dB present/absent
+  contrast and read as silence a third of the time. White image areas are quiet; only drawn
+  pixels sound, plus a short sync beep every 0.67 s.
 - **Why 4 ms**: measured tone tails last 1-2 ms (2000-2250 and 4750-5000 Hz ring for 5-15 ms
   and are avoided). The decision window is the last 2 ms of the symbol.
-- **Coding and framing**: each line is coded losslessly (raw, run lengths, or run lengths of the
-  XOR with the previous line; the shortest wins) and consecutive lines are packed, as many as
-  fit, into 104-byte blocks: [count][first line][records]. A block is split into four logical
-  frames [block index, 2 bytes][26 payload bytes][CRC-8] + 12 Reed-Solomon parity bytes
-  (41 bytes = 164 symbols) which are byte-interleaved into four physical frames of
-  sync + 164 symbols = 672 ms. Dithered photographs stay at two lines per block (120 blocks,
-  5.4 min); the checker test image needs 30 blocks (1.4 min). One pass; OK on the Flipper repeats.
+- **Frames**: logical frame = [2-byte header][26 payload bytes][CRC-8] + 12 Reed-Solomon
+  parity bytes (41 bytes = 164 symbols). Header: top 2 bits frame type, 14-bit index. Four
+  logical frames are byte-interleaved into four physical frames of sync + 164 symbols = 672 ms,
+  so a noise burst is spread across four codewords. Frame types:
+  - `META` (2): payload [subtype][file name, up to 24 chars]. Subtype 0 = START, sent as the
+    first block of every pass; subtype 1 = END, sent as the last block. The receiver starts a
+    new image on START (saving the previous one) and saves and announces on END.
+  - `RAW` (0): index = half-line segment 0..479, payload = 25 bytes of pixels + 1 spare. Every
+    frame stands alone, so a lost frame costs half a line, never a block.
+  - `CODED` (1): index = block number; the four frames of a block carry a 104-byte block
+    [count][first line][records], each record a line coded losslessly (raw, run lengths, or
+    run lengths of the XOR with the previous line; the shortest wins). Lines unpack up to the
+    first failed frame.
+  The transmitter builds both layouts and sends CODED only if it needs at most 85 % of the
+  RAW frame count (`SSTV_CODED_MIN_GAIN`); dithered photos go RAW (480 frames, 5.4 min), line
+  art CODED (checker image 30 blocks, 1.4 min). One pass; OK on the Flipper repeats.
 - **Receiver**: quadrature detectors (2 ms window) for the tones and the sync plus a 4 x longer
   sync detector; per-tone peak-tracking gain normalisation (clamp 20 dB); symbol = argmax of
   normalised energies against a fixed silence level (0.3); soft confidence per bit. Sync:
@@ -34,15 +44,23 @@ Everything below this section is the original design plus revision notes; the se
   predicted edge for up to 3 frames; mid-frame false syncs are rejected; weak bursts do not
   move the prediction. The block layer de-interleaves four physical frames, marks the least
   confident bytes as erasures and decodes RS errors-and-erasures (up to 12 erased bytes per
-  frame), checks CRC, then unpacks the line records up to the first failed frame.
+  frame), checks CRC, then dispatches by frame type.
 - **Transmitter**: TIM16 driven through the repetition counter and preloaded registers, one
   interrupt per symbol. The RGB LED follows the symbol on the speaker (off for silence, blue
-  for tones, violet during sync) from a 2 ms polling thread. The Playdate has no user LED and
-  draws an indicator dot instead.
-- **Measured**: loopback 0 dB SNR 232/240 lines; 400 ms noise bursts at +15 dB every 3 s
-  240/240; 700 ms bursts 163/240. Hardware: checker image complete 240/240 in one pass; a
-  dithered photo with the devices moved and someone talking gave 425/480 segments in the
-  previous (uncompressed) revision.
+  for tones, red during sync) from a 2 ms polling thread. The preview image inverts line by
+  line from the top as lines go out, so the picture is its own progress bar.
+- **Playdate UI**: the image fills the screen; a dot in the corner flashes per frame. Right
+  toggles a side panel: file name, state pill (IDLE / RX / LOST / DONE), mode pill (ZIP or
+  RAW), REC or SAVED pill, line progress bar, counters right-aligned, tone and level bar.
+  On END a banner names the file and the line count. Received images are saved as P4 PBM under
+  `Data/<name>.pbm` (same name overwrites) on END, on the next START, on a 3 s signal loss and
+  on exit. B opens the gallery: a 3 x 2 grid of 100 x 60 thumbnails with a cursor and a black
+  title bar ("Gallery  N images"), A opens one full screen, B goes back. A in receive mode
+  clears, Up records 30 s of microphone audio to `rec.wav`.
+- **Measured**: loopback white noise 0 dB SNR 227-232/240 lines, 6 dB 240/240; 400 ms noise
+  bursts at +15 dB every 3 s 240/240; 700 ms bursts 192/240; clock offset ±1500 ppm 240 and
+  234. Hardware: checker image complete 240/240 in one pass (1.4 min); dithered photo RAW in
+  5.4 min with a few half-lines lost when the devices are moved.
 
 ## Goal
 

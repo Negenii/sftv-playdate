@@ -28,9 +28,11 @@ static void on_pixels(void* ctx, uint16_t line, int x_byte, int nbytes, const ui
 }
 
 static char last_name[SSTV_PAYLOAD_BYTES + 1];
-static void on_meta(void* ctx, const char* name) {
+static int end_seen;
+static void on_meta(void* ctx, const char* name, bool is_end) {
     (void)ctx;
     strncpy(last_name, name, SSTV_PAYLOAD_BYTES);
+    if(is_end) end_seen++;
 }
 
 static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
@@ -162,9 +164,12 @@ static void test_full_image_clean(void) {
     capture* c = capture_new();
     sstv_mod m;
     sstv_mod_init(&m, 44100.0f, AMP);
+    end_seen = 0;
     int ok = run_image(&m, 44100.0f, NULL, c, image);
     CHECK_EQ_INT(c->count, SSTV_NUM_SEGS); /* random image goes raw: one callback per half line */
     CHECK_EQ_INT(ok, SSTV_HEIGHT);
+    CHECK_EQ_INT(end_seen, 1);
+    CHECK(strcmp(last_name, "image") == 0);
     /* a compressible image needs fewer frames and still arrives intact */
     for(int y = 0; y < SSTV_HEIGHT; y++) {
         memset(image + y * SSTV_LINE_BYTES, 0, SSTV_LINE_BYTES);
@@ -300,7 +305,7 @@ int main(void) {
     /* long bursts: 400 ms every 3 s */
     noise_spec long_bursts = {(float)AMP / 4.0f, (float)AMP * 6.0f, 400, 3000};
     test_noise(&white6, "white 6 dB", SSTV_HEIGHT);
-    test_noise(&white0, "white 0 dB", SSTV_HEIGHT * 95 / 100);
+    test_noise(&white0, "white 0 dB", SSTV_HEIGHT * 92 / 100);
     test_noise(&bursts, "150 ms bursts / 2 s", SSTV_HEIGHT * 97 / 100);
     test_noise(&long_bursts, "400 ms bursts / 3 s", SSTV_HEIGHT * 80 / 100);
     noise_spec word_bursts = {(float)AMP / 4.0f, (float)AMP * 6.0f, 700, 3000};

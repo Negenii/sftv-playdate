@@ -17,13 +17,16 @@
  *                 lines ([count][first line][records]...), index = block. Used when the image
  *                 compresses by at least SSTV_CODED_MIN_GAIN (line art, text), where a block
  *                 carries 4-10 lines and the transfer is that much shorter.
- *   SSTV_FT_META  payload = file name (NUL padded), repeated in all four logical frames of the
- *                 first block of a transmission. */
+ *   SSTV_FT_META  payload = [subtype][file name, NUL padded], repeated in all four logical
+ *                 frames of a block: subtype SSTV_META_START opens a transmission, SSTV_META_END
+ *                 closes it (the receiver then knows the image is finished). */
 #define SSTV_PAYLOAD_BYTES 26 /* 4 x 26 = 104: two raw lines (1 + 1 + 2 x 51) fit in a block */
 #define SSTV_SEG_BYTES 25 /* half a line */
 #define SSTV_SEGS_PER_LINE 2
 #define SSTV_NUM_SEGS (SSTV_HEIGHT * SSTV_SEGS_PER_LINE) /* 480 */
-#define SSTV_NAME_MAX (SSTV_PAYLOAD_BYTES - 1) /* 25 characters */
+#define SSTV_NAME_MAX (SSTV_PAYLOAD_BYTES - 2) /* 24 characters */
+#define SSTV_META_START 0
+#define SSTV_META_END 1
 #define SSTV_DATA_BYTES (2 + SSTV_PAYLOAD_BYTES + 1) /* 29 */
 #ifndef SSTV_PARITY_BYTES
 #define SSTV_PARITY_BYTES 12
@@ -40,7 +43,7 @@
 #define SSTV_FT_SHIFT 14
 #define SSTV_INDEX_MASK 0x3FFF
 #define SSTV_MAX_BLOCKS (SSTV_HEIGHT / 2) /* coded worst case: raw lines, 2 per block */
-#define SSTV_MAX_FRAMES (SSTV_NUM_SEGS + SSTV_ILEAVE) /* raw mode: 480 + the meta block */
+#define SSTV_MAX_FRAMES (SSTV_NUM_SEGS + 2 * SSTV_ILEAVE) /* raw mode: 480 + start and end meta blocks */
 #define SSTV_CODED_MIN_GAIN 0.85f /* use coding only when frames <= 85% of raw */
 
 /* Modulation: 4-FSK, 2 bits per 4 ms symbol, square-wave tones.

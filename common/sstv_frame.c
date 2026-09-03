@@ -136,14 +136,16 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
     if(coded) *coded = use_coded;
 
     int blocks = 0;
-    /* Meta block: the file name in every logical frame. */
-    memset(payload, 0, SSTV_PAYLOAD_BYTES);
+    /* Start meta block: [SSTV_META_START][file name] in every logical frame. */
+    uint8_t meta[SSTV_PAYLOAD_BYTES];
+    memset(meta, 0, SSTV_PAYLOAD_BYTES);
+    meta[0] = SSTV_META_START;
     if(name) {
         size_t n = strlen(name);
         if(n > SSTV_NAME_MAX) n = SSTV_NAME_MAX;
-        memcpy(payload, name, n);
+        memcpy(meta + 1, name, n);
     }
-    for(int i = 0; i < SSTV_ILEAVE; i++) sstv_frame_pack(sstv_hdr(SSTV_FT_META, 0), payload, logical + i * SSTV_FRAME_BYTES);
+    for(int i = 0; i < SSTV_ILEAVE; i++) sstv_frame_pack(sstv_hdr(SSTV_FT_META, 0), meta, logical + i * SSTV_FRAME_BYTES);
     emit_block(logical, out, blocks++);
     for(int f = 0; f < SSTV_ILEAVE && lines_after; f++) lines_after[f] = 0;
 
@@ -178,5 +180,13 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
             blocks++;
         }
     }
+    /* End meta block: same payload with SSTV_META_END. */
+    meta[0] = SSTV_META_END;
+    for(int i = 0; i < SSTV_ILEAVE; i++) sstv_frame_pack(sstv_hdr(SSTV_FT_META, 1), meta, logical + i * SSTV_FRAME_BYTES);
+    emit_block(logical, out, blocks);
+    if(lines_after) {
+        for(int f = 0; f < SSTV_ILEAVE; f++) lines_after[blocks * SSTV_ILEAVE + f] = (uint8_t)SSTV_HEIGHT;
+    }
+    blocks++;
     return blocks * SSTV_ILEAVE;
 }

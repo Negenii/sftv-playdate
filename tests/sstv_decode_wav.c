@@ -25,9 +25,9 @@ static void on_pixels(void* ctx, uint16_t line, int x_byte, int nbytes, const ui
     c->seen[line] |= mask;
 }
 
-static void on_meta(void* ctx, const char* name) {
+static void on_meta(void* ctx, const char* name, bool is_end) {
     (void)ctx;
-    printf("meta: name=\"%s\"\n", name);
+    printf("meta: %s name=\"%s\"\n", is_end ? "end" : "start", name);
 }
 
 static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {

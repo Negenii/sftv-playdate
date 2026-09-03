@@ -70,8 +70,8 @@ int sstv_block_pack(const uint8_t* image_bits, int first_line, uint8_t* payload)
 typedef void (*sstv_block_line_cb)(void* ctx, uint16_t line, const uint8_t* pixels);
 int sstv_block_unpack(const uint8_t* payload, int valid_bytes, sstv_block_line_cb cb, void* ctx);
 
-/* Builds every physical frame of an image: a meta block carrying `name`, then either raw
- * segments or coded blocks, whichever is shorter by SSTV_CODED_MIN_GAIN. out must hold
+/* Builds every physical frame of an image: a start meta block carrying `name`, then either raw
+ * segments or coded blocks, whichever is shorter by SSTV_CODED_MIN_GAIN, then an end meta block. out must hold
  * SSTV_MAX_FRAMES * SSTV_FRAME_BYTES bytes. lines_after (may be NULL, SSTV_MAX_FRAMES
  * entries) receives, for every physical frame, how many image lines are complete once that
  * frame has been sent (for progress display). Returns the number of physical frames
