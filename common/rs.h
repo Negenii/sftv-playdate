@@ -17,6 +17,14 @@ extern "C" {
 /* Writes RS_PARITY parity bytes for data[data_len]. */
 void rs_encode(const uint8_t* data, int data_len, uint8_t* parity);
 
+/* Streaming form of rs_encode: feed data bytes one at a time, then read the parity. */
+typedef struct {
+    uint8_t rem[RS_PARITY];
+} rs_encoder_t;
+void rs_encoder_init(rs_encoder_t* e);
+void rs_encoder_feed(rs_encoder_t* e, uint8_t byte);
+void rs_encoder_finish(const rs_encoder_t* e, uint8_t* parity);
+
 /* Corrects block[block_len] (data + parity) in place. Returns the number of corrected
  * symbols (0 if clean) or -1 if the block is uncorrectable. */
 int rs_decode(uint8_t* block, int block_len);

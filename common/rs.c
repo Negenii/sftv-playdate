@@ -53,19 +53,29 @@ static void tables_init(void) {
     tables_ready = 1;
 }
 
-void rs_encode(const uint8_t* data, int data_len, uint8_t* parity) {
+void rs_encoder_init(rs_encoder_t* e) {
     tables_init();
-    uint8_t rem[RS_PARITY];
-    memset(rem, 0, sizeof rem);
-    for(int i = 0; i < data_len; i++) {
-        uint8_t coef = data[i] ^ rem[0];
-        for(int j = 0; j < RS_PARITY - 1; j++) rem[j] = rem[j + 1];
-        rem[RS_PARITY - 1] = 0;
-        if(coef) {
-            for(int j = 0; j < RS_PARITY; j++) rem[j] ^= gf_mul(gen[j + 1], coef);
-        }
+    memset(e->rem, 0, sizeof e->rem);
+}
+
+void rs_encoder_feed(rs_encoder_t* e, uint8_t byte) {
+    uint8_t coef = byte ^ e->rem[0];
+    for(int j = 0; j < RS_PARITY - 1; j++) e->rem[j] = e->rem[j + 1];
+    e->rem[RS_PARITY - 1] = 0;
+    if(coef) {
+        for(int j = 0; j < RS_PARITY; j++) e->rem[j] ^= gf_mul(gen[j + 1], coef);
     }
-    memcpy(parity, rem, RS_PARITY);
+}
+
+void rs_encoder_finish(const rs_encoder_t* e, uint8_t* parity) {
+    memcpy(parity, e->rem, RS_PARITY);
+}
+
+void rs_encode(const uint8_t* data, int data_len, uint8_t* parity) {
+    rs_encoder_t e;
+    rs_encoder_init(&e);
+    for(int i = 0; i < data_len; i++) rs_encoder_feed(&e, data[i]);
+    rs_encoder_finish(&e, parity);
 }
 
 /* Evaluates poly (highest degree first, length n) at x. */
