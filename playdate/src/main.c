@@ -612,16 +612,21 @@ static void draw_console(int x, int y, LCDBitmap* screen) {
 static void draw_spout(int x0, int y0, int x1, int y1, float t) {
     const int bubbles = 8;
     unsigned now = pd->system->getCurrentTimeMilliseconds();
+    /* per-bubble character: arc height, drift speed, wobble depth and tempo */
+    static const float arc[8] = {24, 38, 30, 44, 20, 34, 40, 27};
+    static const float speed[8] = {1.0f, 0.85f, 1.15f, 0.95f, 1.25f, 0.9f, 1.05f, 0.8f};
+    static const float depth[8] = {0.10f, 0.22f, 0.15f, 0.26f, 0.08f, 0.19f, 0.12f, 0.24f};
+    static const float tempo[8] = {170, 260, 130, 310, 210, 150, 280, 190};
     for(int k = 0; k < bubbles; k++) {
-        float u = fmodf(t + (float)k / (float)bubbles, 1.0f);
+        float u = fmodf(t * speed[k] + (float)k / (float)bubbles, 1.0f);
         float x = (float)x0 + ((float)(x1 - x0)) * u;
-        float y = (float)y0 + ((float)(y1 - y0)) * u - 26.0f * sinf(3.14159f * u);
+        float y = (float)y0 + ((float)(y1 - y0)) * u - arc[k] * sinf(3.14159f * u);
         /* wander a little, each bubble differently */
-        y += 3.0f * sinf((float)now / 230.0f + (float)k * 1.7f);
-        x += 2.0f * sinf((float)now / 310.0f + (float)k * 2.3f);
+        y += 3.0f * sinf((float)now / (230.0f + 17.0f * (float)k) + (float)k * 1.7f);
+        x += 2.0f * sinf((float)now / (310.0f + 29.0f * (float)k) + (float)k * 2.3f);
         float r = 3.0f + 5.0f * u;
-        /* wobble: squash one axis, stretch the other, with a per-bubble rhythm */
-        float w = 0.18f * sinf((float)now / (140.0f + 23.0f * (float)k) + (float)k * 0.9f);
+        /* wobble: squash one axis, stretch the other, each bubble at its own depth and tempo */
+        float w = depth[k] * sinf((float)now / tempo[k] + (float)k * 0.9f);
         int rx = (int)(r * (1.0f + w) + 0.5f), ry = (int)(r * (1.0f - w) + 0.5f);
         if(rx < 2) rx = 2;
         if(ry < 2) ry = 2;
@@ -710,15 +715,15 @@ static void draw_scene(void) {
     unsigned now = pd->system->getCurrentTimeMilliseconds();
     pd->graphics->clear(kColorWhite);
     /* dolphin (2x, 142x98) and console (140x118) at the same scale, centred on one line */
-    const int cx = 220, cy = 40; /* console */
-    const int dx = 40, dy = cy + (CONSOLE_H - DOLPHIN_H * 2) / 2; /* dolphin */
+    const int cx = 240, cy = 40; /* console */
+    const int dx = 20, dy = cy + (CONSOLE_H - DOLPHIN_H * 2) / 2; /* dolphin */
     const int text_cx = LCD_COLUMNS / 2; /* texts run under both figures */
     if(dolphin_tile) pd->graphics->drawBitmap(dolphin_tile, dx, dy, kBitmapUnflipped);
     draw_console(cx, cy, started ? preview_bitmap : NULL);
     use_font(font_ui);
     char t[64], nm[NAME_CAP];
     if(started) {
-        draw_spout(dx + 70, dy + 2, cx + CONSOLE_SCREEN_X + CONSOLE_SCREEN_W / 2, cy + CONSOLE_SCREEN_Y + CONSOLE_SCREEN_H / 2, (float)(now % 1200) / 1200.0f);
+        draw_spout(dx + 70, dy + 2, cx + CONSOLE_SCREEN_X + CONSOLE_SCREEN_W / 2, cy + CONSOLE_SCREEN_Y + CONSOLE_SCREEN_H / 2, (float)(now % 3000) / 3000.0f);
         display_name(nm, sizeof nm, current_name);
         use_font(font_big);
         fit_text(t, sizeof t, nm, 360);
