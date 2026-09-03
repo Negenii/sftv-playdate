@@ -592,11 +592,16 @@ static void draw_spout(int x0, int y0, int x1, int y1, float t) {
 
 static void draw_menu(void) {
     pd->graphics->clear(kColorWhite);
+    /* "RX" pill as tall as the title's capitals, then the title */
     use_font(font_big);
-    draw_text("Slow Flipper TV", 16, 8);
-    int title_w = text_width("Slow Flipper TV");
+    int big_h = font_height();
+    int pill_h = big_h * 3 / 4, pill_y = 8 + (big_h - pill_h) / 2 + 1;
     use_font(font_ui);
-    draw_pill("RX", 16 + title_w + 10, 13, true);
+    int pill_w = text_width("RX") + 14;
+    pd->graphics->fillRoundRect(16, pill_y, pill_w, pill_h, pill_h / 2, kColorBlack);
+    draw_text_white("RX", 16 + 7, pill_y + (pill_h - font_height()) / 2);
+    use_font(font_big);
+    draw_text("Slow Flipper TV", 16 + pill_w + 8, 8);
     const char* mic = mic_state > 0 ? "mic on" : mic_state < 0 ? "mic denied" : "mic?";
     draw_pill(mic, LCD_COLUMNS - 32 - text_width(mic) - 12, 10, false);
 
