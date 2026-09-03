@@ -3,39 +3,46 @@
 Date: 2026-09-03
 Status: approved design
 
-## Current protocol (revision 3, 2026-09-03 evening) — supersedes the signal sections below
+## Current protocol (revision 4, 2026-09-03 night) — supersedes the signal sections below
 
 Everything below this section is the original design plus revision notes; the sections
 "Signal format", "Line frame" and the demodulator algorithm are historical. What runs now:
 
-- **Modulation**: 4-FSK, 2 bits per 4 ms symbol, square-wave tones 2500 / 3000 / 3500 /
-  4000 Hz (symbol value 0..3), sync 5500 Hz for 16 ms. All tones are multiples of 500 Hz so
-  a 2 ms detector window sees them (and the buzzer's 3 kHz ringing) as orthogonal; none is
-  2x or 3x another (the buzzer is nonlinear). Per-tone PWM duty on the Flipper
-  (30 / 12 / 30 / 50 %) attenuates the loud resonance tone by 10 dB so the tones arrive
-  within a few dB of each other at the Playdate.
-- **Why 4 ms**: measured on Flipper buzzer -> Playdate mic, tone tails last 1-2 ms (2000-2250
-  and 4750-5000 Hz ring for 5-15 ms and are avoided). The decision window is the last 2 ms of
-  the symbol (`SSTV_SAMPLE_POINT 0.95`), after the previous tone has died down.
-- **Framing**: half-line segments (200 px). Logical frame = [segment index, 2 bytes][25 pixel
-  bytes][CRC-8] + 8 Reed-Solomon parity bytes = 36 bytes = 144 symbols. Four consecutive
-  logical frames are byte-interleaved into four physical frames, each sent as
-  sync + 144 symbols = 592 ms. Image = 480 physical frames = 4.7 min, one pass (OK repeats).
-- **Receiver**: per-tone quadrature detectors (2 ms window) plus a 4 x longer sync detector;
-  per-tone peak-tracking gain normalisation (clamp 20 dB); symbol = argmax normalised energy,
-  soft confidence per bit. Sync: dominance run of the long detector, then the sync->data
-  crossover; a second-order tracking loop starts each frame halfway between the predicted
-  and measured edge and nudges the symbol clock (Flipper and Playdate clocks differ by 0.1 %).
-  Flywheel: with the sync buried in noise the frame starts at the predicted edge (up to 3
-  frames); mid-frame false syncs are rejected. The block layer de-interleaves four physical
-  frames, marks the least confident bytes as erasures and decodes RS errors-and-erasures
-  (up to 8 erased bytes per frame), then CRC. Verified segments are never overwritten.
-- **Transmitter**: TIM16 driven through the repetition counter and preloaded registers,
-  one interrupt per symbol; sending all cycles of a symbol in hardware avoids the lost-overflow
-  problem seen with a per-cycle ISR.
-- **Measured**: loopback 0 dB SNR 480/480 segments; 400 ms noise bursts at +15 dB every 3 s
-  480/480; hardware pass with the devices being moved and someone talking: 425/480 good,
-  19 noisy.
+- **Modulation**: 4-FSK, 2 bits per 4 ms symbol. Symbol 0 is silence (0 % PWM duty), symbols
+  1..3 are square-wave tones 2500 / 3000 / 3500 Hz; frame sync 5500 Hz for 16 ms. Tones sit on
+  a 500 Hz grid so a 2 ms detector window sees them (and the buzzer's 3 kHz ringing) as
+  orthogonal; none is 2x or 3x another (the buzzer is nonlinear). Per-tone PWM duty on the
+  Flipper (30 / 12 / 30 %) attenuates the loud resonance tone by 10 dB so the tones arrive
+  within a few dB of each other at the Playdate. White image areas are therefore quiet; only
+  drawn pixels sound, plus a short sync beep every 0.67 s.
+- **Why 4 ms**: measured tone tails last 1-2 ms (2000-2250 and 4750-5000 Hz ring for 5-15 ms
+  and are avoided). The decision window is the last 2 ms of the symbol.
+- **Coding and framing**: each line is coded losslessly (raw, run lengths, or run lengths of the
+  XOR with the previous line; the shortest wins) and consecutive lines are packed, as many as
+  fit, into 104-byte blocks: [count][first line][records]. A block is split into four logical
+  frames [block index, 2 bytes][26 payload bytes][CRC-8] + 12 Reed-Solomon parity bytes
+  (41 bytes = 164 symbols) which are byte-interleaved into four physical frames of
+  sync + 164 symbols = 672 ms. Dithered photographs stay at two lines per block (120 blocks,
+  5.4 min); the checker test image needs 30 blocks (1.4 min). One pass; OK on the Flipper repeats.
+- **Receiver**: quadrature detectors (2 ms window) for the tones and the sync plus a 4 x longer
+  sync detector; per-tone peak-tracking gain normalisation (clamp 20 dB); symbol = argmax of
+  normalised energies against a fixed silence level (0.3); soft confidence per bit. Sync:
+  dominance run of the long detector gated by the tracked sync peak, then the edge where the
+  sync energy falls to a quarter of the burst peak; a second-order tracking loop starts each
+  frame halfway between predicted and measured edge and nudges the symbol clock (the two
+  devices' clocks differ by 0.1 %). Flywheel: a sync buried in noise is replaced by the
+  predicted edge for up to 3 frames; mid-frame false syncs are rejected; weak bursts do not
+  move the prediction. The block layer de-interleaves four physical frames, marks the least
+  confident bytes as erasures and decodes RS errors-and-erasures (up to 12 erased bytes per
+  frame), checks CRC, then unpacks the line records up to the first failed frame.
+- **Transmitter**: TIM16 driven through the repetition counter and preloaded registers, one
+  interrupt per symbol. The RGB LED follows the symbol on the speaker (off for silence, blue
+  for tones, violet during sync) from a 2 ms polling thread. The Playdate has no user LED and
+  draws an indicator dot instead.
+- **Measured**: loopback 0 dB SNR 232/240 lines; 400 ms noise bursts at +15 dB every 3 s
+  240/240; 700 ms bursts 163/240. Hardware: checker image complete 240/240 in one pass; a
+  dithered photo with the devices moved and someone talking gave 425/480 segments in the
+  previous (uncompressed) revision.
 
 ## Goal
 

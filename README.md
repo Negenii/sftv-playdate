@@ -1,20 +1,22 @@
 # SSTV for Flipper Zero → Playdate
 
 Flipper Zero plays a 400×240 1-bit image through its buzzer; a Playdate decodes it from its
-microphone and draws it segment by segment while the sound is playing. One pass takes about
-4.7 minutes.
+microphone and draws it line by line while the sound is playing. One pass takes 1.5–5.4 minutes
+depending on how well the image compresses (dithered photos: 5.4 min; line art: much less).
 
-Signal: 4-FSK, 2 bits per 4 ms symbol on 2500/3000/3500/4000 Hz, 5500 Hz frame sync. Half-line
-frames with Reed-Solomon (8 parity bytes) and CRC, four frames byte-interleaved, so a noise
-burst is spread thin and repaired. The receiver tracks the symbol clock from the sync period and
-flywheels through buried syncs. Design and measurement notes:
+Signal: 4-FSK, 2 bits per 4 ms symbol; symbol 0 is silence, 1..3 are 2500/3000/3500 Hz,
+5500 Hz frame sync. Lines are losslessly coded and packed into blocks protected by Reed-Solomon
+(12 parity bytes per 41-byte frame) with CRC, four frames byte-interleaved, so a noise burst is
+spread thin and repaired. The receiver tracks the symbol clock from the sync period and
+flywheels through buried syncs. The Flipper LED follows the data (blue = tone, off = silence,
+violet = sync). Design and measurement notes:
 `docs/2026-09-03-sstv-flipper-playdate-design.md` (the "Current protocol"
 section on top is authoritative).
 
 ## Layout
 
-- `common/` portable C: params, frame + interleave, RS codec, demodulator, block assembler,
-  reference modulator, PBM parser
+- `common/` portable C: params, line codec, frame + block + interleave, RS codec, demodulator,
+  block assembler, reference modulator, PBM parser
 - `tests/` host tests and WAV tools (`make test`, `make all`)
 - `flipper/` FAP for Momentum firmware (`ufbt`); `flipper/lib/common` links to `common/`
 - `playdate/` Playdate C app (`make`)
@@ -29,7 +31,9 @@ section on top is authoritative).
 
 Momentum SDK for ufbt: `ufbt update --index-url=https://up.momentum-fw.dev/firmware/directory.json --channel release`.
 Playdate install: `pdutil <serial port> datadisk`, copy `SSTV_RX.pdx` into `Games/`, eject,
-`pdutil <port> run /Games/SSTV_RX.pdx`. Or launch it from the Playdate's game list.
+`pdutil <port> run /Games/SSTV_RX.pdx`. Or launch it from the Playdate's game list. The SDK
+Makefile drops object files into `playdate/common/`; `rm -rf playdate/common playdate/build`
+forces a full rebuild.
 
 Images: `sh tools/setup.sh`, then `tools/.venv/bin/python tools/img2pbm.py photo.jpg out.pbm`
 and copy the `.pbm` to the Flipper SD card at `/ext/apps_data/sstv_tx/`.
@@ -38,7 +42,7 @@ and copy the `.pbm` to the Flipper SD card at `/ext/apps_data/sstv_tx/`.
 
 Flipper: Apps → Tools → SSTV TX → pick a `.pbm` → OK sends one pass, Back stops.
 Playdate: SSTV RX, allow the microphone, put the Flipper 10–30 cm from the Playdate mic (bottom
-edge). Status bar: `good N/480 noisy M rs K fw F/L stS drop D tone`. A clears, B hides the bar,
+edge). Status bar: `lines N/240 bad B rs K fw F/L drop D tone`, plus a dot that flashes per frame and rings per decoded block. A clears, B hides the bar,
 Up records 30 s of raw microphone audio to `Data/com.negenii.sstvrx/rec.wav` for analysis.
 
 ## Debugging
