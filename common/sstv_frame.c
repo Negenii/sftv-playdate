@@ -204,19 +204,21 @@ static void emitter_block(pass_emitter* e, const uint8_t* logical, int lines_bef
  * parity symbol j over payload byte k of the group's frames. */
 static void emitter_close_group(pass_emitter* e, int lines) {
     if(e->group_frames == 0) return;
-    uint8_t parity[SSTV_OUTER_PARITY][SSTV_PAYLOAD_BYTES];
-    for(int k = 0; k < SSTV_PAYLOAD_BYTES; k++) {
-        uint8_t p[SSTV_OUTER_PARITY];
-        rs_encoder_finish(&e->enc[k], p);
-        for(int j = 0; j < SSTV_OUTER_PARITY; j++) parity[j][k] = p[j];
-        rs_encoder_init(&e->enc[k]);
-    }
+    /* Built one block at a time straight into the logical frames (the Flipper runs this on
+     * a 4 kB stack): rs_encoder_finish does not disturb the encoder state. */
     uint8_t logical[SSTV_ILEAVE * SSTV_FRAME_BYTES];
+    uint8_t payload[SSTV_ILEAVE][SSTV_PAYLOAD_BYTES];
     for(int j = 0; j < SSTV_OUTER_PARITY; j += SSTV_ILEAVE) {
+        for(int k = 0; k < SSTV_PAYLOAD_BYTES; k++) {
+            uint8_t p[SSTV_OUTER_PARITY];
+            rs_encoder_finish(&e->enc[k], p);
+            for(int i = 0; i < SSTV_ILEAVE; i++) payload[i][k] = p[j + i];
+        }
         for(int i = 0; i < SSTV_ILEAVE; i++)
-            sstv_frame_pack(sstv_hdr(SSTV_FT_PARITY, e->group * SSTV_OUTER_PARITY + j + i), parity[j + i], logical + i * SSTV_FRAME_BYTES);
+            sstv_frame_pack(sstv_hdr(SSTV_FT_PARITY, e->group * SSTV_OUTER_PARITY + j + i), payload[i], logical + i * SSTV_FRAME_BYTES);
         emitter_block(e, logical, lines, lines);
     }
+    for(int k = 0; k < SSTV_PAYLOAD_BYTES; k++) rs_encoder_init(&e->enc[k]);
     e->group_frames = 0;
     e->group++;
 }
