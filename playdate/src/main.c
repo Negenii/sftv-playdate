@@ -925,7 +925,9 @@ static int update(void* userdata) {
     if(ui_mode == ModeReceive && !started) {
         sstv_demod_status_t st;
         sstv_demod_status(&demod, &st);
-        if(st.tone >= 0 && st.level > 0.18f) hearing_ms = now;
+        /* tone >= 0 already means a detector is above the demodulator's noise floor (the
+         * leader tones qualify); state != IDLE means it has locked onto the sync. */
+        if(st.tone >= 0 || st.state != SSTV_DEMOD_IDLE) hearing_ms = now;
     }
     if(image_dirty && ((segs_done == SSTV_NUM_SEGS) || (now - last_data_ms > LOST_TIMEOUT_MS))) save_image();
     /* END never came: the pass is over by the announced timeline plus a margin. */
