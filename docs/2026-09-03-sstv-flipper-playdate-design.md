@@ -3,7 +3,7 @@
 Date: 2026-09-03
 Status: approved design
 
-## Current protocol (revision 5, 2026-09-03) — supersedes the signal sections below
+## Current protocol (revision 6, 2026-09-03) — supersedes the signal sections below
 
 Everything below this section is the original design plus revision notes; the sections
 "Signal format", "Line frame" and the demodulator algorithm are historical. What runs now:
@@ -22,9 +22,14 @@ Everything below this section is the original design plus revision notes; the se
   parity bytes (41 bytes = 164 symbols). Header: top 2 bits frame type, 14-bit index. Four
   logical frames are byte-interleaved into four physical frames of sync + 164 symbols = 672 ms,
   so a noise burst is spread across four codewords. Frame types:
-  - `META` (2): payload [subtype][file name, up to 24 chars]. Subtype 0 = START, sent as the
-    first block of every pass; subtype 1 = END, sent as the last block. The receiver starts a
-    new image on START (saving the previous one) and saves and announces on END.
+  - `META` (2): payload [subtype][data]. Subtype 0 = START (data = file name without extension,
+    up to 24 chars), sent as the first block of every pass; subtype 1 = END, sent as the last
+    block; subtype 2 = PREVIEW, 20 independent frames (index = chunk, 25 bytes each) right after
+    START carrying an 80x48 preview of the picture: each preview pixel is the black count of a
+    5x5 block, Bayer-dithered. 5 blocks = 3.4 s (+4 % on the checker image, +1 % on a photo).
+    The receiver starts a new image on START (saving the previous one), shows the preview
+    filling in and uses it, 5x upscaled and drawn as a 50 % checker, as a placeholder under
+    the picture until real lines replace it; on END it saves and announces.
   - `RAW` (0): index = half-line segment 0..479, payload = 25 bytes of pixels + 1 spare. Every
     frame stands alone, so a lost frame costs half a line, never a block.
   - `CODED` (1): index = block number; the four frames of a block carry a 104-byte block
@@ -49,14 +54,20 @@ Everything below this section is the original design plus revision notes; the se
   interrupt per symbol. The RGB LED follows the symbol on the speaker (off for silence, blue
   for tones, red during sync) from a 2 ms polling thread. The preview image inverts line by
   line from the top as lines go out, so the picture is its own progress bar.
-- **Playdate UI**: the image fills the screen; a dot in the corner flashes per frame. Right
-  toggles a side panel: file name, state pill (IDLE / RX / LOST / DONE), mode pill (ZIP or
-  RAW), REC or SAVED pill, line progress bar, counters right-aligned, tone and level bar.
-  On END a banner names the file and the line count. Received images are saved as P4 PBM under
-  `Data/<name>.pbm` (same name overwrites) on END, on the next START, on a 3 s signal loss and
-  on exit. B opens the gallery: a 3 x 2 grid of 100 x 60 thumbnails with a cursor and a black
-  title bar ("Gallery  N images"), A opens one full screen, B goes back. A in receive mode
-  clears, Up records 30 s of microphone audio to `rec.wav`.
+- **Playdate UI**: main menu with two rounded tiles, Receive (Flipper dolphin, GPL-3 sprite
+  from the firmware's `L3_Hijack_radio` animation, to be replaced by the user's own drawing)
+  and Gallery (thumbnail of the latest saved picture). Receive shows an intro scene: the
+  dolphin, a drawn Playdate, and once START arrives a water spout from the blowhole to the
+  console whose screen fills with the preview chunk by chunk; the first picture line switches
+  to the full-screen picture over the dimmed preview placeholder. Whatever screen is up, START
+  jumps to Receive. A dot in the corner flashes per frame. Right toggles a side panel (Roobert
+  10 Bold, numbers in Roobert 9 Mono): name, state pill (IDLE / RX / LOST / DONE), ZIP or RAW
+  pill, REC pill, line progress bar, right-aligned counters, tone and level bar. On END a
+  banner names the file and the line count. Pictures are saved as P4 PBM under
+  `Data/<name>.pbm` (same name overwrites; never-received segments are written white) on
+  END, on the next START, on a 5 s signal loss and on exit. Gallery: 3 x 2 grid of 100 x 60
+  rounded thumbnails with a cursor, A opens one full screen, B back; file extensions are never
+  shown. A in receive mode clears, B returns to the menu, Up records 30 s of microphone audio.
 - **Measured**: loopback white noise 0 dB SNR 227-232/240 lines, 6 dB 240/240; 400 ms noise
   bursts at +15 dB every 3 s 240/240; 700 ms bursts 192/240; clock offset ±1500 ppm 240 and
   234. Hardware: checker image complete 240/240 in one pass (1.4 min); dithered photo RAW in

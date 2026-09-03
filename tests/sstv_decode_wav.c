@@ -30,6 +30,12 @@ static void on_meta(void* ctx, const char* name, bool is_end) {
     printf("meta: %s name=\"%s\"\n", is_end ? "end" : "start", name);
 }
 
+static int preview_chunks;
+static void on_preview(void* ctx, int chunk, int nbytes, const uint8_t* data) {
+    (void)ctx; (void)chunk; (void)nbytes; (void)data;
+    preview_chunks++;
+}
+
 static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
     decoder_ctx* c = ctx;
     if(dump) {
@@ -60,7 +66,7 @@ int main(int argc, char** argv) {
     }
 
     decoder_ctx* c = calloc(1, sizeof *c);
-    sstv_rx_init(&c->rx, on_pixels, on_meta, c);
+    sstv_rx_init(&c->rx, on_pixels, on_meta, on_preview, c);
     if(getenv("SSTV_DUMP")) dump = fopen(getenv("SSTV_DUMP"), "w");
     sstv_demod d;
     g_demod = &d;
@@ -70,9 +76,9 @@ int main(int argc, char** argv) {
     if(argc > 5) d.silence_level = (float)atof(argv[5]);
     sstv_demod_feed(&d, s, n);
 
-    printf("phys_frames=%d flywheel=%d blocks=%d frames_ok=%d frames_bad=%d lines=%d/%d mode=%s rs_fixed=%d sample_rate=%d\n",
+    printf("phys_frames=%d flywheel=%d blocks=%d frames_ok=%d frames_bad=%d lines=%d/%d mode=%s rs_fixed=%d preview=%d/%d sample_rate=%d\n",
            d.frames, d.flywheel_frames, c->rx.blocks_ok, c->rx.frames_ok, c->rx.frames_bad, c->good, SSTV_HEIGHT,
-           c->rx.coded ? "coded" : "raw", c->rx.rs_corrected, sr);
+           c->rx.coded ? "coded" : "raw", c->rx.rs_corrected, preview_chunks, SSTV_PREVIEW_CHUNKS, sr);
 
     FILE* f = fopen(argv[2], "wb");
     if(!f) {

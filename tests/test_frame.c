@@ -1,5 +1,6 @@
 #include "test_util.h"
 #include "sstv_frame.h"
+#include "sstv_preview.h"
 #include <string.h>
 
 typedef struct {
@@ -93,7 +94,7 @@ int main(void) {
     int frames = sstv_build_physical(image, "white.pbm", phys, lines_after, &coded);
     CHECK(coded);
     CHECK_EQ_INT(frames % SSTV_ILEAVE, 0);
-    CHECK(frames <= 88);
+    CHECK(frames <= 88 + SSTV_PREVIEW_CHUNKS);
     CHECK_EQ_INT(lines_after[frames - 1], SSTV_HEIGHT);
     /* meta block first: name in every logical frame */
     sstv_deinterleave(phys, back);
@@ -104,14 +105,44 @@ int main(void) {
         CHECK_EQ_INT(pl[i * SSTV_PAYLOAD_BYTES], SSTV_META_START);
         CHECK(memcmp(pl + i * SSTV_PAYLOAD_BYTES + 1, "white.pbm", 9) == 0);
     }
-    /* a random image is sent raw: 480 segment frames + the meta block */
+    /* preview: a white image gives an all-zero preview, chunks 0..19 follow the start block */
+    {
+        uint8_t pv[SSTV_PREVIEW_BYTES];
+        sstv_preview_make(image, pv);
+        for(int i = 0; i < SSTV_PREVIEW_BYTES; i++) CHECK_EQ_INT(pv[i], 0);
+        memset(image, 0xFF, SSTV_IMAGE_BYTES);
+        sstv_preview_make(image, pv);
+        for(int i = 0; i < SSTV_PREVIEW_BYTES; i++) CHECK_EQ_INT(pv[i], 0xFF);
+        /* 50 % checker (1x1) -> 13/25 black -> half the preview pixels set */
+        for(int y = 0; y < SSTV_HEIGHT; y++) for(int i = 0; i < SSTV_LINE_BYTES; i++) image[y * SSTV_LINE_BYTES + i] = (y & 1) ? 0x55 : 0xAA;
+        sstv_preview_make(image, pv);
+        int set = 0;
+        for(int i = 0; i < SSTV_PREVIEW_BYTES; i++) for(int b = 0; b < 8; b++) set += (pv[i] >> b) & 1;
+        CHECK(set > SSTV_PREVIEW_BYTES * 8 * 4 / 10 && set < SSTV_PREVIEW_BYTES * 8 * 6 / 10);
+        memset(image, 0, SSTV_IMAGE_BYTES);
+    }
+    /* a random image is sent raw: start block, 5 preview blocks, 480 segment frames, end block */
     for(int i = 0; i < SSTV_IMAGE_BYTES; i++) image[i] = (uint8_t)((i * 2654435761u) >> 13);
     frames = sstv_build_physical(image, "noise", phys, lines_after, &coded);
     CHECK(!coded);
-    CHECK_EQ_INT(frames, SSTV_NUM_SEGS + 2 * SSTV_ILEAVE);
+    CHECK_EQ_INT(frames, SSTV_NUM_SEGS + 2 * SSTV_ILEAVE + SSTV_PREVIEW_CHUNKS);
     CHECK_EQ_INT(lines_after[frames - 1], SSTV_HEIGHT);
-    CHECK_EQ_INT(lines_after[SSTV_ILEAVE + 3], 2); /* first data block = lines 0,1 */
-    sstv_deinterleave(phys + SSTV_ILEAVE * SSTV_FRAME_BYTES, back);
+    const int data0 = SSTV_ILEAVE + SSTV_PREVIEW_CHUNKS; /* first data frame */
+    CHECK_EQ_INT(lines_after[data0 - 1], 0);
+    CHECK_EQ_INT(lines_after[data0 + 3], 2); /* first data block = lines 0,1 */
+    {
+        uint8_t pv[SSTV_PREVIEW_BYTES];
+        sstv_preview_make(image, pv);
+        sstv_deinterleave(phys + SSTV_ILEAVE * SSTV_FRAME_BYTES, back); /* first preview block */
+        for(int i = 0; i < SSTV_ILEAVE; i++) {
+            CHECK(sstv_frame_unpack(back + i * SSTV_FRAME_BYTES, &blk, pl));
+            CHECK_EQ_INT(sstv_hdr_type(blk), SSTV_FT_META);
+            CHECK_EQ_INT(sstv_hdr_index(blk), i);
+            CHECK_EQ_INT(pl[0], SSTV_META_PREVIEW);
+            CHECK(memcmp(pl + 1, pv + i * SSTV_PREVIEW_CHUNK, SSTV_PREVIEW_CHUNK) == 0);
+        }
+    }
+    sstv_deinterleave(phys + data0 * SSTV_FRAME_BYTES, back);
     for(int i = 0; i < SSTV_ILEAVE; i++) {
         CHECK(sstv_frame_unpack(back + i * SSTV_FRAME_BYTES, &blk, pl));
         CHECK_EQ_INT(sstv_hdr_type(blk), SSTV_FT_RAW);

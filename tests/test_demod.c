@@ -1,6 +1,7 @@
 #include "test_util.h"
 #include "sstv_demod.h"
 #include "sstv_rx.h"
+#include "sstv_preview.h"
 #include "sstv_modem_ref.h"
 #include "sstv_frame.h"
 #include <math.h>
@@ -35,14 +36,29 @@ static void on_meta(void* ctx, const char* name, bool is_end) {
     if(is_end) end_seen++;
 }
 
+static uint8_t preview_got[SSTV_PREVIEW_BYTES];
+static int preview_chunks;
+static void on_preview(void* ctx, int chunk, int nbytes, const uint8_t* data) {
+    (void)ctx;
+    memcpy(preview_got + chunk * SSTV_PREVIEW_CHUNK, data, (size_t)nbytes);
+    preview_chunks++;
+}
+
 static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
     capture* c = ctx;
     sstv_rx_phys(&c->rx, frame, soft);
 }
 
+/* Removes the preview blocks so the first data block directly follows the START block
+ * (tests that send only the first few frames). */
+static void drop_preview(uint8_t* phys, int frames) {
+    memmove(phys + SSTV_ILEAVE * SSTV_FRAME_BYTES, phys + (SSTV_ILEAVE + SSTV_PREVIEW_CHUNKS) * SSTV_FRAME_BYTES,
+            (size_t)(frames - SSTV_ILEAVE - SSTV_PREVIEW_CHUNKS) * SSTV_FRAME_BYTES);
+}
+
 static capture* capture_new(void) {
     capture* c = calloc(1, sizeof *c);
-    sstv_rx_init(&c->rx, on_pixels, on_meta, c);
+    sstv_rx_init(&c->rx, on_pixels, on_meta, on_preview, c);
     return c;
 }
 
@@ -132,7 +148,7 @@ static void test_single_block(void) {
     uint8_t* image = calloc(SSTV_IMAGE_BYTES, 1);
     fill_random(image, SSTV_IMAGE_BYTES);
     uint8_t* phys = malloc(SSTV_MAX_FRAMES * SSTV_FRAME_BYTES);
-    sstv_build_physical(image, "t", phys, NULL, NULL);
+    drop_preview(phys, sstv_build_physical(image, "t", phys, NULL, NULL));
     int cap = silence_samples(sr, 200) + 2 * SSTV_ILEAVE * 30000;
     int16_t* s = calloc((size_t)cap, sizeof(int16_t));
     sstv_mod m;
@@ -219,7 +235,14 @@ static void test_frequency_offset(void) {
     sstv_mod_init(&m, 44100.0f, AMP);
     for(int k = 0; k < SSTV_NUM_TONES; k++) m.tones[k] *= 1.015f; /* 0 stays 0 */
     m.fsync *= 1.015f;
+    preview_chunks = 0;
+    memset(preview_got, 0, sizeof preview_got);
     CHECK_EQ_INT(run_image(&m, 44100.0f, NULL, c, image), SSTV_HEIGHT);
+    /* the preview arrived whole and matches what the transmitter computed */
+    CHECK_EQ_INT(preview_chunks, SSTV_PREVIEW_CHUNKS);
+    uint8_t pv[SSTV_PREVIEW_BYTES];
+    sstv_preview_make(image, pv);
+    CHECK(memcmp(pv, preview_got, SSTV_PREVIEW_BYTES) == 0);
     free(c);
     free(image);
 }
@@ -255,7 +278,7 @@ static void test_lost_sync(void) {
     uint8_t* image = calloc(SSTV_IMAGE_BYTES, 1);
     fill_random(image, SSTV_IMAGE_BYTES);
     uint8_t* phys = malloc(SSTV_MAX_FRAMES * SSTV_FRAME_BYTES);
-    sstv_build_physical(image, "t", phys, NULL, NULL);
+    drop_preview(phys, sstv_build_physical(image, "t", phys, NULL, NULL));
     int cap = 3 * SSTV_ILEAVE * 30000 + 20000;
     int16_t* s = calloc((size_t)cap, sizeof(int16_t));
     sstv_mod m;

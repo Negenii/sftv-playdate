@@ -12,9 +12,12 @@ extern "C" {
  * Reed-Solomon errors-and-erasures and reports image data:
  *   pixel_cb: `nbytes` pixel bytes for line `line` starting at byte `x_byte` (a half line in
  *             raw mode, a whole line in coded mode);
- *   meta_cb:  the file name at the start (is_end false) and end (is_end true) of a transmission. */
+ *   meta_cb:  the file name at the start (is_end false) and end (is_end true) of a transmission;
+ *   preview_cb: one chunk of the 80x48 preview: `nbytes` bytes at offset chunk * SSTV_PREVIEW_CHUNK
+ *             of the SSTV_PREVIEW_BYTES preview bitmap (may be NULL). */
 typedef void (*sstv_pixel_cb)(void* ctx, uint16_t line, int x_byte, int nbytes, const uint8_t* pixels);
 typedef void (*sstv_meta_cb)(void* ctx, const char* name, bool is_end);
+typedef void (*sstv_preview_cb)(void* ctx, int chunk, int nbytes, const uint8_t* data);
 
 typedef struct {
     uint8_t phys[SSTV_ILEAVE][SSTV_FRAME_BYTES];
@@ -28,10 +31,11 @@ typedef struct {
     bool coded; /* last seen data frame type */
     sstv_pixel_cb pixel_cb;
     sstv_meta_cb meta_cb;
+    sstv_preview_cb preview_cb;
     void* ctx;
 } sstv_rx;
 
-void sstv_rx_init(sstv_rx* rx, sstv_pixel_cb pixel_cb, sstv_meta_cb meta_cb, void* ctx);
+void sstv_rx_init(sstv_rx* rx, sstv_pixel_cb pixel_cb, sstv_meta_cb meta_cb, sstv_preview_cb preview_cb, void* ctx);
 void sstv_rx_reset_counters(sstv_rx* rx);
 
 /* One demodulated physical frame: SSTV_FRAME_BYTES bytes and SSTV_FRAME_BITS soft values. */

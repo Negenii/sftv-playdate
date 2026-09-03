@@ -1,4 +1,5 @@
 #include "sstv_frame.h"
+#include "sstv_preview.h"
 #include "sstv_codec.h"
 #include "crc8.h"
 #include "rs.h"
@@ -148,6 +149,27 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
     for(int i = 0; i < SSTV_ILEAVE; i++) sstv_frame_pack(sstv_hdr(SSTV_FT_META, 0), meta, logical + i * SSTV_FRAME_BYTES);
     emit_block(logical, out, blocks++);
     for(int f = 0; f < SSTV_ILEAVE && lines_after; f++) lines_after[f] = 0;
+
+    /* Preview: SSTV_PREVIEW_CHUNKS independent frames [SSTV_META_PREVIEW][25 bytes], index = chunk. */
+    uint8_t preview[SSTV_PREVIEW_BYTES];
+    sstv_preview_make(image_bits, preview);
+    for(int chunk = 0; chunk < SSTV_PREVIEW_CHUNKS; chunk += SSTV_ILEAVE) {
+        for(int i = 0; i < SSTV_ILEAVE; i++) {
+            int c = chunk + i;
+            memset(payload, 0, SSTV_PAYLOAD_BYTES);
+            payload[0] = SSTV_META_PREVIEW;
+            if(c < SSTV_PREVIEW_CHUNKS) {
+                int off = c * SSTV_PREVIEW_CHUNK;
+                int n = SSTV_PREVIEW_BYTES - off;
+                if(n > SSTV_PREVIEW_CHUNK) n = SSTV_PREVIEW_CHUNK;
+                memcpy(payload + 1, preview + off, (size_t)n);
+            }
+            sstv_frame_pack(sstv_hdr(SSTV_FT_META, c), payload, logical + i * SSTV_FRAME_BYTES);
+        }
+        emit_block(logical, out, blocks);
+        for(int f = 0; f < SSTV_ILEAVE && lines_after; f++) lines_after[blocks * SSTV_ILEAVE + f] = 0;
+        blocks++;
+    }
 
     if(use_coded) {
         int line = 0;

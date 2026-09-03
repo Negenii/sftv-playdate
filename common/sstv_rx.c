@@ -2,10 +2,11 @@
 #include "sstv_frame.h"
 #include <string.h>
 
-void sstv_rx_init(sstv_rx* rx, sstv_pixel_cb pixel_cb, sstv_meta_cb meta_cb, void* ctx) {
+void sstv_rx_init(sstv_rx* rx, sstv_pixel_cb pixel_cb, sstv_meta_cb meta_cb, sstv_preview_cb preview_cb, void* ctx) {
     memset(rx, 0, sizeof *rx);
     rx->pixel_cb = pixel_cb;
     rx->meta_cb = meta_cb;
+    rx->preview_cb = preview_cb;
     rx->ctx = ctx;
 }
 
@@ -76,13 +77,23 @@ static int try_block(sstv_rx* rx) {
     }
     if(type == SSTV_FT_META) {
         char name[SSTV_PAYLOAD_BYTES];
+        bool named = false;
         for(int i = 0; i < SSTV_ILEAVE; i++) {
             if(!ok[i]) continue;
             const uint8_t* m = payload + i * SSTV_PAYLOAD_BYTES;
-            memcpy(name, m + 1, SSTV_PAYLOAD_BYTES - 1);
-            name[SSTV_PAYLOAD_BYTES - 1] = 0;
-            if(rx->meta_cb) rx->meta_cb(rx->ctx, name, m[0] == SSTV_META_END);
-            break;
+            if(m[0] == SSTV_META_PREVIEW) {
+                int chunk = sstv_hdr_index(hdr[i]);
+                if(chunk >= SSTV_PREVIEW_CHUNKS) continue;
+                int n = SSTV_PREVIEW_BYTES - chunk * SSTV_PREVIEW_CHUNK;
+                if(n > SSTV_PREVIEW_CHUNK) n = SSTV_PREVIEW_CHUNK;
+                if(rx->preview_cb) rx->preview_cb(rx->ctx, chunk, n, m + 1);
+            } else if(!named) {
+                /* START / END: the same name in every frame, report once */
+                memcpy(name, m + 1, SSTV_PAYLOAD_BYTES - 1);
+                name[SSTV_PAYLOAD_BYTES - 1] = 0;
+                if(rx->meta_cb) rx->meta_cb(rx->ctx, name, m[0] == SSTV_META_END);
+                named = true;
+            }
         }
     } else if(type == SSTV_FT_RAW) {
         rx->coded = false;

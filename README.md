@@ -7,8 +7,8 @@ depending on how well the image compresses (dithered photos: 5.4 min; line art: 
 Signal: 4-FSK, 2 bits per 4 ms symbol; symbol 0 is silence, 1..3 are 3000/3500/4000 Hz,
 5500 Hz frame sync. Frames are 41 bytes: header (type + index), 26 payload bytes, CRC-8 and
 12 Reed-Solomon parity bytes; four frames are byte-interleaved so a noise burst is spread thin
-and repaired. A pass starts with a META frame carrying the file name and ends with an END META
-frame. Pixels go either as RAW half-line segments (a lost frame costs half a line) or, when the
+and repaired. A pass starts with a META frame carrying the file name, then 20 frames of an 80x48 dithered
+preview (3.4 s) so the receiver can show what is coming, and ends with an END META frame. Pixels go either as RAW half-line segments (a lost frame costs half a line) or, when the
 lossless line codec saves at least 15 %, as CODED blocks; the transmitter picks per image. The
 receiver tracks the symbol clock from the sync period and flywheels through buried syncs. The
 Flipper LED follows the data (blue = tone, off = silence, red = sync) and the preview inverts
@@ -45,12 +45,17 @@ and copy the `.pbm` to the Flipper SD card at `/ext/apps_data/sstv_tx/`.
 
 Flipper: Apps → Tools → SSTV TX → pick a `.pbm` → OK sends one pass, Back stops.
 Playdate: SSTV RX, allow the microphone, put the Flipper 10–30 cm from the Playdate mic (bottom
-edge). A dot in the corner flashes per frame. Right toggles the side panel (name, state and
-ZIP/RAW pills, line progress, counters, tone level). When the END frame arrives a banner shows
-the file name and line count, and the image is saved as `Data/com.negenii.sstvrx/<name>.pbm`
-(same name overwrites). B opens the gallery: a grid of thumbnails, d-pad moves the cursor,
-A opens full screen, B goes back. A in receive mode clears the image, Up records 30 s of raw
-microphone audio to `rec.wav` for analysis.
+edge). Main menu: Receive or Gallery. Receive shows the dolphin sending the preview to a
+Playdate until the first lines arrive, then the picture over a dimmed preview placeholder. An
+incoming transmission jumps to Receive from any screen. A dot in the corner flashes per frame.
+Right toggles the side panel (name, state and ZIP/RAW pills, line progress, counters, tone
+level). When the END frame arrives a banner shows the file name and line count, and the image
+is saved as `Data/com.negenii.sstvrx/<name>.pbm` (same name overwrites). Gallery: a grid of
+thumbnails, d-pad moves the cursor, A opens full screen, B goes back. A in receive mode clears
+the image, B returns to the menu, Up records 30 s of raw microphone audio to `rec.wav`.
+
+The dolphin sprite is cropped from the Flipper firmware's `L3_Hijack_radio` animation
+(GPL-3, flipperdevices/flipperzero-firmware) as a placeholder.
 
 ## Debugging
 
