@@ -42,7 +42,10 @@ static float sheet_y = LCD_ROWS; /* top of the sheet; it slides in from the bott
 static unsigned last_data_ms;
 static char current_name[NAME_CAP] = "untitled";
 static bool started; /* START meta received, transmission in progress */
+static unsigned hearing_ms; /* last time the demodulator heard a tone (before a pass begins) */
 static void begin_pass(unsigned now); /* start the pass on the first decoded frame; defined near on_meta */
+static void start_mic(void);
+static void stop_mic(void);
 static unsigned started_ms; /* when the START block ended: the pass timeline starts here */
 static int total_frames; /* physical frames in the pass, announced in START */
 static bool image_dirty; /* something received since the last save */
@@ -50,9 +53,7 @@ static bool finished; /* END meta received */
 static unsigned finished_ms;
 static int finished_lines;
 static int mic_state; /* 0 asking, 1 allowed, -1 denied */
-static bool mic_enabled = true; /* user switch in the menu; entering Receive turns it back on */
 static bool mic_running; /* callback installed */
-static int menu_focus; /* 0 tiles, 1 microphone pill */
 static bool show_panel; /* side panel with statistics, toggled with Right */
 static unsigned led_frame_ms; /* virtual LED: last physical frame time */
 static unsigned led_block_ms; /* last decoded block time */
@@ -236,6 +237,7 @@ static void gallery_ensure_thumbs(int first, int count) {
 }
 
 static void gallery_open(void) {
+    stop_mic();
     gallery_scan();
     ui_mode = ModeGrid;
     gallery_index = 0;
@@ -255,6 +257,7 @@ static void menu_open(void) {
         pd->system->realloc(px, 0);
     }
     ui_mode = ModeMenu;
+    stop_mic();
 }
 
 /* ---- receive callbacks (main thread) ---- */
@@ -468,7 +471,8 @@ static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
 }
 
 static void start_mic(void) {
-    if(mic_state != 1 || !mic_enabled || mic_running) return;
+    /* The microphone runs only in Receive; the menu and gallery keep it off. */
+    if(mic_state != 1 || mic_running || ui_mode != ModeReceive) return;
     pd->sound->setMicCallback(mic_cb, NULL, kMicInputAutodetect);
     mic_running = true;
 }
@@ -665,17 +669,13 @@ static void draw_menu(void) {
     draw_text_white("RX", 16 + 7, cap_top + (cap_h - 10) / 2 - 2);
     use_font(font_big);
     draw_text("Slow Flipper TV", 16 + pill_w + 8, title_y);
-    /* microphone switch: Up selects it, A toggles */
-    use_font(font_ui);
-    const char* mic = mic_state < 0 ? "mic denied" : mic_state == 0 ? "mic?" : mic_enabled ? "mic on" : "mic off";
-    draw_pill(mic, LCD_COLUMNS - 32 - text_width(mic) - 12, 10, menu_focus == 1);
 
     /* two tiles: an icon band and a label band under a separator */
     const int tile_w = 190, tile_h = 186, ty = 46, label_h = 40;
     const int tx[2] = {5, LCD_COLUMNS - 5 - tile_w};
     const char* labels[2] = {"Receive", "Gallery"};
     for(int i = 0; i < 2; i++) {
-        bool sel = i == menu_index && menu_focus == 0;
+        bool sel = i == menu_index;
         int bw = sel ? 3 : 1; /* border */
         pd->graphics->fillRoundRect(tx[i], ty, tile_w, tile_h, 14, kColorBlack);
         pd->graphics->fillRoundRect(tx[i] + bw, ty + bw, tile_w - 2 * bw, tile_h - 2 * bw, 14 - bw, kColorWhite);
@@ -732,6 +732,11 @@ static void draw_scene(void) {
     const int dx = 20, dy = cy + (CONSOLE_H - DOLPHIN_H * 2) / 2; /* dolphin */
     const int text_cx = LCD_COLUMNS / 2; /* texts run under both figures */
     if(dolphin_tile) pd->graphics->drawBitmap(dolphin_tile, dx, dy, kBitmapUnflipped);
+    /* A signal is coming in but not yet decoded: the dolphin opens its mouth. Placeholder
+     * mouth position (lower-left snout of the 2x dolphin); adjust when the real sprite lands. */
+    if(!started && now - hearing_ms < 500) {
+        pd->graphics->fillEllipse(dx + 4, dy + 52, 20, 11, 0.0f, 0.0f, kColorBlack);
+    }
     draw_console(cx, cy, started ? preview_bitmap : NULL);
     use_font(font_ui);
     char t[64], nm[NAME_CAP];
@@ -749,7 +754,7 @@ static void draw_scene(void) {
         use_font(font_big);
         draw_text_centered("Listening", text_cx, 192);
         use_font(font_ui);
-        const char* hint = mic_state < 0 ? "microphone access denied" : mic_state == 0 ? "waiting for microphone permission" : !mic_enabled ? "microphone is off" : "start a transmission on the Flipper";
+        const char* hint = mic_state < 0 ? "microphone access denied" : mic_state == 0 ? "waiting for microphone permission" : "start a transmission on the Flipper";
         draw_text_centered(hint, text_cx, 220);
     }
 }
@@ -915,26 +920,24 @@ static int update(void* userdata) {
     }
 
     unsigned now = pd->system->getCurrentTimeMilliseconds();
+    /* Before a pass begins, note when the demodulator is hearing a tone so the dolphin can
+     * react (open its mouth) to a signal that is not yet a decoded transmission. */
+    if(ui_mode == ModeReceive && !started) {
+        sstv_demod_status_t st;
+        sstv_demod_status(&demod, &st);
+        if(st.tone >= 0 && st.level > 0.18f) hearing_ms = now;
+    }
     if(image_dirty && ((segs_done == SSTV_NUM_SEGS) || (now - last_data_ms > LOST_TIMEOUT_MS))) save_image();
     /* END never came: the pass is over by the announced timeline plus a margin. */
     if(started && total_frames > 0 && now - started_ms > (unsigned)(total_frames - SSTV_ILEAVE) * (SSTV_PHYS_US / 1000) + 4000) finish(now);
 
     switch(ui_mode) {
     case ModeMenu:
-        if(pushed & kButtonUp) menu_focus = 1;
-        if(pushed & kButtonDown) menu_focus = 0;
-        if(menu_focus == 0 && (pushed & (kButtonLeft | kButtonRight))) menu_index ^= 1;
+        if(pushed & (kButtonLeft | kButtonRight)) menu_index ^= 1;
         if(pushed & kButtonA) {
-            if(menu_focus == 1) {
-                if(mic_state == 1) {
-                    mic_enabled = !mic_enabled;
-                    if(mic_enabled) start_mic();
-                    else stop_mic();
-                }
-            } else if(menu_index == 0) {
-                mic_enabled = true; /* receiving needs the microphone */
+            if(menu_index == 0) {
+                ui_mode = ModeReceive; /* the microphone runs only here */
                 start_mic();
-                ui_mode = ModeReceive;
             } else {
                 gallery_open();
             }
