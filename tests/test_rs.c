@@ -10,6 +10,7 @@ static uint32_t rnd(void) {
 
 int main(void) {
     enum { K = 28, N = K + RS_PARITY };
+    (void)0; /* RS_PARITY follows SSTV_PARITY_BYTES */
     uint8_t data[K], block[N], ref[N];
 
     /* Clean block decodes with 0 corrections and no change. */

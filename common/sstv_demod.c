@@ -189,8 +189,13 @@ static void on_measured_edge(sstv_demod* d, double t_meas) {
         start_frame(d, d->predicted_edge, true);
         return;
     }
+    if(d->sync_peak < 0.5f * d->sync_gain) {
+        /* A weak burst (buried in noise) gives an unreliable edge: keep the prediction. */
+        start_frame(d, d->predicted_edge, true);
+        return;
+    }
     double t0 = d->predicted_edge + 0.5 * err;
-    d->bit_len += (float)(0.1 * err / symbols);
+    d->bit_len += (float)(0.2 * err / symbols);
     d->last_edge = t0;
     start_frame(d, t0, true);
 }

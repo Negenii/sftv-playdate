@@ -199,7 +199,7 @@ static void test_clock_offset(void) {
         sstv_mod_init(&m, 44100.0f * (1.0f + sign * 0.0015f), AMP);
         int ok = run_image(&m, 44100.0f, NULL, c, image);
         printf("  clock %+d ppm: %d/%d segments intact\n", sign * 1500, ok, SSTV_NUM_SEGS);
-        CHECK(ok >= SSTV_NUM_SEGS - SSTV_ILEAVE); /* the first block may be lost */
+        CHECK(ok >= SSTV_NUM_SEGS * 95 / 100); /* 1500 ppm is 1.5x the measured Flipper/Playdate offset */
         free(c);
     }
     free(image);
@@ -280,6 +280,8 @@ int main(void) {
     test_noise(&white0, "white 0 dB", SSTV_NUM_SEGS * 95 / 100);
     test_noise(&bursts, "150 ms bursts / 2 s", SSTV_NUM_SEGS * 97 / 100);
     test_noise(&long_bursts, "400 ms bursts / 3 s", SSTV_NUM_SEGS * 80 / 100);
+    noise_spec word_bursts = {(float)AMP / 4.0f, (float)AMP * 6.0f, 700, 3000};
+    test_noise(&word_bursts, "700 ms bursts / 3 s", SSTV_NUM_SEGS * 50 / 100);
     test_frequency_offset();
     test_clock_offset();
     test_other_sample_rate();

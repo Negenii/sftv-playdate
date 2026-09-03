@@ -26,7 +26,7 @@ int main(void) {
     CHECK_EQ_INT(sstv_frame_symbol(frame, 6), 2); /* bits 12,13 = 10 */
     CHECK_EQ_INT(SSTV_SYMBOLS_PER_FRAME * SSTV_BITS_PER_SYMBOL, SSTV_FRAME_BITS);
 
-    /* up to PARITY/2 corrupted bytes are corrected blind */
+    /* up to PARITY/2 corrupted bytes are corrected blind (4 here) */
     int corrected = 0;
     uint8_t bad[SSTV_FRAME_BYTES];
     memcpy(bad, frame, sizeof bad);
