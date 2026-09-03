@@ -4,22 +4,26 @@
 #include "rs.h"
 #include <string.h>
 
-void sstv_frame_pack(uint16_t block, const uint8_t* payload, uint8_t* out) {
-    out[0] = (uint8_t)(block >> 8);
-    out[1] = (uint8_t)(block & 0xFF);
+void sstv_frame_pack(uint16_t hdr, const uint8_t* payload, uint8_t* out) {
+    out[0] = (uint8_t)(hdr >> 8);
+    out[1] = (uint8_t)(hdr & 0xFF);
     memcpy(out + 2, payload, SSTV_PAYLOAD_BYTES);
     out[SSTV_DATA_BYTES - 1] = crc8_compute(out, SSTV_DATA_BYTES - 1);
     rs_encode(out, SSTV_DATA_BYTES, out + SSTV_DATA_BYTES);
 }
 
-static bool check(const uint8_t* buf, uint16_t* block, uint8_t* payload) {
-    *block = (uint16_t)((buf[0] << 8) | buf[1]);
+static bool check(const uint8_t* buf, uint16_t* hdr, uint8_t* payload) {
+    *hdr = (uint16_t)((buf[0] << 8) | buf[1]);
     memcpy(payload, buf + 2, SSTV_PAYLOAD_BYTES);
-    return crc8_compute(buf, SSTV_DATA_BYTES - 1) == buf[SSTV_DATA_BYTES - 1] && *block < SSTV_MAX_BLOCKS;
+    if(crc8_compute(buf, SSTV_DATA_BYTES - 1) != buf[SSTV_DATA_BYTES - 1]) return false;
+    int type = sstv_hdr_type(*hdr), index = sstv_hdr_index(*hdr);
+    if(type == SSTV_FT_RAW) return index < SSTV_NUM_SEGS;
+    if(type == SSTV_FT_CODED) return index < SSTV_MAX_BLOCKS;
+    return type == SSTV_FT_META;
 }
 
 bool sstv_frame_unpack_soft(
-    const uint8_t* in, const float* byte_conf, uint16_t* block, uint8_t* payload, int* corrected) {
+    const uint8_t* in, const float* byte_conf, uint16_t* hdr, uint8_t* payload, int* corrected) {
     uint8_t buf[SSTV_FRAME_BYTES];
     int order[SSTV_FRAME_BYTES];
     int n_order = 0;
@@ -37,12 +41,12 @@ bool sstv_frame_unpack_soft(
     for(int e = 0; e <= (byte_conf ? SSTV_PARITY_BYTES : 0); e += 2) {
         memcpy(buf, in, SSTV_FRAME_BYTES);
         int c = rs_decode_erasures(buf, SSTV_FRAME_BYTES, order, e);
-        if(c >= 0 && check(buf, block, payload)) {
+        if(c >= 0 && check(buf, hdr, payload)) {
             if(corrected) *corrected = c;
             return true;
         }
     }
-    (void)check(in, block, payload);
+    (void)check(in, hdr, payload);
     if(corrected) *corrected = -1;
     return false;
 }
@@ -110,19 +114,69 @@ int sstv_block_unpack(const uint8_t* payload, int valid_bytes, sstv_block_line_c
     return delivered;
 }
 
-int sstv_build_physical(const uint8_t* image_bits, uint8_t* out) {
-    uint8_t payload[SSTV_BLOCK_PAYLOAD];
+/* Emits one interleaved block from 4 logical frames. */
+static void emit_block(const uint8_t* logical, uint8_t* out, int block_no) {
+    sstv_interleave(logical, out + block_no * SSTV_ILEAVE * SSTV_FRAME_BYTES);
+}
+
+int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* out, uint8_t* lines_after, bool* coded) {
     uint8_t logical[SSTV_ILEAVE * SSTV_FRAME_BYTES];
-    int line = 0, blocks = 0;
-    while(line < SSTV_HEIGHT && blocks < SSTV_MAX_BLOCKS) {
+    uint8_t payload[SSTV_BLOCK_PAYLOAD];
+
+    /* How many blocks would coding need? */
+    int coded_blocks = 0;
+    for(int line = 0; line < SSTV_HEIGHT && coded_blocks < SSTV_MAX_BLOCKS;) {
         int n = sstv_block_pack(image_bits, line, payload);
         if(n <= 0) break;
-        for(int i = 0; i < SSTV_ILEAVE; i++) {
-            sstv_frame_pack((uint16_t)blocks, payload + i * SSTV_PAYLOAD_BYTES, logical + i * SSTV_FRAME_BYTES);
-        }
-        sstv_interleave(logical, out + blocks * SSTV_ILEAVE * SSTV_FRAME_BYTES);
         line += n;
-        blocks++;
+        coded_blocks++;
+    }
+    int raw_frames = SSTV_NUM_SEGS;
+    bool use_coded = (float)(coded_blocks * SSTV_ILEAVE) <= SSTV_CODED_MIN_GAIN * (float)raw_frames;
+    if(coded) *coded = use_coded;
+
+    int blocks = 0;
+    /* Meta block: the file name in every logical frame. */
+    memset(payload, 0, SSTV_PAYLOAD_BYTES);
+    if(name) {
+        size_t n = strlen(name);
+        if(n > SSTV_NAME_MAX) n = SSTV_NAME_MAX;
+        memcpy(payload, name, n);
+    }
+    for(int i = 0; i < SSTV_ILEAVE; i++) sstv_frame_pack(sstv_hdr(SSTV_FT_META, 0), payload, logical + i * SSTV_FRAME_BYTES);
+    emit_block(logical, out, blocks++);
+    for(int f = 0; f < SSTV_ILEAVE && lines_after; f++) lines_after[f] = 0;
+
+    if(use_coded) {
+        int line = 0;
+        while(line < SSTV_HEIGHT) {
+            int n = sstv_block_pack(image_bits, line, payload);
+            if(n <= 0) break;
+            for(int i = 0; i < SSTV_ILEAVE; i++) {
+                sstv_frame_pack(sstv_hdr(SSTV_FT_CODED, blocks - 1), payload + i * SSTV_PAYLOAD_BYTES, logical + i * SSTV_FRAME_BYTES);
+            }
+            emit_block(logical, out, blocks);
+            line += n;
+            if(lines_after) {
+                for(int f = 0; f < SSTV_ILEAVE; f++) lines_after[blocks * SSTV_ILEAVE + f] = (uint8_t)(f == SSTV_ILEAVE - 1 ? line : line - n);
+            }
+            blocks++;
+        }
+    } else {
+        for(int seg = 0; seg < SSTV_NUM_SEGS; seg += SSTV_ILEAVE) {
+            for(int i = 0; i < SSTV_ILEAVE; i++) {
+                int s = seg + i;
+                memset(payload, 0, SSTV_PAYLOAD_BYTES);
+                memcpy(payload, image_bits + sstv_seg_line(s) * SSTV_LINE_BYTES + sstv_seg_byte_offset(s), SSTV_SEG_BYTES);
+                sstv_frame_pack(sstv_hdr(SSTV_FT_RAW, s), payload, logical + i * SSTV_FRAME_BYTES);
+            }
+            emit_block(logical, out, blocks);
+            if(lines_after) {
+                /* the block covers segments seg..seg+3 = lines seg/2 and seg/2+1 */
+                for(int f = 0; f < SSTV_ILEAVE; f++) lines_after[blocks * SSTV_ILEAVE + f] = (uint8_t)(f == SSTV_ILEAVE - 1 ? seg / 2 + 2 : seg / 2);
+            }
+            blocks++;
+        }
     }
     return blocks * SSTV_ILEAVE;
 }

@@ -17,13 +17,20 @@ typedef struct {
     uint8_t seen[SSTV_HEIGHT];
 } capture;
 
-static void on_line(void* ctx, uint16_t line, const uint8_t* pixels) {
+static void on_pixels(void* ctx, uint16_t line, int x_byte, int nbytes, const uint8_t* pixels) {
     capture* c = ctx;
     c->count++;
-    if(line < SSTV_HEIGHT) {
-        memcpy(c->got[line], pixels, SSTV_LINE_BYTES);
-        c->seen[line] = 1;
+    if(line < SSTV_HEIGHT && x_byte + nbytes <= SSTV_LINE_BYTES) {
+        memcpy(c->got[line] + x_byte, pixels, (size_t)nbytes);
+        c->seen[line] |= (uint8_t)(x_byte == 0 ? 1 : 2);
+        if(nbytes == SSTV_LINE_BYTES) c->seen[line] = 3;
     }
+}
+
+static char last_name[SSTV_PAYLOAD_BYTES + 1];
+static void on_meta(void* ctx, const char* name) {
+    (void)ctx;
+    strncpy(last_name, name, SSTV_PAYLOAD_BYTES);
 }
 
 static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
@@ -33,7 +40,7 @@ static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
 
 static capture* capture_new(void) {
     capture* c = calloc(1, sizeof *c);
-    sstv_rx_init(&c->rx, on_line, c);
+    sstv_rx_init(&c->rx, on_pixels, on_meta, c);
     return c;
 }
 
@@ -80,7 +87,7 @@ static void feed_chunked(sstv_demod* d, const int16_t* s, int n) {
 static int lines_matching(const capture* c, const uint8_t* image) {
     int ok = 0;
     for(int y = 0; y < SSTV_HEIGHT; y++) {
-        if(c->seen[y] && memcmp(c->got[y], image + y * SSTV_LINE_BYTES, SSTV_LINE_BYTES) == 0) ok++;
+        if(c->seen[y] == 3 && memcmp(c->got[y], image + y * SSTV_LINE_BYTES, SSTV_LINE_BYTES) == 0) ok++;
     }
     return ok;
 }
@@ -123,25 +130,27 @@ static void test_single_block(void) {
     uint8_t* image = calloc(SSTV_IMAGE_BYTES, 1);
     fill_random(image, SSTV_IMAGE_BYTES);
     uint8_t* phys = malloc(SSTV_MAX_FRAMES * SSTV_FRAME_BYTES);
-    sstv_build_physical(image, phys);
-    int cap = silence_samples(sr, 200) + SSTV_ILEAVE * 30000;
+    sstv_build_physical(image, "t", phys, NULL, NULL);
+    int cap = silence_samples(sr, 200) + 2 * SSTV_ILEAVE * 30000;
     int16_t* s = calloc((size_t)cap, sizeof(int16_t));
     sstv_mod m;
     sstv_mod_init(&m, sr, AMP);
     int n = silence_samples(sr, 20);
     n += sstv_mod_tone(&m, m.tones[1], 50000, s + n, cap - n);
-    for(int p = 0; p < SSTV_ILEAVE; p++) n += sstv_mod_frame(&m, phys + p * SSTV_FRAME_BYTES, s + n, cap - n);
+    /* meta block + first data block (raw mode: 4 half-line segments = lines 0,1) */
+    for(int p = 0; p < 2 * SSTV_ILEAVE; p++) n += sstv_mod_frame(&m, phys + p * SSTV_FRAME_BYTES, s + n, cap - n);
     n += silence_samples(sr, 20);
 
     capture* c = capture_new();
+    last_name[0] = 0;
     sstv_demod d;
     sstv_demod_init(&d, sr, on_phys, c);
     feed_chunked(&d, s, n);
-    CHECK_EQ_INT(d.frames, SSTV_ILEAVE);
-    CHECK_EQ_INT(c->count, 2); /* random rows: two raw lines per block */
-    CHECK_EQ_INT(lines_matching(c, image), c->count);
+    CHECK_EQ_INT(d.frames, 2 * SSTV_ILEAVE);
+    CHECK(strcmp(last_name, "t") == 0);
+    CHECK_EQ_INT(c->count, SSTV_ILEAVE); /* 4 segments */
+    CHECK_EQ_INT(lines_matching(c, image), 2);
     /* the flywheel may already be waiting for a next frame; it must not have produced one */
-    CHECK_EQ_INT(d.frames, SSTV_ILEAVE);
     free(s);
     free(phys);
     free(image);
@@ -154,7 +163,7 @@ static void test_full_image_clean(void) {
     sstv_mod m;
     sstv_mod_init(&m, 44100.0f, AMP);
     int ok = run_image(&m, 44100.0f, NULL, c, image);
-    CHECK_EQ_INT(c->count, SSTV_HEIGHT);
+    CHECK_EQ_INT(c->count, SSTV_NUM_SEGS); /* random image goes raw: one callback per half line */
     CHECK_EQ_INT(ok, SSTV_HEIGHT);
     /* a compressible image needs fewer frames and still arrives intact */
     for(int y = 0; y < SSTV_HEIGHT; y++) {
@@ -164,8 +173,10 @@ static void test_full_image_clean(void) {
     capture* c2 = capture_new();
     float sr = 44100.0f;
     uint8_t* phys = malloc(SSTV_MAX_FRAMES * SSTV_FRAME_BYTES);
-    int frames = sstv_build_physical(image, phys);
-    printf("  compressible image: %d physical frames (raw would be %d)\n", frames, SSTV_HEIGHT * SSTV_ILEAVE / 2);
+    bool coded = false;
+    int frames = sstv_build_physical(image, "shapes", phys, NULL, &coded);
+    printf("  compressible image: %d physical frames (raw would be %d)\n", frames, SSTV_NUM_SEGS + SSTV_ILEAVE);
+    CHECK(coded);
     CHECK(frames < SSTV_HEIGHT);
     int cap = sstv_mod_image_capacity(sr);
     int16_t* s = calloc((size_t)cap, sizeof(int16_t));
@@ -239,27 +250,27 @@ static void test_lost_sync(void) {
     uint8_t* image = calloc(SSTV_IMAGE_BYTES, 1);
     fill_random(image, SSTV_IMAGE_BYTES);
     uint8_t* phys = malloc(SSTV_MAX_FRAMES * SSTV_FRAME_BYTES);
-    sstv_build_physical(image, phys);
-    int cap = 2 * SSTV_ILEAVE * 30000 + 20000;
+    sstv_build_physical(image, "t", phys, NULL, NULL);
+    int cap = 3 * SSTV_ILEAVE * 30000 + 20000;
     int16_t* s = calloc((size_t)cap, sizeof(int16_t));
     sstv_mod m;
     sstv_mod_init(&m, sr, AMP);
     int n = silence_samples(sr, 20);
-    int start[2 * SSTV_ILEAVE];
-    for(int p = 0; p < 2 * SSTV_ILEAVE; p++) {
+    /* meta block, then two raw blocks (lines 0-1 and 2-3); frame 1 of block 1 loses its sync */
+    int start[3 * SSTV_ILEAVE];
+    for(int p = 0; p < 3 * SSTV_ILEAVE; p++) {
         start[p] = n;
         n += sstv_mod_frame(&m, phys + p * SSTV_FRAME_BYTES, s + n, cap - n);
     }
     n += silence_samples(sr, 20);
     int cut_ms = SSTV_SYNC_US / 1000 - 2;
-    memset(s + start[1], 0, sizeof(int16_t) * (size_t)silence_samples(sr, cut_ms));
+    memset(s + start[SSTV_ILEAVE + 1], 0, sizeof(int16_t) * (size_t)silence_samples(sr, cut_ms));
 
     capture* c = capture_new();
     sstv_demod d;
     sstv_demod_init(&d, sr, on_phys, c);
     feed_chunked(&d, s, n);
-    /* random rows: block 0 = lines 0,1, block 1 = lines 2,3; all must arrive */
-    CHECK(c->seen[0] && c->seen[1] && c->seen[2] && c->seen[3]);
+    CHECK_EQ_INT(lines_matching(c, image), 4);
     CHECK(d.flywheel_frames >= 1);
     free(s);
     free(phys);

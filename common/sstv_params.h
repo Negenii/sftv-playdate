@@ -6,15 +6,24 @@
 #define SSTV_LINE_BYTES 50 /* ceil(400 / 8) */
 #define SSTV_IMAGE_BYTES (SSTV_LINE_BYTES * SSTV_HEIGHT) /* 12000 */
 
-/* Frames and blocks. Lines are coded losslessly (sstv_codec: raw, run lengths, or run
- * lengths against the previous line) and packed, as many consecutive lines as fit, into
- * a block of SSTV_BLOCK_PAYLOAD bytes: [line count][first line#][record]... Each block is split into
- * SSTV_ILEAVE logical frames = [block index, 2 bytes][SSTV_PAYLOAD_BYTES][CRC-8] +
- * SSTV_PARITY_BYTES Reed-Solomon parity (corrects PARITY/2 unknown or PARITY erased bytes),
- * byte-interleaved into SSTV_ILEAVE physical frames so a noise burst hitting one physical
- * frame is spread thinly. Photographs (dithered) hardly compress: 2 lines per block, 120
- * blocks; line art and flat areas pack 4-8 lines per block and finish that much sooner. */
+/* Frames, segments and blocks. Every logical frame is [header, 2 bytes][SSTV_PAYLOAD_BYTES]
+ * [CRC-8] + SSTV_PARITY_BYTES Reed-Solomon parity (corrects PARITY/2 unknown or PARITY erased
+ * bytes). SSTV_ILEAVE logical frames are byte-interleaved into SSTV_ILEAVE physical frames so
+ * a noise burst hitting one physical frame is spread thinly. The header's top two bits give
+ * the frame type, the rest an index:
+ *   SSTV_FT_RAW   payload = one half line (SSTV_SEG_BYTES pixels), index = segment 0..479.
+ *                 Frames are independent: a lost frame costs half a line.
+ *   SSTV_FT_CODED payload = a quarter of a 104-byte block of losslessly coded consecutive
+ *                 lines ([count][first line][records]...), index = block. Used when the image
+ *                 compresses by at least SSTV_CODED_MIN_GAIN (line art, text), where a block
+ *                 carries 4-10 lines and the transfer is that much shorter.
+ *   SSTV_FT_META  payload = file name (NUL padded), repeated in all four logical frames of the
+ *                 first block of a transmission. */
 #define SSTV_PAYLOAD_BYTES 26 /* 4 x 26 = 104: two raw lines (1 + 1 + 2 x 51) fit in a block */
+#define SSTV_SEG_BYTES 25 /* half a line */
+#define SSTV_SEGS_PER_LINE 2
+#define SSTV_NUM_SEGS (SSTV_HEIGHT * SSTV_SEGS_PER_LINE) /* 480 */
+#define SSTV_NAME_MAX (SSTV_PAYLOAD_BYTES - 1) /* 25 characters */
 #define SSTV_DATA_BYTES (2 + SSTV_PAYLOAD_BYTES + 1) /* 29 */
 #ifndef SSTV_PARITY_BYTES
 #define SSTV_PARITY_BYTES 12
@@ -25,8 +34,14 @@
 #define SSTV_ILEAVE 4
 #endif
 #define SSTV_BLOCK_PAYLOAD (SSTV_ILEAVE * SSTV_PAYLOAD_BYTES) /* 104 */
-#define SSTV_MAX_BLOCKS (SSTV_HEIGHT / 2) /* worst case: raw lines, 2 per block */
-#define SSTV_MAX_FRAMES (SSTV_MAX_BLOCKS * SSTV_ILEAVE)
+#define SSTV_FT_RAW 0
+#define SSTV_FT_CODED 1
+#define SSTV_FT_META 2
+#define SSTV_FT_SHIFT 14
+#define SSTV_INDEX_MASK 0x3FFF
+#define SSTV_MAX_BLOCKS (SSTV_HEIGHT / 2) /* coded worst case: raw lines, 2 per block */
+#define SSTV_MAX_FRAMES (SSTV_NUM_SEGS + SSTV_ILEAVE) /* raw mode: 480 + the meta block */
+#define SSTV_CODED_MIN_GAIN 0.85f /* use coding only when frames <= 85% of raw */
 
 /* Modulation: 4-FSK, 2 bits per 4 ms symbol, square-wave tones.
  *

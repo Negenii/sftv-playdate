@@ -9,8 +9,12 @@ extern "C" {
 
 /* Block assembler: takes physical frames from the demodulator (raw bytes + per-bit soft
  * decisions), finds interleave blocks, de-interleaves, decodes each logical frame with
- * Reed-Solomon errors-and-erasures, unpacks the coded lines and reports them. */
-typedef void (*sstv_line_cb)(void* ctx, uint16_t line, const uint8_t* pixels);
+ * Reed-Solomon errors-and-erasures and reports image data:
+ *   pixel_cb: `nbytes` pixel bytes for line `line` starting at byte `x_byte` (a half line in
+ *             raw mode, a whole line in coded mode);
+ *   meta_cb:  the file name announced at the start of a transmission. */
+typedef void (*sstv_pixel_cb)(void* ctx, uint16_t line, int x_byte, int nbytes, const uint8_t* pixels);
+typedef void (*sstv_meta_cb)(void* ctx, const char* name);
 
 typedef struct {
     uint8_t phys[SSTV_ILEAVE][SSTV_FRAME_BYTES];
@@ -20,13 +24,14 @@ typedef struct {
     int blocks_ok; /* blocks with at least one good logical frame */
     int frames_ok; /* logical frames that passed RS + CRC */
     int frames_bad;
-    int lines_out; /* lines delivered */
     int rs_corrected;
-    sstv_line_cb cb;
+    bool coded; /* last seen data frame type */
+    sstv_pixel_cb pixel_cb;
+    sstv_meta_cb meta_cb;
     void* ctx;
 } sstv_rx;
 
-void sstv_rx_init(sstv_rx* rx, sstv_line_cb cb, void* ctx);
+void sstv_rx_init(sstv_rx* rx, sstv_pixel_cb pixel_cb, sstv_meta_cb meta_cb, void* ctx);
 void sstv_rx_reset_counters(sstv_rx* rx);
 
 /* One demodulated physical frame: SSTV_FRAME_BYTES bytes and SSTV_FRAME_BITS soft values. */

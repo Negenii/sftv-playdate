@@ -19,17 +19,18 @@ int main(void) {
     for(int i = 0; i < SSTV_PAYLOAD_BYTES; i++) payload[i] = (uint8_t)(i * 37 + 11);
 
     uint8_t frame[SSTV_FRAME_BYTES];
-    sstv_frame_pack(77, payload, frame);
-    CHECK_EQ_INT(frame[0], 0);
+    sstv_frame_pack(sstv_hdr(SSTV_FT_CODED, 77), payload, frame);
+    CHECK_EQ_INT(frame[0], 0x40);
     CHECK_EQ_INT(frame[1], 77);
     CHECK(memcmp(frame + 2, payload, SSTV_PAYLOAD_BYTES) == 0);
 
     uint16_t blk = 0;
     uint8_t out[SSTV_PAYLOAD_BYTES];
     CHECK(sstv_frame_unpack(frame, &blk, out));
-    CHECK_EQ_INT(blk, 77);
+    CHECK_EQ_INT(sstv_hdr_type(blk), SSTV_FT_CODED);
+    CHECK_EQ_INT(sstv_hdr_index(blk), 77);
     CHECK(memcmp(out, payload, SSTV_PAYLOAD_BYTES) == 0);
-    CHECK_EQ_INT(sstv_frame_symbol(frame, 7), 1); /* bits 14,15 of 0x00 0x4D */
+    CHECK_EQ_INT(sstv_frame_symbol(frame, 7), 1); /* bits 14,15 of 0x40 0x4D */
     CHECK_EQ_INT(SSTV_SYMBOLS_PER_FRAME * SSTV_BITS_PER_SYMBOL, SSTV_FRAME_BITS);
 
     /* up to PARITY/2 corrupted bytes are corrected blind */
@@ -85,25 +86,38 @@ int main(void) {
     int partial = sstv_block_unpack(blockp, 20, on_line, &c); /* only the first frame valid */
     CHECK(partial > 0 && partial < n);
 
-    /* full build: frames is a multiple of ILEAVE, white image needs far fewer than 480 */
+    /* full build: a white image is coded and needs far fewer than 480 frames */
     uint8_t* phys = malloc(SSTV_MAX_FRAMES * SSTV_FRAME_BYTES);
-    int frames = sstv_build_physical(image, phys);
+    uint8_t* lines_after = malloc(SSTV_MAX_FRAMES);
+    bool coded = false;
+    int frames = sstv_build_physical(image, "white.pbm", phys, lines_after, &coded);
+    CHECK(coded);
     CHECK_EQ_INT(frames % SSTV_ILEAVE, 0);
-    CHECK(frames <= 80);
-    for(int i = 0; i < SSTV_IMAGE_BYTES; i++) image[i] = (uint8_t)((i * 2654435761u) >> 13);
-    frames = sstv_build_physical(image, phys);
-    CHECK_EQ_INT(frames, SSTV_HEIGHT / 2 * SSTV_ILEAVE); /* 2 raw lines per block */
-    /* first block decodes to line 0 */
+    CHECK(frames <= 84);
+    CHECK_EQ_INT(lines_after[frames - 1], SSTV_HEIGHT);
+    /* meta block first: name in every logical frame */
     sstv_deinterleave(phys, back);
     uint8_t pl[SSTV_BLOCK_PAYLOAD];
     for(int i = 0; i < SSTV_ILEAVE; i++) {
         CHECK(sstv_frame_unpack(back + i * SSTV_FRAME_BYTES, &blk, pl + i * SSTV_PAYLOAD_BYTES));
-        CHECK_EQ_INT(blk, 0);
+        CHECK_EQ_INT(sstv_hdr_type(blk), SSTV_FT_META);
+        CHECK(memcmp(pl + i * SSTV_PAYLOAD_BYTES, "white.pbm", 9) == 0);
     }
-    c.n = 0;
-    CHECK_EQ_INT(sstv_block_unpack(pl, SSTV_BLOCK_PAYLOAD, on_line, &c), 2);
-    CHECK_EQ_INT(c.lines[0], 0);
-    CHECK_EQ_INT(c.lines[1], 1);
+    /* a random image is sent raw: 480 segment frames + the meta block */
+    for(int i = 0; i < SSTV_IMAGE_BYTES; i++) image[i] = (uint8_t)((i * 2654435761u) >> 13);
+    frames = sstv_build_physical(image, "noise", phys, lines_after, &coded);
+    CHECK(!coded);
+    CHECK_EQ_INT(frames, SSTV_NUM_SEGS + SSTV_ILEAVE);
+    CHECK_EQ_INT(lines_after[frames - 1], SSTV_HEIGHT);
+    CHECK_EQ_INT(lines_after[SSTV_ILEAVE + 3], 2); /* first data block = lines 0,1 */
+    sstv_deinterleave(phys + SSTV_ILEAVE * SSTV_FRAME_BYTES, back);
+    for(int i = 0; i < SSTV_ILEAVE; i++) {
+        CHECK(sstv_frame_unpack(back + i * SSTV_FRAME_BYTES, &blk, pl));
+        CHECK_EQ_INT(sstv_hdr_type(blk), SSTV_FT_RAW);
+        CHECK_EQ_INT(sstv_hdr_index(blk), i);
+        CHECK(memcmp(pl, image + sstv_seg_line(i) * SSTV_LINE_BYTES + sstv_seg_byte_offset(i), SSTV_SEG_BYTES) == 0);
+    }
+    free(lines_after);
     free(image);
     free(phys);
     TEST_MAIN_END();

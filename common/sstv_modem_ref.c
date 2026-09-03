@@ -82,7 +82,7 @@ int sstv_mod_image(sstv_mod* m, const uint8_t* image_bits, int16_t* out, int cap
         total += n;
     }
     static uint8_t phys[SSTV_MAX_FRAMES * SSTV_FRAME_BYTES];
-    int frames = sstv_build_physical(image_bits, phys);
+    int frames = sstv_build_physical(image_bits, "image", phys, NULL, NULL);
     for(int p = 0; p < frames; p++) {
         int n = sstv_mod_frame(m, phys + p * SSTV_FRAME_BYTES, out + total, cap - total);
         if(n < 0) return -1;

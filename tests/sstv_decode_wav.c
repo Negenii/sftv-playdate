@@ -16,12 +16,18 @@ typedef struct {
 static FILE* dump; /* SSTV_DUMP=path: per physical frame "hex bytes | soft values" */
 static sstv_demod* g_demod;
 
-static void on_line(void* ctx, uint16_t line, const uint8_t* pixels) {
+static void on_pixels(void* ctx, uint16_t line, int x_byte, int nbytes, const uint8_t* pixels) {
     decoder_ctx* c = ctx;
-    if(line >= SSTV_HEIGHT) return;
-    memcpy(c->image + line * SSTV_LINE_BYTES, pixels, SSTV_LINE_BYTES);
-    if(!c->seen[line]) c->good++;
-    c->seen[line] = 1;
+    if(line >= SSTV_HEIGHT || x_byte + nbytes > SSTV_LINE_BYTES) return;
+    memcpy(c->image + line * SSTV_LINE_BYTES + x_byte, pixels, (size_t)nbytes);
+    uint8_t mask = nbytes == SSTV_LINE_BYTES ? 3 : (x_byte == 0 ? 1 : 2);
+    if(c->seen[line] != 3 && (c->seen[line] | mask) == 3) c->good++;
+    c->seen[line] |= mask;
+}
+
+static void on_meta(void* ctx, const char* name) {
+    (void)ctx;
+    printf("meta: name=\"%s\"\n", name);
 }
 
 static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
@@ -54,7 +60,7 @@ int main(int argc, char** argv) {
     }
 
     decoder_ctx* c = calloc(1, sizeof *c);
-    sstv_rx_init(&c->rx, on_line, c);
+    sstv_rx_init(&c->rx, on_pixels, on_meta, c);
     if(getenv("SSTV_DUMP")) dump = fopen(getenv("SSTV_DUMP"), "w");
     sstv_demod d;
     g_demod = &d;
@@ -64,9 +70,9 @@ int main(int argc, char** argv) {
     if(argc > 5) d.silence_level = (float)atof(argv[5]);
     sstv_demod_feed(&d, s, n);
 
-    printf("phys_frames=%d flywheel=%d blocks=%d frames_ok=%d frames_bad=%d lines=%d/%d rs_fixed=%d sample_rate=%d\n",
+    printf("phys_frames=%d flywheel=%d blocks=%d frames_ok=%d frames_bad=%d lines=%d/%d mode=%s rs_fixed=%d sample_rate=%d\n",
            d.frames, d.flywheel_frames, c->rx.blocks_ok, c->rx.frames_ok, c->rx.frames_bad, c->good, SSTV_HEIGHT,
-           c->rx.rs_corrected, sr);
+           c->rx.coded ? "coded" : "raw", c->rx.rs_corrected, sr);
 
     FILE* f = fopen(argv[2], "wb");
     if(!f) {

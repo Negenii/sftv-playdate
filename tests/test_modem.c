@@ -42,7 +42,7 @@ int main(void) {
     /* One physical frame: sync + SSTV_SYMBOLS_PER_FRAME symbols, at 44.1 kHz. */
     uint8_t pixels[SSTV_PAYLOAD_BYTES], frame[SSTV_FRAME_BYTES];
     memset(pixels, 0xA5, sizeof pixels);
-    sstv_frame_pack(7, pixels, frame);
+    sstv_frame_pack(sstv_hdr(SSTV_FT_RAW, 7), pixels, frame);
     int16_t* big = malloc(sizeof(int16_t) * 60000);
     sstv_mod_init(&m, 44100.0f, 10000);
     int frame_samples = (int)((double)SSTV_PHYS_US * 44100.0 / 1e6 + 0.5);
