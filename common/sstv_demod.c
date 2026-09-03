@@ -53,6 +53,7 @@ void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_phys_cb cb, void* ct
         d->det[k].step = (uint32_t)((double)tones[k] / (double)sample_rate * 4294967296.0);
     }
     d->sync_gain_decay = 1.0f - 1.0f / (SSTV_SYNC_GAIN_TAU_S * sample_rate);
+    d->silence_level = SSTV_SILENCE_LEVEL;
     d->det[SSTV_DEMOD_SYNC_DET].step =
         (uint32_t)((double)SSTV_FSYNC_HZ / (double)sample_rate * 4294967296.0);
     d->sync_long.step = d->det[SSTV_DEMOD_SYNC_DET].step;
@@ -118,9 +119,10 @@ static void decide_symbol(sstv_demod* d) {
     float nrm[SSTV_NUM_TONES];
     int best = 0;
     for(int k = 0; k < SSTV_NUM_TONES; k++) {
-        /* A silence symbol competes with a fixed level: it wins when every tone is quiet. */
-        nrm[k] = tone_hz[k] == 0 ? SSTV_SILENCE_LEVEL : d->energy[k] / d->gain[k];
+        /* Silence competes with a fixed level: it wins when every tone is quiet. */
+        nrm[k] = tone_hz[k] == 0 ? d->silence_level : d->energy[k] / d->gain[k];
         if(nrm[k] > nrm[best]) best = k;
+        d->dbg_nrm[d->symbol_index][k] = nrm[k];
     }
     int base = d->symbol_index * SSTV_BITS_PER_SYMBOL;
     for(int b = 0; b < SSTV_BITS_PER_SYMBOL; b++) {

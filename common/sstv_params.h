@@ -47,18 +47,21 @@
 #define SSTV_NUM_TONES 4
 #define SSTV_BITS_PER_SYMBOL 2
 /* Symbol 0 is silence (tone 0 Hz): white image areas go quiet and only drawn pixels sound.
- * The receiver declares silence when no tone reaches SSTV_SILENCE_LEVEL of its tracked peak. */
+ * The receiver declares silence when no tone reaches SSTV_SILENCE_LEVEL of its tracked peak.
+ * 2500 Hz was dropped as a tone: at the Playdate its tail lasted 2-4 ms, so after a 2500
+ * symbol the following silence still carried -10 dB of it and the present/absent contrast
+ * shrank to ~5 dB (3000 and 3500 have 12-20 dB). */
 #define SSTV_TONE0_HZ 0
-#define SSTV_TONE1_HZ 2500
-#define SSTV_TONE2_HZ 3000
-#define SSTV_TONE3_HZ 3500
-#define SSTV_SILENCE_LEVEL 0.3f
+#define SSTV_TONE1_HZ 3000
+#define SSTV_TONE2_HZ 3500
+#define SSTV_TONE3_HZ 4000
+#define SSTV_SILENCE_LEVEL 0.3f /* a tone is present when >= this fraction of its tracked peak */
 #define SSTV_TONES_INIT {SSTV_TONE0_HZ, SSTV_TONE1_HZ, SSTV_TONE2_HZ, SSTV_TONE3_HZ}
 /* Transmit pre-emphasis: PWM duty per tone, percent. The fundamental of a square wave scales
  * with sin(pi * duty), so a narrow pulse attenuates a tone without touching the others:
  * 12 % = -10 dB, 30 % = -4 dB. The buzzer's 3 kHz resonance arrived 10-27 dB louder than
  * the other tones at a Playdate microphone; this evens the set out (and quietens the whine). */
-#define SSTV_TONE_DUTY_PCT_INIT {0, 30, 12, 30}
+#define SSTV_TONE_DUTY_PCT_INIT {0, 12, 30, 50}
 #define SSTV_SYNC_DUTY_PCT 50
 #ifndef SSTV_FSYNC_HZ
 #define SSTV_FSYNC_HZ 5500 /* frame sync: 500 Hz grid, no 2x/3x relation, 1.3 ms decay (5000 Hz rang for 5 ms and blurred the sync edge) */
