@@ -59,7 +59,8 @@ Everything below this section is the original design plus revision notes; the se
   80x48 framed sheet on the left (same dither as the transmitted preview) that slides up and
   leaves through the top edge as lines go out, like paper fed into a shredder, uncovering a
   dolphin resting under a palm (firmware `L1_Waves` frame, GPL-3) and the word "Sent!". A
-  panel on the right shows state, frames, lines and a vertical progress bar.
+  panel on the right shows state, a rounded progress bar, lines done and time left, and button
+  hints with the firmware OK and Back icons.
 - **Playdate UI**: main menu with two rounded tiles, Receive (Flipper dolphin, GPL-3 sprite
   from the firmware's `L3_Hijack_radio` animation, to be replaced by the user's own drawing)
   and Gallery (thumbnail of the latest saved picture). Receive shows an intro scene: the
