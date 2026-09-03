@@ -1,4 +1,4 @@
-# SFTV, Flipper TV: Flipper Zero → Playdate pictures over sound
+# SFTV, Slow Flipper TV: Flipper Zero → Playdate pictures over sound
 
 Flipper Zero plays a 400×240 1-bit image through its buzzer; a Playdate decodes it from its
 microphone and draws it line by line while the sound is playing. One pass takes 1.5–5.4 minutes

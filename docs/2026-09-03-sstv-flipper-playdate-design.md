@@ -5,7 +5,7 @@ Status: approved design
 
 ## Current protocol (revision 6, 2026-09-03) — supersedes the signal sections below
 
-The apps are called **SFTV** (Flipper TV): `SFTV TX` on the Flipper (appid `sftv_tx`, pictures in
+The apps are called **SFTV** (Slow Flipper TV): `SFTV TX` on the Flipper (appid `sftv_tx`, pictures in
 `/ext/apps_data/sftv_tx`) and `SFTV RX` on the Playdate (`com.negenii.sftvrx`). Source identifiers
 keep the historical `sstv_` prefix.
 
