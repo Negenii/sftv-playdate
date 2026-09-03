@@ -24,8 +24,7 @@ static LCDFont* font_ui; /* Roobert 10 Bold: panel, labels */
 static LCDFont* font_num; /* Roobert 9 Mono Condensed: counters */
 static LCDFont* font_big; /* Roobert 20 Medium: titles */
 static LCDBitmap* dolphin_src; /* 71x49 outline dolphin (firmware L1_Furippa1 frame 0), faces right */
-static LCDBitmap* dolphin; /* scene: 3x, 213x147 */
-static LCDBitmap* dolphin_tile; /* menu tile: 2x, 142x98 */
+static LCDBitmap* dolphin_tile; /* menu tile and scene: 2x, 142x98 */
 #define DOLPHIN_W 71
 #define DOLPHIN_H 49
 static LCDBitmap* console; /* 140x118 Playdate silhouette, screen interior at (7,7) 88x53 */
@@ -694,15 +693,16 @@ static void draw_menu(void) {
 static void draw_scene(void) {
     unsigned now = pd->system->getCurrentTimeMilliseconds();
     pd->graphics->clear(kColorWhite);
-    const int dx = 12, dy = 44; /* dolphin, 213x147 */
-    const int cx = 236, cy = 40; /* console */
+    /* dolphin (2x, 142x98) and console (140x118) at the same scale, centred on one line */
+    const int cx = 220, cy = 40; /* console */
+    const int dx = 40, dy = cy + (CONSOLE_H - DOLPHIN_H * 2) / 2; /* dolphin */
     const int text_cx = LCD_COLUMNS / 2; /* texts run under both figures */
-    if(dolphin) pd->graphics->drawBitmap(dolphin, dx, dy, kBitmapUnflipped);
+    if(dolphin_tile) pd->graphics->drawBitmap(dolphin_tile, dx, dy, kBitmapUnflipped);
     draw_console(cx, cy, started ? preview_bitmap : NULL);
     use_font(font_ui);
     char t[64], nm[NAME_CAP];
     if(started) {
-        draw_spout(dx + 105, dy + 3, cx + CONSOLE_SCREEN_X + CONSOLE_SCREEN_W / 2, cy + CONSOLE_SCREEN_Y + CONSOLE_SCREEN_H / 2, (float)(now % 1200) / 1200.0f);
+        draw_spout(dx + 70, dy + 2, cx + CONSOLE_SCREEN_X + CONSOLE_SCREEN_W / 2, cy + CONSOLE_SCREEN_Y + CONSOLE_SCREEN_H / 2, (float)(now % 1200) / 1200.0f);
         display_name(nm, sizeof nm, current_name);
         use_font(font_big);
         fit_text(t, sizeof t, nm, 360);
@@ -947,10 +947,7 @@ static void init(void) {
     if(!font_num) font_num = font_ui;
     if(!font_big) font_big = font_ui;
     dolphin_src = pd->graphics->loadBitmap("images/dolphin", &err);
-    if(dolphin_src) {
-        dolphin = render_scaled(dolphin_src, 3, 3);
-        dolphin_tile = render_scaled(dolphin_src, 2, 2);
-    }
+    if(dolphin_src) dolphin_tile = render_scaled(dolphin_src, 2, 2);
     console = pd->graphics->loadBitmap("images/console", &err);
 
     thumb_mask = pd->graphics->newBitmap(THUMB_W, THUMB_H, kColorBlack);

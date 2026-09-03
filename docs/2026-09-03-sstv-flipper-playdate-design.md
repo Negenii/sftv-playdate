@@ -72,7 +72,7 @@ Everything below this section is the original design plus revision notes; the se
   with Up) with two rounded tiles, each an icon band over a label band: Receive (outline Flipper dolphin,
   GPL-3 sprite from the firmware's `L1_Furippa1` animation, 71x49 drawn at 2x; to be replaced by
   the user's own drawing) and Gallery (a stack of pictures with the latest thumbnail on top). In
-  the intro scene the same dolphin is drawn at 3x facing the console, texts centred underneath. Receive shows an intro scene: the
+  the intro scene the same 2x dolphin faces the console at matching size, texts centred underneath. Receive shows an intro scene: the
   dolphin, a drawn Playdate, and once START arrives a water spout from the blowhole to the
   console whose screen fills with the preview chunk by chunk. The picture itself is a sheet
   that crawls in from the bottom edge, covering the scene. Its position follows the pass
