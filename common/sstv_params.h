@@ -71,10 +71,18 @@
 #define SSTV_FT_RAW 0
 #define SSTV_FT_CODED 1
 #define SSTV_FT_META 2
+#define SSTV_FT_PARITY 3 /* outer code: byte-column RS parity over a group of logical frames */
 #define SSTV_FT_SHIFT 14
 #define SSTV_INDEX_MASK 0x3FFF
 #define SSTV_MAX_BLOCKS (SSTV_HEIGHT / 2) /* coded worst case: raw lines, 2 per block */
-#define SSTV_MAX_FRAMES (SSTV_NUM_SEGS + 2 * SSTV_ILEAVE + SSTV_INTRO_FRAMES) /* raw: 480 + start, end, previews (coded passes are shorter) */
+/* Outer code (revision 7): every SSTV_OUTER_GROUP data frames (all logical frames except END,
+ * in transmission order) are followed by SSTV_OUTER_PARITY parity frames; any that many lost
+ * frames of the group are rebuilt by the receiver. END comes after the last parity block. */
+#define SSTV_OUTER_GROUP 108 /* 27 blocks, ~73 s */
+#define SSTV_OUTER_PARITY SSTV_PARITY_BYTES /* 12 = 3 blocks, +11 % */
+#define SSTV_MAX_DATA_FRAMES (SSTV_ILEAVE + SSTV_INTRO_FRAMES_CODED + SSTV_NUM_SEGS) /* 512 */
+#define SSTV_OUTER_GROUPS_MAX ((SSTV_MAX_DATA_FRAMES + SSTV_OUTER_GROUP - 1) / SSTV_OUTER_GROUP) /* 5 */
+#define SSTV_MAX_FRAMES (SSTV_MAX_DATA_FRAMES + SSTV_OUTER_GROUPS_MAX * SSTV_OUTER_PARITY + SSTV_ILEAVE) /* 576 */
 #define SSTV_CODED_MIN_GAIN 0.85f /* use coding only when frames <= 85% of raw */
 
 /* Modulation: 4-FSK, 2 bits per 4 ms symbol, square-wave tones.

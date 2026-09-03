@@ -115,6 +115,61 @@ int sstv_block_unpack(const uint8_t* payload, int valid_bytes, sstv_block_line_c
     return delivered;
 }
 
+int sstv_pass_position(uint16_t hdr, int i) {
+    int type = sstv_hdr_type(hdr), index = sstv_hdr_index(hdr);
+    if(type == SSTV_FT_RAW) return SSTV_ILEAVE + SSTV_INTRO_FRAMES + index;
+    if(type == SSTV_FT_CODED) return (index + 1) * SSTV_ILEAVE + i;
+    return -1;
+}
+
+int sstv_pass_meta_position(int subtype, int index, int i) {
+    switch(subtype) {
+    case SSTV_META_START: return i;
+    case SSTV_META_TINY: return SSTV_ILEAVE + index;
+    case SSTV_META_PREVIEW: return SSTV_ILEAVE + SSTV_TINY_CHUNKS + index;
+    case SSTV_META_SCHEDULE: return SSTV_ILEAVE + SSTV_INTRO_FRAMES + index;
+    default: return -1;
+    }
+}
+
+int sstv_pass_groups(int data_frames) {
+    return (data_frames + SSTV_OUTER_GROUP - 1) / SSTV_OUTER_GROUP;
+}
+
+int sstv_pass_group_size(int data_frames, int g) {
+    int left = data_frames - g * SSTV_OUTER_GROUP;
+    if(left <= 0) return 0;
+    return left < SSTV_OUTER_GROUP ? left : SSTV_OUTER_GROUP;
+}
+
+int sstv_pass_total(int data_frames) {
+    return data_frames + sstv_pass_groups(data_frames) * SSTV_OUTER_PARITY + SSTV_ILEAVE;
+}
+
+/* Walks the groups: each occupies group_size + SSTV_OUTER_PARITY physical frames. */
+int sstv_pass_frame_kind(int phys, int data_frames) {
+    int at = 0;
+    for(int g = 0; g < sstv_pass_groups(data_frames); g++) {
+        int n = sstv_pass_group_size(data_frames, g);
+        if(phys < at + n) return SSTV_PASS_DATA;
+        if(phys < at + n + SSTV_OUTER_PARITY) return SSTV_PASS_PARITY;
+        at += n + SSTV_OUTER_PARITY;
+    }
+    return SSTV_PASS_END;
+}
+
+int sstv_pass_data_before(int phys, int data_frames) {
+    int at = 0, data = 0;
+    for(int g = 0; g < sstv_pass_groups(data_frames); g++) {
+        int n = sstv_pass_group_size(data_frames, g);
+        if(phys <= at + n) return data + (phys - at);
+        data += n;
+        at += n + SSTV_OUTER_PARITY;
+        if(phys <= at) return data;
+    }
+    return data;
+}
+
 /* Emits one interleaved block from 4 logical frames. */
 static void emit_block(const uint8_t* logical, uint8_t* out, int block_no) {
     sstv_interleave(logical, out + block_no * SSTV_ILEAVE * SSTV_FRAME_BYTES);

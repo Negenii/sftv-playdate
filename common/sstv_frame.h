@@ -64,6 +64,21 @@ static inline int sstv_seg_byte_offset(int seg) {
     return (seg % SSTV_SEGS_PER_LINE) * SSTV_SEG_BYTES;
 }
 
+/* Pass layout (revision 7). Data position = order of the logical frames in a revision 6 pass
+ * without END: START 0..3, TINY 4..7, PREVIEW 8..27, SCHEDULE 28..31 (coded only), RAW
+ * segment s at 28 + s, CODED block with header index b, frame i at (b + 1) * 4 + i. Groups of
+ * SSTV_OUTER_GROUP positions are each followed by SSTV_OUTER_PARITY parity frames; END last. */
+#define SSTV_PASS_DATA 0
+#define SSTV_PASS_PARITY 1
+#define SSTV_PASS_END 2
+int sstv_pass_position(uint16_t hdr, int i); /* -1 for META (use the meta variant) and PARITY */
+int sstv_pass_meta_position(int subtype, int index, int i); /* -1 for END */
+int sstv_pass_groups(int data_frames);
+int sstv_pass_group_size(int data_frames, int g);
+int sstv_pass_total(int data_frames); /* physical frames of the whole pass */
+int sstv_pass_frame_kind(int phys, int data_frames);
+int sstv_pass_data_before(int phys, int data_frames); /* data frames among physical frames < phys */
+
 /* Coded block payload: [line count][first line#][codec record]... consecutive lines,
  * zero padded. */
 int sstv_block_pack(const uint8_t* image_bits, int first_line, uint8_t* payload);

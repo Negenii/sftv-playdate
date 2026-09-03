@@ -177,6 +177,31 @@ int main(void) {
         CHECK_EQ_INT(sstv_hdr_index(blk), i);
         CHECK(memcmp(pl, image + sstv_seg_line(i) * SSTV_LINE_BYTES + sstv_seg_byte_offset(i), SSTV_SEG_BYTES) == 0);
     }
+    /* pass layout helpers (revision 7) */
+    CHECK_EQ_INT(sstv_pass_position(sstv_hdr(SSTV_FT_META, 0), 2), -1); /* META: use the meta variant */
+    CHECK_EQ_INT(sstv_pass_position(sstv_hdr(SSTV_FT_RAW, 5), 1), 28 + 5); /* raw segment */
+    CHECK_EQ_INT(sstv_pass_position(sstv_hdr(SSTV_FT_CODED, 7), 3), 32 + 3); /* first coded block */
+    CHECK_EQ_INT(sstv_pass_position(sstv_hdr(SSTV_FT_PARITY, 5), 0), -1);
+    CHECK_EQ_INT(sstv_pass_meta_position(SSTV_META_START, 0, 3), 3);
+    CHECK_EQ_INT(sstv_pass_meta_position(SSTV_META_TINY, 2, 2), 4 + 2);
+    CHECK_EQ_INT(sstv_pass_meta_position(SSTV_META_PREVIEW, 19, 3), 8 + 19);
+    CHECK_EQ_INT(sstv_pass_meta_position(SSTV_META_SCHEDULE, 1, 1), 28 + 1);
+    CHECK_EQ_INT(sstv_pass_meta_position(SSTV_META_END, 1, 1), -1);
+    CHECK_EQ_INT(sstv_pass_groups(508), 5);
+    CHECK_EQ_INT(sstv_pass_group_size(508, 0), 108);
+    CHECK_EQ_INT(sstv_pass_group_size(508, 4), 508 - 4 * 108);
+    CHECK_EQ_INT(sstv_pass_total(508), 508 + 5 * SSTV_OUTER_PARITY + SSTV_ILEAVE);
+    CHECK_EQ_INT(sstv_pass_frame_kind(107, 508), SSTV_PASS_DATA);
+    CHECK_EQ_INT(sstv_pass_frame_kind(108, 508), SSTV_PASS_PARITY);
+    CHECK_EQ_INT(sstv_pass_frame_kind(120, 508), SSTV_PASS_DATA);
+    CHECK_EQ_INT(sstv_pass_frame_kind(sstv_pass_total(508) - 1, 508), SSTV_PASS_END);
+    CHECK_EQ_INT(sstv_pass_data_before(0, 508), 0);
+    CHECK_EQ_INT(sstv_pass_data_before(108, 508), 108);
+    CHECK_EQ_INT(sstv_pass_data_before(115, 508), 108); /* inside the first parity blocks */
+    CHECK_EQ_INT(sstv_pass_data_before(121, 508), 109);
+    CHECK_EQ_INT(sstv_pass_data_before(sstv_pass_total(508), 508), 508);
+    CHECK(SSTV_MAX_FRAMES >= sstv_pass_total(SSTV_MAX_DATA_FRAMES));
+
     free(lines_after);
     free(image);
     free(phys);
