@@ -24,7 +24,7 @@ static LCDFont* font_ui; /* Roobert 10 Bold: panel, labels */
 static LCDFont* font_num; /* Roobert 9 Mono Condensed: counters */
 static LCDFont* font_big; /* Roobert 20 Medium: titles */
 static LCDBitmap* dolphin; /* 124x128, faces right */
-static LCDBitmapTable* crank_frames; /* SDK crank indicator, 12 frames 52x38 */
+static LCDBitmap* console; /* 140x118 Playdate silhouette, screen interior at (7,7) 88x53 */
 static LCDBitmap* thumb_mask; /* rounded corners for thumbnails */
 
 static sstv_demod demod;
@@ -557,41 +557,23 @@ static void draw_title_bar(const char* title, const char* hint) {
     if(hint) draw_text_white(hint, LCD_COLUMNS - 32 - text_width(hint), 5);
 }
 
-/* A Playdate drawn at (x, y) in the proportions of the real one (76x74 mm body scaled so the
- * 80x48 preview fills the screen): body 104x100, screen top left, d-pad bottom left, A/B
- * bottom right, lock button on top, crank on the right side (SDK indicator frames; `crank`
- * selects the frame, so it turns while a picture is coming in). */
-#define CONSOLE_W 104
-#define CONSOLE_H 100
-#define CONSOLE_SCREEN_X 12
-#define CONSOLE_SCREEN_Y 11
+/* The Playdate silhouette at (x, y). Its screen is dark when off; while a picture is coming in
+ * the screen lights up and shows `screen` (80x48) centred in the 88x53 interior. */
+#define CONSOLE_W 140
+#define CONSOLE_H 118
+#define CONSOLE_SCREEN_X 7
+#define CONSOLE_SCREEN_Y 7
+#define CONSOLE_SCREEN_W 88
+#define CONSOLE_SCREEN_H 53
 
-static void draw_console(int x, int y, LCDBitmap* screen, int crank) {
-    /* crank behind the body so its hinge tucks under the edge */
-    if(crank_frames) {
-        LCDBitmap* f = pd->graphics->getTableBitmap(crank_frames, crank % 12);
-        if(f) pd->graphics->drawBitmap(f, x + CONSOLE_W - 8, y + 24, kBitmapUnflipped);
+static void draw_console(int x, int y, LCDBitmap* screen) {
+    if(console) pd->graphics->drawBitmap(console, x, y, kBitmapUnflipped);
+    else pd->graphics->drawRoundRect(x, y, CONSOLE_W, CONSOLE_H, 10, 2, kColorBlack);
+    if(screen) {
+        pd->graphics->fillRect(x + CONSOLE_SCREEN_X, y + CONSOLE_SCREEN_Y, CONSOLE_SCREEN_W, CONSOLE_SCREEN_H, kColorWhite);
+        pd->graphics->drawBitmap(screen, x + CONSOLE_SCREEN_X + (CONSOLE_SCREEN_W - SSTV_PREVIEW_W) / 2,
+                                 y + CONSOLE_SCREEN_Y + (CONSOLE_SCREEN_H - SSTV_PREVIEW_H) / 2, kBitmapUnflipped);
     }
-    /* lock button on the top edge */
-    pd->graphics->fillRoundRect(x + 74, y - 3, 14, 6, 2, kColorBlack);
-    /* body: 2 px outline */
-    pd->graphics->fillRoundRect(x - 2, y - 2, CONSOLE_W + 4, CONSOLE_H + 4, 12, kColorBlack);
-    pd->graphics->fillRoundRect(x, y, CONSOLE_W, CONSOLE_H, 10, kColorWhite);
-    /* screen with a thin bezel */
-    int sx = x + CONSOLE_SCREEN_X, sy = y + CONSOLE_SCREEN_Y;
-    pd->graphics->fillRect(sx - 2, sy - 2, SSTV_PREVIEW_W + 4, SSTV_PREVIEW_H + 4, kColorBlack);
-    pd->graphics->fillRect(sx, sy, SSTV_PREVIEW_W, SSTV_PREVIEW_H, kColorWhite);
-    if(screen) pd->graphics->drawBitmap(screen, sx, sy, kBitmapUnflipped);
-    /* d-pad: two rounded bars */
-    int dx = x + 28, dy = y + 80;
-    pd->graphics->fillRoundRect(dx - 12, dy - 4, 24, 8, 3, kColorBlack);
-    pd->graphics->fillRoundRect(dx - 4, dy - 12, 8, 24, 3, kColorBlack);
-    pd->graphics->fillRect(dx - 2, dy - 2, 4, 4, kColorWhite);
-    /* B lower left, A upper right */
-    pd->graphics->fillEllipse(x + 60, y + 78, 14, 14, 0.0f, 0.0f, kColorBlack);
-    pd->graphics->fillEllipse(x + 78, y + 66, 14, 14, 0.0f, 0.0f, kColorBlack);
-    /* speaker slot under the screen */
-    for(int i = 0; i < 5; i++) pd->graphics->fillRect(x + 84 + i * 3, y + 66, 1, 1, kColorBlack);
 }
 
 /* Water arc from the dolphin's blowhole to the console screen; `t` drives the droplets. */
@@ -664,17 +646,17 @@ static void draw_scene(void) {
     unsigned now = pd->system->getCurrentTimeMilliseconds();
     pd->graphics->clear(kColorWhite);
     const int dx = 24, dy = 60; /* dolphin */
-    const int cx = 232, cy = 70; /* console */
+    const int cx = 236, cy = 56; /* console */
     if(dolphin) {
         pd->graphics->setDrawMode(kDrawModeInverted);
         pd->graphics->drawBitmap(dolphin, dx, dy, kBitmapUnflipped);
         pd->graphics->setDrawMode(kDrawModeCopy);
     }
-    draw_console(cx, cy, started ? preview_bitmap : NULL, started ? (int)(now / 80) : 5);
+    draw_console(cx, cy, started ? preview_bitmap : NULL);
     use_font(font_ui);
     char t[64], nm[NAME_CAP];
     if(started) {
-        draw_spout(dx + 78, dy + 14, cx + CONSOLE_SCREEN_X + SSTV_PREVIEW_W / 2, cy + CONSOLE_SCREEN_Y + SSTV_PREVIEW_H / 2, (float)(now % 1200) / 1200.0f);
+        draw_spout(dx + 78, dy + 14, cx + CONSOLE_SCREEN_X + CONSOLE_SCREEN_W / 2, cy + CONSOLE_SCREEN_Y + CONSOLE_SCREEN_H / 2, (float)(now % 1200) / 1200.0f);
         display_name(nm, sizeof nm, current_name);
         use_font(font_big);
         draw_text_centered(nm, LCD_COLUMNS / 2, 190);
@@ -905,7 +887,7 @@ static void init(void) {
     if(!font_num) font_num = font_ui;
     if(!font_big) font_big = font_ui;
     dolphin = pd->graphics->loadBitmap("images/dolphin", &err);
-    crank_frames = pd->graphics->loadBitmapTable("images/crank", &err);
+    console = pd->graphics->loadBitmap("images/console", &err);
 
     thumb_mask = pd->graphics->newBitmap(THUMB_W, THUMB_H, kColorBlack);
     pd->graphics->pushContext(thumb_mask);
