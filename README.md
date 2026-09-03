@@ -1,17 +1,19 @@
 # SFTV, Slow Flipper TV: Flipper Zero → Playdate pictures over sound
 
 Flipper Zero plays a 400×240 1-bit image through its buzzer; a Playdate decodes it from its
-microphone and draws it line by line while the sound is playing. One pass takes 1.5–5.4 minutes
-depending on how well the image compresses (dithered photos: 5.4 min; line art: much less).
+microphone and draws it line by line while the sound is playing. One pass takes 1.1–6.4 minutes
+depending on how well the image compresses (dithered photos: 6.4 min; line art: much less).
 
 Signal: 4-FSK, 2 bits per 4 ms symbol; symbol 0 is silence, 1..3 are 3000/3500/4000 Hz,
 5500 Hz frame sync. Frames are 41 bytes: header (type + index), 26 payload bytes, CRC-8 and
 12 Reed-Solomon parity bytes; four frames are byte-interleaved so a noise burst is spread thin
-and repaired. A pass starts with a META frame carrying the file name, the pass length in frames and the mode, then a 40x20 dithered preview in one
+and repaired. On top of that, every 108 frames are followed by 12 parity frames (Reed-Solomon
+across the group, +13 % time), so any 12 lost frames of a group are rebuilt when the parity
+arrives, whatever their type; the END frame comes after the last parity block. A pass starts with a META frame carrying the file name, the pass length in frames and the mode, then a 40x20 dithered preview in one
 block (0.67 s) and an 80x48 one in five (progressive, 4 s total) so the receiver can show what is coming, and ends with an END META frame. Pixels go either as RAW half-line segments (a lost frame costs half a line) or, when the
 lossless line codec saves at least 15 %, as CODED blocks; the transmitter picks per image. The
 receiver tracks the symbol clock from the sync period and flywheels through buried syncs. The
-Flipper LED follows the data (blue = tone, off = silence, red = sync); on its screen the
+Flipper LED follows the data (blue = tone, green = tone of a parity frame, off = silence, red = sync); on its screen the
 picture is a framed sheet that slides out through the top edge as lines go out (uncovering a
 resting dolphin), and on the Playdate the same sheet crawls in from the bottom edge at the real
 line rate (coded passes announce their per-block line schedule). Design and measurement notes:
@@ -64,7 +66,7 @@ The dolphin sprites are cropped from the Flipper firmware's `L1_Furippa1` (Playd
 
 1. `cd tests && make test` — loopback with white noise, noise bursts, clock offsets.
 2. Record on the Playdate (Up), fetch `recN.wav` over the data disk, then
-   `tests/bin/sstv_decode_wav rec1.wav out.pbm` prints frames, flywheel count, blocks, segments.
+   `tests/bin/sstv_decode_wav rec1.wav out.pbm` prints frames, flywheel count, blocks, repaired frames, segments.
    `SSTV_DUMP=file` writes raw physical frames and soft bits.
 3. Protocol constants live in `common/sstv_params.h`; transmitter and receiver must agree.
 

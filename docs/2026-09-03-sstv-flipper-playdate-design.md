@@ -5,8 +5,9 @@ Status: approved design
 
 ## Current protocol (revision 6, 2026-09-03) — supersedes the signal sections below
 
-> Revision 7 (outer Reed-Solomon code across frames, PARITY frame type, pass layout with
-> parity blocks) is specified in `2026-09-03-sstv-outer-code-design.md` and layers on top of this.
+> Revision 7 (implemented 2026-09-03): outer Reed-Solomon code across frames, PARITY frame type,
+> pass layout with parity blocks after every 108 frames and END last; specified in
+> `2026-09-03-sstv-outer-code-design.md`. Raw photo 572 frames (6.4 min), checker 100 (1.1 min).
 
 The apps are called **SFTV** (Slow Flipper TV): `SFTV TX` on the Flipper (appid `sftv_tx`, pictures in
 `/ext/apps_data/sftv_tx`) and `SFTV RX` on the Playdate (`com.negenii.sftvrx`). Source identifiers
