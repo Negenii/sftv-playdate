@@ -57,7 +57,8 @@ Everything below this section is the original design plus revision notes; the se
   interrupt per symbol. The RGB LED follows the symbol on the speaker (off for silence, blue
   for tones, red during sync) from a 2 ms polling thread. The screen shows the picture as an
   80x48 framed sheet on the left (same dither as the transmitted preview) that slides up and
-  leaves through the top edge as lines go out, like paper fed into a shredder, uncovering a
+  reaches the top edge during the intro frames (START, previews, schedule) and then leaves
+  through it as lines go out, like paper fed into a shredder, uncovering a
   dolphin resting under a palm (firmware `L1_Waves` frame, GPL-3) and the word "Sent!". A
   panel on the right shows state, a rounded progress bar, lines done and time left, and button
   hints with the firmware OK and Back icons.
