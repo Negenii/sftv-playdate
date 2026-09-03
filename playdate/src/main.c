@@ -46,6 +46,9 @@ static bool finished; /* END meta received */
 static unsigned finished_ms;
 static int finished_lines;
 static int mic_state; /* 0 asking, 1 allowed, -1 denied */
+static bool mic_enabled = true; /* user switch in the menu; entering Receive turns it back on */
+static bool mic_running; /* callback installed */
+static int menu_focus; /* 0 tiles, 1 microphone pill */
 static bool show_panel; /* side panel with statistics, toggled with Right */
 static unsigned led_frame_ms; /* virtual LED: last physical frame time */
 static unsigned led_block_ms; /* last decoded block time */
@@ -436,7 +439,15 @@ static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
 }
 
 static void start_mic(void) {
+    if(mic_state != 1 || !mic_enabled || mic_running) return;
     pd->sound->setMicCallback(mic_cb, NULL, kMicInputAutodetect);
+    mic_running = true;
+}
+
+static void stop_mic(void) {
+    if(!mic_running) return;
+    pd->sound->setMicCallback(NULL, NULL, kMicInputAutodetect);
+    mic_running = false;
 }
 
 static void mic_access_cb(bool allowed, void* userdata) {
@@ -592,24 +603,25 @@ static void draw_spout(int x0, int y0, int x1, int y1, float t) {
 
 static void draw_menu(void) {
     pd->graphics->clear(kColorWhite);
-    /* "RX" pill as tall as the title's capitals, then the title */
-    use_font(font_big);
-    int big_h = font_height();
-    int pill_h = big_h * 3 / 4, pill_y = 8 + (big_h - pill_h) / 2 + 1;
+    /* "RX" pill exactly as tall as the title's capitals (Roobert 20: rows 4..23 of the line;
+     * Roobert 10 Bold capitals: rows 2..11), then the title */
+    const int title_y = 8, cap_top = title_y + 4, cap_h = 20;
     use_font(font_ui);
     int pill_w = text_width("RX") + 14;
-    pd->graphics->fillRoundRect(16, pill_y, pill_w, pill_h, pill_h / 2, kColorBlack);
-    draw_text_white("RX", 16 + 7, pill_y + (pill_h - font_height()) / 2);
+    pd->graphics->fillRoundRect(16, cap_top, pill_w, cap_h, cap_h / 2, kColorBlack);
+    draw_text_white("RX", 16 + 7, cap_top + (cap_h - 10) / 2 - 2);
     use_font(font_big);
-    draw_text("Slow Flipper TV", 16 + pill_w + 8, 8);
-    const char* mic = mic_state > 0 ? "mic on" : mic_state < 0 ? "mic denied" : "mic?";
-    draw_pill(mic, LCD_COLUMNS - 32 - text_width(mic) - 12, 10, false);
+    draw_text("Slow Flipper TV", 16 + pill_w + 8, title_y);
+    /* microphone switch: Up selects it, A toggles */
+    use_font(font_ui);
+    const char* mic = mic_state < 0 ? "mic denied" : mic_state == 0 ? "mic?" : mic_enabled ? "mic on" : "mic off";
+    draw_pill(mic, LCD_COLUMNS - 32 - text_width(mic) - 12, 10, menu_focus == 1);
 
     const int tile_w = 170, tile_h = 170, ty = 52;
     const int tx[2] = {20, LCD_COLUMNS - 20 - tile_w};
     const char* labels[2] = {"Receive", "Gallery"};
     for(int i = 0; i < 2; i++) {
-        bool sel = i == menu_index;
+        bool sel = i == menu_index && menu_focus == 0;
         pd->graphics->fillRoundRect(tx[i], ty, tile_w, tile_h, 14, kColorBlack);
         pd->graphics->fillRoundRect(tx[i] + (sel ? 3 : 1), ty + (sel ? 3 : 1), tile_w - (sel ? 6 : 2), tile_h - (sel ? 6 : 2), sel ? 11 : 13, kColorWhite);
         if(i == 0) {
@@ -675,7 +687,7 @@ static void draw_scene(void) {
         use_font(font_big);
         draw_text_centered("Listening", LCD_COLUMNS / 2, 190);
         use_font(font_ui);
-        const char* hint = mic_state > 0 ? "start a transmission on the Flipper" : mic_state < 0 ? "microphone access denied" : "waiting for microphone permission";
+        const char* hint = mic_state < 0 ? "microphone access denied" : mic_state == 0 ? "waiting for microphone permission" : !mic_enabled ? "microphone is off" : "start a transmission on the Flipper";
         draw_text_centered(hint, LCD_COLUMNS / 2, 218);
     }
 }
@@ -847,10 +859,23 @@ static int update(void* userdata) {
 
     switch(ui_mode) {
     case ModeMenu:
-        if(pushed & (kButtonLeft | kButtonRight)) menu_index ^= 1;
+        if(pushed & kButtonUp) menu_focus = 1;
+        if(pushed & kButtonDown) menu_focus = 0;
+        if(menu_focus == 0 && (pushed & (kButtonLeft | kButtonRight))) menu_index ^= 1;
         if(pushed & kButtonA) {
-            if(menu_index == 0) ui_mode = ModeReceive;
-            else gallery_open();
+            if(menu_focus == 1) {
+                if(mic_state == 1) {
+                    mic_enabled = !mic_enabled;
+                    if(mic_enabled) start_mic();
+                    else stop_mic();
+                }
+            } else if(menu_index == 0) {
+                mic_enabled = true; /* receiving needs the microphone */
+                start_mic();
+                ui_mode = ModeReceive;
+            } else {
+                gallery_open();
+            }
         }
         draw_menu();
         break;
@@ -938,14 +963,10 @@ int eventHandler(PlaydateAPI* playdate, PDSystemEvent event, uint32_t arg) {
          * unless it is removed here; the next launch then faults inside freed memory. */
         if(pd) {
             save_image();
-            pd->sound->setMicCallback(NULL, NULL, kMicInputAutodetect);
+            stop_mic();
         }
-        mic_state = 0;
     } else if(event == kEventUnlock) {
-        if(pd && mic_state == 0) {
-            mic_state = 1;
-            start_mic();
-        }
+        if(pd) start_mic();
     }
     return 0;
 }
