@@ -7,16 +7,21 @@
 extern "C" {
 #endif
 
-#define SSTV_DEMOD_MAX_WINDOW 64 /* supports sample rates up to 64 kHz */
+#define SSTV_DEMOD_MAX_WINDOW 128 /* 2 ms at up to 64 kHz */
+#define SSTV_DEMOD_RING (SSTV_DEMOD_MAX_WINDOW * SSTV_SYNC_WINDOW_MULT)
 #define SSTV_DEMOD_TABLE_BITS 10
 #define SSTV_DEMOD_TABLE_SIZE (1 << SSTV_DEMOD_TABLE_BITS)
+#define SSTV_DEMOD_SYNC_DET SSTV_NUM_TONES /* index of the sync detector */
 
-typedef void (*sstv_line_cb)(void* ctx, uint8_t line_no, const uint8_t* pixels, bool crc_ok);
+/* soft: SSTV_FRAME_BITS per-bit decisions in [-1, 1], positive = 1, magnitude = confidence.
+ * corrected: bytes fixed by Reed-Solomon, -1 if RS gave up (then crc_ok is false). */
+typedef void (*sstv_line_cb)(
+    void* ctx, uint8_t line_no, const uint8_t* pixels, bool crc_ok, const float* soft, int corrected);
 
 typedef enum {
     SSTV_DEMOD_IDLE = 0, /* waiting for a sync burst */
     SSTV_DEMOD_SYNC, /* inside a sync burst, waiting for the sync->data crossover */
-    SSTV_DEMOD_DATA, /* clocking out 416 bits */
+    SSTV_DEMOD_DATA, /* clocking out symbols */
 } sstv_demod_state;
 
 /* One quadrature detector: running I/Q sums over a sliding window. */
@@ -28,8 +33,11 @@ typedef struct {
 
 typedef struct {
     float sample_rate;
-    int window; /* W: samples in one detector window (1 ms) */
-    float bit_len; /* samples per symbol, exact */
+    int window; /* W: samples in one detector window (SSTV_WINDOW_US) */
+    int samples_per_ms;
+    float bit_len; /* samples per symbol, tracked from the sync-to-sync interval */
+    float bit_len_nominal; /* samples per symbol at the nominal sample rate */
+    double last_edge; /* sample index of the previous accepted sync->data edge, <0 none */
     float min_energy; /* noise floor on detector energy */
     float dominance; /* sync energy must exceed data energies by this factor */
     int sync_min_run; /* net dominant samples to accept a sync */
@@ -38,31 +46,35 @@ typedef struct {
     float sample_point; /* fraction of the symbol at which the decision window ends */
     float gain_decay; /* per-sample decay of the tone peak trackers */
 
-    sstv_det det[3]; /* 0: F0, 1: F1, 2: FSYNC */
-    int16_t ring[SSTV_DEMOD_MAX_WINDOW];
+    sstv_det det[SSTV_NUM_TONES + 1]; /* data tones, then sync, all with the short window */
+    sstv_det sync_long; /* sync with a SSTV_SYNC_WINDOW_MULT x longer window */
+    int16_t ring[SSTV_DEMOD_RING];
     int ring_pos;
     long long n; /* samples consumed */
 
     sstv_demod_state state;
     int sync_run;
-    double next_decision; /* sample index at which the next bit is decided */
-    int bit_index;
+    double next_decision; /* sample index at which the next symbol is decided */
+    int symbol_index;
     uint8_t frame[SSTV_FRAME_BYTES];
 
-    float energy[3];
-    float margin[SSTV_FRAME_BITS]; /* per-bit soft decision of the last line (debug/tuning) */
-    float gain[2]; /* tracked peak energy of tone 0 and tone 1 (channel gain) */
+    float energy[SSTV_NUM_TONES + 1];
+    float energy_sync_long; /* scaled to the short window's energy units */
+    float margin[SSTV_FRAME_BITS]; /* per-bit soft decision of the last line */
+    float gain[SSTV_NUM_TONES]; /* tracked peak energy per tone (channel gain) */
     int lines;
     int crc_errors;
+    int rs_corrected; /* total bytes fixed by RS */
     sstv_line_cb cb;
     void* ctx;
 } sstv_demod;
 
 typedef struct {
     float level; /* 0..1, strongest detector, amplitude scale */
-    int tone; /* -1 none, 0 F0, 1 F1, 2 sync */
+    int tone; /* -1 none, 0..SSTV_NUM_TONES-1 data tone, SSTV_NUM_TONES sync */
     int lines;
     int crc_errors;
+    int rs_corrected;
     sstv_demod_state state;
 } sstv_demod_status_t;
 

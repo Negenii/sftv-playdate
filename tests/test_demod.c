@@ -17,7 +17,9 @@ typedef struct {
     uint8_t seen[SSTV_HEIGHT];
 } capture;
 
-static void on_line(void* ctx, uint8_t line_no, const uint8_t* pixels, bool crc_ok) {
+static void on_line(void* ctx, uint8_t line_no, const uint8_t* pixels, bool crc_ok, const float* soft, int corrected) {
+    (void)soft;
+    (void)corrected;
     capture* c = ctx;
     if(c->count > 0 && line_no == (uint8_t)(c->last_line + 1)) c->in_order++;
     c->last_line = line_no;
@@ -76,12 +78,12 @@ static void test_single_line(void) {
 
     float sr = 44100.0f;
     int pre = silence_samples(sr, 20), post = silence_samples(sr, 20);
-    int cap = pre + 4000 + 40000 + post;
+    int cap = pre + 4000 + 80000 + post;
     int16_t* s = calloc((size_t)cap, sizeof(int16_t));
     sstv_mod m;
     sstv_mod_init(&m, sr, AMP);
     int n = pre;
-    n += sstv_mod_tone(&m, m.f1, 50000, s + n, cap - n); /* short leader */
+    n += sstv_mod_tone(&m, m.tones[1], 50000, s + n, cap - n); /* short leader */
     n += sstv_mod_frame(&m, frame, s + n, cap - n);
     n += post;
 
@@ -162,8 +164,7 @@ static void test_frequency_offset(void) {
     capture* c = malloc(sizeof *c);
     sstv_mod m;
     sstv_mod_init(&m, 44100.0f, AMP);
-    m.f0 *= 1.015f;
-    m.f1 *= 1.015f;
+    for(int k = 0; k < SSTV_NUM_TONES; k++) m.tones[k] *= 1.015f;
     m.fsync *= 1.015f;
     run_image(&m, 44100.0f, 0.0f, c, image);
     CHECK_EQ_INT(lines_matching(c, image), SSTV_HEIGHT);
@@ -175,13 +176,20 @@ static void test_clock_offset(void) {
     uint8_t* image = malloc(SSTV_IMAGE_BYTES);
     capture* c = malloc(sizeof *c);
     sstv_mod m;
-    /* Transmitter 300 ppm slow relative to the receiver: 6x a typical crystal error,
-     * 0.12 symbol of drift by the end of a line. */
-    sstv_mod_init(&m, 44100.0f * (1.0f - 0.0003f), AMP);
+    /* Transmitter 1500 ppm slow relative to the receiver (a Flipper vs Playdate pair
+     * measured 1000 ppm): 0.8 symbol of drift per line without clock tracking. The
+     * receiver learns the symbol length from the first sync-to-sync interval, so only
+     * line 0 may be lost. */
+    sstv_mod_init(&m, 44100.0f * (1.0f - 0.0015f), AMP);
     run_image(&m, 44100.0f, 0.0f, c, image);
     int ok = lines_matching(c, image);
-    printf("  clock -300ppm: %d/%d lines intact\n", ok, SSTV_HEIGHT);
-    CHECK_EQ_INT(ok, SSTV_HEIGHT);
+    printf("  clock -1500ppm: %d/%d lines intact\n", ok, SSTV_HEIGHT);
+    CHECK(ok >= SSTV_HEIGHT - 1);
+    sstv_mod_init(&m, 44100.0f * (1.0f + 0.0015f), AMP);
+    run_image(&m, 44100.0f, 0.0f, c, image);
+    ok = lines_matching(c, image);
+    printf("  clock +1500ppm: %d/%d lines intact\n", ok, SSTV_HEIGHT);
+    CHECK(ok >= SSTV_HEIGHT - 1);
     free(c);
     free(image);
 }
@@ -202,7 +210,7 @@ static void test_lost_sync(void) {
     float sr = 44100.0f;
     uint8_t pixels[3][SSTV_LINE_BYTES], frame[SSTV_FRAME_BYTES];
     for(int i = 0; i < 3; i++) fill_random(pixels[i], SSTV_LINE_BYTES);
-    int cap = 4 * 40000;
+    int cap = 4 * 60000;
     int16_t* s = calloc((size_t)cap, sizeof(int16_t));
     sstv_mod m;
     sstv_mod_init(&m, sr, AMP);

@@ -14,7 +14,9 @@ typedef struct {
 static sstv_demod d;
 static FILE* dump; /* SSTV_DUMP=path: per line "line_no crc_ok margin[416]" */
 
-static void on_line(void* ctx, uint8_t line_no, const uint8_t* pixels, bool crc_ok) {
+static void on_line(void* ctx, uint8_t line_no, const uint8_t* pixels, bool crc_ok, const float* soft, int corrected) {
+    (void)soft;
+    (void)corrected;
     decoder_ctx* c = ctx;
     if(crc_ok) c->good++;
     if(dump) {
@@ -51,8 +53,8 @@ int main(int argc, char** argv) {
 
     sstv_demod_status_t st;
     sstv_demod_status(&d, &st);
-    printf("lines=%d good=%d distinct=%d crc_errors=%d missing=%d sample_rate=%d\n", st.lines, c->good,
-           c->distinct, st.crc_errors, SSTV_HEIGHT - c->distinct, sr);
+    printf("lines=%d good=%d distinct=%d crc_errors=%d rs_fixed=%d missing=%d sample_rate=%d\n", st.lines,
+           c->good, c->distinct, st.crc_errors, st.rs_corrected, SSTV_HEIGHT - c->distinct, sr);
 
     FILE* f = fopen(argv[2], "wb");
     if(!f) {

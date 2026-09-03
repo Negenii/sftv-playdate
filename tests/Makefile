@@ -12,7 +12,7 @@ all: $(addprefix $(BIN)/,$(TESTS) $(TOOLS))
 $(BIN):
 	mkdir -p $(BIN)
 
-$(BIN)/%: %.c $(COMMON_SRC) $(PD_SRC) $(HOST_SRC) test_util.h | $(BIN)
+$(BIN)/%: %.c $(COMMON_SRC) $(PD_SRC) $(HOST_SRC) $(wildcard ../common/*.h) $(wildcard ../playdate/src/*.h) $(wildcard *.h) | $(BIN)
 	$(CC) $(CFLAGS) -o $@ $< $(COMMON_SRC) $(PD_SRC) $(HOST_SRC)
 
 test: $(addprefix $(BIN)/,$(TESTS))

@@ -21,12 +21,23 @@ int main(void) {
     CHECK_EQ_INT(sstv_frame_bit(frame, 1), 1);
     CHECK_EQ_INT(sstv_frame_bit(frame, 7), 1);
     CHECK_EQ_INT(sstv_frame_bit(frame, 8), (pixels[0] >> 7) & 1);
-    CHECK_EQ_INT(sstv_frame_bit(frame, 415), frame[51] & 1);
+    CHECK_EQ_INT(sstv_frame_bit(frame, SSTV_FRAME_BITS - 1), frame[SSTV_FRAME_BYTES - 1] & 1);
+    /* symbol 0 = first two bits of 123 = 0b01 */
+    CHECK_EQ_INT(sstv_frame_symbol(frame, 0), 1);
+    CHECK_EQ_INT(sstv_frame_symbol(frame, 1), 3);
 
-    /* a flipped pixel bit is detected */
+    /* up to 6 corrupted bytes are corrected by Reed-Solomon */
+    int corrected = 0;
     frame[20] ^= 0x10;
-    CHECK(!sstv_frame_unpack(frame, &line_no, out));
-    CHECK_EQ_INT(line_no, 123); /* outputs filled regardless */
+    frame[0] ^= 0xFF; /* even the line number */
+    frame[60] ^= 0x01; /* and parity */
+    CHECK(sstv_frame_unpack_ex(frame, &line_no, out, &corrected));
+    CHECK_EQ_INT(corrected, 3);
+    CHECK_EQ_INT(line_no, 123);
+    CHECK(memcmp(out, pixels, SSTV_LINE_BYTES) == 0);
+    /* 7 corrupted bytes: RS gives up or CRC catches it */
+    for(int i = 0; i < 7; i++) frame[5 + i * 7] ^= 0xA5;
+    CHECK(!sstv_frame_unpack_ex(frame, &line_no, out, &corrected));
 
     CHECK_EQ_INT(SSTV_FRAME_BITS, 8 * SSTV_FRAME_BYTES);
     CHECK_EQ_INT(SSTV_IMAGE_BYTES, SSTV_LINE_BYTES * SSTV_HEIGHT);

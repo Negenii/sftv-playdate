@@ -7,8 +7,8 @@
 int main(void) {
     sstv_mod m;
     sstv_mod_init(&m, 44100.0f, 10000);
-    CHECK(m.f0 == (float)SSTV_F0_HZ);
-    CHECK(m.f1 == (float)SSTV_F1_HZ);
+    CHECK(m.tones[0] == (float)SSTV_TONE0_HZ);
+    CHECK(m.tones[SSTV_NUM_TONES - 1] == (float)SSTV_TONE3_HZ);
     CHECK(m.fsync == (float)SSTV_FSYNC_HZ);
 
     /* 1 ms at 44.1 kHz is 44.1 samples: ten tones must total 441 samples. */
@@ -42,14 +42,14 @@ int main(void) {
     uint8_t pixels[SSTV_LINE_BYTES], frame[SSTV_FRAME_BYTES];
     memset(pixels, 0xA5, sizeof pixels);
     sstv_frame_pack(7, pixels, frame);
-    int16_t* big = malloc(sizeof(int16_t) * 40000);
+    int16_t* big = malloc(sizeof(int16_t) * 60000);
     sstv_mod_init(&m, 44100.0f, 10000);
     int frame_samples = (int)((double)SSTV_LINE_US * 44100.0 / 1e6 + 0.5);
-    CHECK_EQ_INT(sstv_mod_frame(&m, frame, big, 40000), frame_samples);
+    CHECK_EQ_INT(sstv_mod_frame(&m, frame, big, 60000), frame_samples);
     free(big);
 
     /* Full image capacity: leader + 240 lines. */
-    double image_us = (double)SSTV_LEADER_SYMBOLS * SSTV_BIT_US + 240.0 * SSTV_LINE_US;
+    double image_us = (double)SSTV_LEADER_SYMBOLS * SSTV_SYMBOL_US + 240.0 * SSTV_LINE_US;
     int image_samples = (int)(image_us * 44100.0 / 1e6);
     int cap = sstv_mod_image_capacity(44100.0f);
     CHECK(cap >= image_samples && cap <= image_samples + 200);
