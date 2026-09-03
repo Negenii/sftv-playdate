@@ -80,8 +80,8 @@ int main(int argc, char** argv) {
     if(argc > 5) d.silence_level = (float)atof(argv[5]);
     sstv_demod_feed(&d, s, n);
 
-    printf("phys_frames=%d flywheel=%d blocks=%d frames_ok=%d frames_bad=%d lines=%d/%d mode=%s rs_fixed=%d tiny=%d/%d preview=%d/%d sample_rate=%d\n",
-           d.frames, d.flywheel_frames, c->rx.blocks_ok, c->rx.frames_ok, c->rx.frames_bad, c->good, SSTV_HEIGHT,
+    printf("phys_frames=%d flywheel=%d blocks=%d frames_ok=%d frames_bad=%d repaired=%d/%dgroups fail=%d lines=%d/%d mode=%s rs_fixed=%d tiny=%d/%d preview=%d/%d sample_rate=%d\n",
+           d.frames, d.flywheel_frames, c->rx.blocks_ok, c->rx.frames_ok, c->rx.frames_bad, c->rx.frames_repaired, c->rx.groups_repaired, c->rx.repairs_failed, c->good, SSTV_HEIGHT,
            c->rx.coded ? "coded" : "raw", c->rx.rs_corrected, tiny_chunks, SSTV_TINY_CHUNKS, preview_chunks, SSTV_PREVIEW_CHUNKS, sr);
 
     FILE* f = fopen(argv[2], "wb");

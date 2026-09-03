@@ -245,8 +245,8 @@ static void test_noise(const noise_spec* ns, const char* label, int min_ok) {
     sstv_mod m;
     sstv_mod_init(&m, 44100.0f, AMP);
     int ok = run_image(&m, 44100.0f, ns, c, image);
-    printf("  %s: %d/%d lines intact, %d delivered, rs fixed %d bytes\n", label, ok, SSTV_HEIGHT, c->count,
-           c->rx.rs_corrected);
+    printf("  %s: %d/%d lines intact, %d delivered, rs fixed %d bytes, repaired %d\n", label, ok, SSTV_HEIGHT, c->count,
+           c->rx.rs_corrected, c->rx.frames_repaired);
     CHECK(ok >= min_ok);
     free(c);
     free(image);

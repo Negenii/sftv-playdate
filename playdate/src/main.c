@@ -393,9 +393,19 @@ static void finish(unsigned now) {
 static int expected_lines(unsigned now) {
     if(!started || total_frames <= 0) return 0;
     int intro = rx.coded ? SSTV_INTRO_FRAMES_CODED : SSTV_INTRO_FRAMES;
-    int data_frames = total_frames - 2 * SSTV_ILEAVE - intro;
+    int pass_data = 0; /* data positions in the pass (START + intro + data) */
+    for(int d = 1; d <= SSTV_MAX_DATA_FRAMES; d++) {
+        if(sstv_pass_total(d) == total_frames) {
+            pass_data = d;
+            break;
+        }
+    }
+    if(pass_data == 0) pass_data = total_frames - SSTV_ILEAVE; /* unknown layout: treat all as data */
+    int data_frames = pass_data - SSTV_ILEAVE - intro;
     if(data_frames <= 0) return 0;
-    float frames = (float)(now - started_ms) * 1000.0f / (float)SSTV_PHYS_US - (float)intro;
+    /* physical frames elapsed since START ended -> data frames sent (parity blocks stand still) */
+    int phys = SSTV_ILEAVE + (int)((float)(now - started_ms) * 1000.0f / (float)SSTV_PHYS_US);
+    float frames = (float)(sstv_pass_data_before(phys, pass_data) - SSTV_ILEAVE - intro);
     if(frames <= 0) return 0;
     if(frames >= (float)data_frames) return SSTV_HEIGHT;
     int blocks = data_frames / SSTV_ILEAVE;
@@ -765,7 +775,7 @@ static void draw_panel(void) {
     /* counters: label left, number right in the mono font */
     struct { const char* k; int v; } rows[] = {
         {"preview", preview_chunks}, {"frames ok", rx.frames_ok}, {"frames bad", rx.frames_bad},
-        {"rs fixed", rx.rs_corrected}, {"flywheel", demod.flywheel_frames}, {"dropped", (int)mic_dropped},
+        {"rs fixed", rx.rs_corrected}, {"fixed", rx.frames_repaired}, {"flywheel", demod.flywheel_frames}, {"dropped", (int)mic_dropped},
     };
     for(size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
         use_font(font_ui);
