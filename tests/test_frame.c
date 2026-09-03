@@ -1,5 +1,6 @@
 #include "test_util.h"
 #include "sstv_frame.h"
+#include "rs.h"
 #include "sstv_preview.h"
 #include <string.h>
 
@@ -94,7 +95,7 @@ int main(void) {
     int frames = sstv_build_physical(image, "white.pbm", phys, lines_after, &coded);
     CHECK(coded);
     CHECK_EQ_INT(frames % SSTV_ILEAVE, 0);
-    CHECK(frames <= 88 + SSTV_INTRO_FRAMES_CODED);
+    CHECK(frames <= sstv_pass_total(88 + SSTV_INTRO_FRAMES_CODED));
     CHECK_EQ_INT(lines_after[frames - 1], SSTV_HEIGHT);
     /* meta block first: name in every logical frame */
     sstv_deinterleave(phys, back);
@@ -121,7 +122,8 @@ int main(void) {
             }
         }
         CHECK_EQ_INT(sum, SSTV_HEIGHT);
-        CHECK_EQ_INT(nblocks * SSTV_ILEAVE, frames - 2 * SSTV_ILEAVE - SSTV_INTRO_FRAMES_CODED);
+        int coded_data = SSTV_ILEAVE + SSTV_INTRO_FRAMES_CODED + nblocks * SSTV_ILEAVE;
+        CHECK_EQ_INT(frames, sstv_pass_total(coded_data));
     }
     /* preview: a white image gives an all-zero preview, chunks 0..19 follow the start block */
     {
@@ -143,7 +145,52 @@ int main(void) {
     for(int i = 0; i < SSTV_IMAGE_BYTES; i++) image[i] = (uint8_t)((i * 2654435761u) >> 13);
     frames = sstv_build_physical(image, "noise", phys, lines_after, &coded);
     CHECK(!coded);
-    CHECK_EQ_INT(frames, SSTV_NUM_SEGS + 2 * SSTV_ILEAVE + SSTV_INTRO_FRAMES);
+    const int raw_data = SSTV_ILEAVE + SSTV_INTRO_FRAMES + SSTV_NUM_SEGS; /* 508 */
+    CHECK_EQ_INT(frames, sstv_pass_total(raw_data));
+    /* the first parity block sits right after data position 107; its frames carry the RS
+       parity of every payload column of positions 0..107 */
+    {
+        uint8_t col[SSTV_OUTER_GROUP + SSTV_OUTER_PARITY];
+        uint8_t got[SSTV_OUTER_PARITY][SSTV_PAYLOAD_BYTES];
+        for(int p = 0; p < SSTV_OUTER_PARITY; p += SSTV_ILEAVE) {
+            sstv_deinterleave(phys + (SSTV_OUTER_GROUP + p) * SSTV_FRAME_BYTES, back);
+            for(int i = 0; i < SSTV_ILEAVE; i++) {
+                CHECK(sstv_frame_unpack(back + i * SSTV_FRAME_BYTES, &blk, got[p + i]));
+                CHECK_EQ_INT(sstv_hdr_type(blk), SSTV_FT_PARITY);
+                CHECK_EQ_INT(sstv_hdr_index(blk), p + i);
+            }
+        }
+        for(int k = 0; k < SSTV_PAYLOAD_BYTES; k++) {
+            for(int pos = 0; pos < SSTV_OUTER_GROUP; pos++) {
+                sstv_deinterleave(phys + (pos / SSTV_ILEAVE) * SSTV_ILEAVE * SSTV_FRAME_BYTES, back);
+                col[pos] = back[(pos % SSTV_ILEAVE) * SSTV_FRAME_BYTES + 2 + k];
+            }
+            uint8_t par[SSTV_OUTER_PARITY];
+            rs_encode(col, SSTV_OUTER_GROUP, par);
+            for(int j = 0; j < SSTV_OUTER_PARITY; j++) CHECK_EQ_INT(got[j][k], par[j]);
+        }
+    }
+    /* END is the last block and announces the same total */
+    sstv_deinterleave(phys + (frames - SSTV_ILEAVE) * SSTV_FRAME_BYTES, back);
+    CHECK(sstv_frame_unpack(back, &blk, pl));
+    CHECK_EQ_INT(sstv_hdr_type(blk), SSTV_FT_META);
+    CHECK_EQ_INT(pl[0], SSTV_META_END);
+    CHECK_EQ_INT(pl[1] | (pl[2] << 8), frames);
+    /* the frame kinds agree with the layout helper for every physical frame */
+    for(int f = 0; f < frames; f++) {
+        sstv_deinterleave(phys + (f / SSTV_ILEAVE) * SSTV_ILEAVE * SSTV_FRAME_BYTES, back);
+        CHECK(sstv_frame_unpack(back + (f % SSTV_ILEAVE) * SSTV_FRAME_BYTES, &blk, pl));
+        int kind = sstv_pass_frame_kind(f, raw_data);
+        int type = sstv_hdr_type(blk);
+        if(kind == SSTV_PASS_PARITY) CHECK_EQ_INT(type, SSTV_FT_PARITY);
+        else if(kind == SSTV_PASS_END) CHECK(type == SSTV_FT_META && pl[0] == SSTV_META_END);
+        else CHECK(type != SSTV_FT_PARITY);
+        /* data frames sit at the position the helpers predict */
+        if(kind == SSTV_PASS_DATA) {
+            int pos = type == SSTV_FT_META ? sstv_pass_meta_position(pl[0], sstv_hdr_index(blk), f % SSTV_ILEAVE) : sstv_pass_position(blk, f % SSTV_ILEAVE);
+            CHECK_EQ_INT(pos, sstv_pass_data_before(f, raw_data));
+        }
+    }
     CHECK_EQ_INT(lines_after[frames - 1], SSTV_HEIGHT);
     const int data0 = SSTV_ILEAVE + SSTV_INTRO_FRAMES; /* first data frame */
     CHECK_EQ_INT(lines_after[data0 - 1], 0);

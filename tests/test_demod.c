@@ -199,7 +199,7 @@ static void test_full_image_clean(void) {
     CHECK_EQ_INT(ok, SSTV_HEIGHT);
     CHECK_EQ_INT(end_seen, 1);
     CHECK(strcmp(last_name, "image") == 0);
-    CHECK_EQ_INT(last_total, SSTV_NUM_SEGS + 2 * SSTV_ILEAVE + SSTV_INTRO_FRAMES); /* raw pass length announced */
+    CHECK_EQ_INT(last_total, sstv_pass_total(SSTV_ILEAVE + SSTV_INTRO_FRAMES + SSTV_NUM_SEGS)); /* raw pass length announced */
     CHECK(!last_coded);
     /* a compressible image needs fewer frames and still arrives intact */
     for(int y = 0; y < SSTV_HEIGHT; y++) {
@@ -229,7 +229,7 @@ static void test_full_image_clean(void) {
     int sum = 0, nblocks = 0;
     for(int i = 0; i < SSTV_MAX_CODED_BLOCKS; i++) { sum += schedule_got[i]; if(schedule_got[i]) nblocks++; }
     CHECK_EQ_INT(sum, SSTV_HEIGHT);
-    CHECK_EQ_INT(nblocks * SSTV_ILEAVE, frames - 2 * SSTV_ILEAVE - SSTV_INTRO_FRAMES_CODED);
+    CHECK_EQ_INT(frames, sstv_pass_total(SSTV_ILEAVE + SSTV_INTRO_FRAMES_CODED + nblocks * SSTV_ILEAVE));
     CHECK(last_coded);
     CHECK_EQ_INT(last_total, frames);
     free(s);

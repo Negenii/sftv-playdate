@@ -20,6 +20,7 @@ static bool check(const uint8_t* buf, uint16_t* hdr, uint8_t* payload) {
     int type = sstv_hdr_type(*hdr), index = sstv_hdr_index(*hdr);
     if(type == SSTV_FT_RAW) return index < SSTV_NUM_SEGS;
     if(type == SSTV_FT_CODED) return index < SSTV_MAX_BLOCKS;
+    if(type == SSTV_FT_PARITY) return index < SSTV_OUTER_GROUPS_MAX * SSTV_OUTER_PARITY;
     return type == SSTV_FT_META;
 }
 
@@ -170,9 +171,66 @@ int sstv_pass_data_before(int phys, int data_frames) {
     return data;
 }
 
-/* Emits one interleaved block from 4 logical frames. */
-static void emit_block(const uint8_t* logical, uint8_t* out, int block_no) {
-    sstv_interleave(logical, out + block_no * SSTV_ILEAVE * SSTV_FRAME_BYTES);
+/* Pass emitter: writes interleaved blocks, feeds every data frame's payload to the outer
+ * encoders (one per payload column) and closes a group with its parity blocks. */
+typedef struct {
+    uint8_t* out;
+    uint8_t* lines_after;
+    int blocks; /* physical blocks emitted */
+    int data_frames; /* logical data frames emitted */
+    rs_encoder_t enc[SSTV_PAYLOAD_BYTES];
+    int group_frames; /* data frames in the open group */
+    int group; /* index of the open group */
+} pass_emitter;
+
+static void emitter_init(pass_emitter* e, uint8_t* out, uint8_t* lines_after) {
+    memset(e, 0, sizeof *e);
+    e->out = out;
+    e->lines_after = lines_after;
+    for(int k = 0; k < SSTV_PAYLOAD_BYTES; k++) rs_encoder_init(&e->enc[k]);
+}
+
+static void emitter_block(pass_emitter* e, const uint8_t* logical, int lines_before, int lines_after_block) {
+    sstv_interleave(logical, e->out + e->blocks * SSTV_ILEAVE * SSTV_FRAME_BYTES);
+    if(e->lines_after) {
+        for(int f = 0; f < SSTV_ILEAVE; f++)
+            e->lines_after[e->blocks * SSTV_ILEAVE + f] = (uint8_t)(f == SSTV_ILEAVE - 1 ? lines_after_block : lines_before);
+    }
+    e->blocks++;
+}
+
+/* Emits the parity blocks of the open group and starts the next one. Parity frame j of group
+ * g is an ordinary logical frame (type PARITY, index g * 12 + j) whose payload byte k is RS
+ * parity symbol j over payload byte k of the group's frames. */
+static void emitter_close_group(pass_emitter* e, int lines) {
+    if(e->group_frames == 0) return;
+    uint8_t parity[SSTV_OUTER_PARITY][SSTV_PAYLOAD_BYTES];
+    for(int k = 0; k < SSTV_PAYLOAD_BYTES; k++) {
+        uint8_t p[SSTV_OUTER_PARITY];
+        rs_encoder_finish(&e->enc[k], p);
+        for(int j = 0; j < SSTV_OUTER_PARITY; j++) parity[j][k] = p[j];
+        rs_encoder_init(&e->enc[k]);
+    }
+    uint8_t logical[SSTV_ILEAVE * SSTV_FRAME_BYTES];
+    for(int j = 0; j < SSTV_OUTER_PARITY; j += SSTV_ILEAVE) {
+        for(int i = 0; i < SSTV_ILEAVE; i++)
+            sstv_frame_pack(sstv_hdr(SSTV_FT_PARITY, e->group * SSTV_OUTER_PARITY + j + i), parity[j + i], logical + i * SSTV_FRAME_BYTES);
+        emitter_block(e, logical, lines, lines);
+    }
+    e->group_frames = 0;
+    e->group++;
+}
+
+/* Emits a data block and closes the group when it is full. */
+static void emitter_data_block(pass_emitter* e, const uint8_t* logical, int lines_before, int lines_after_block) {
+    emitter_block(e, logical, lines_before, lines_after_block);
+    for(int i = 0; i < SSTV_ILEAVE; i++) {
+        const uint8_t* payload = logical + i * SSTV_FRAME_BYTES + 2;
+        for(int k = 0; k < SSTV_PAYLOAD_BYTES; k++) rs_encoder_feed(&e->enc[k], payload[k]);
+        e->group_frames++;
+        e->data_frames++;
+    }
+    if(e->group_frames == SSTV_OUTER_GROUP) emitter_close_group(e, lines_after_block);
 }
 
 int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* out, uint8_t* lines_after, bool* coded) {
@@ -195,12 +253,14 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
                      coded_blocks <= SSTV_MAX_CODED_BLOCKS;
     if(coded) *coded = use_coded;
 
-    int blocks = 0;
+    pass_emitter em;
+    emitter_init(&em, out, lines_after);
     /* Start meta block: [SSTV_META_START][total frames | coded flag][file name] in every
-     * logical frame. Total = start + preview + data + end blocks. */
+     * logical frame. Total = data frames (start + previews + data) + parity + end. */
     int data_blocks = use_coded ? coded_blocks : SSTV_NUM_SEGS / SSTV_ILEAVE;
     int intro = use_coded ? SSTV_INTRO_FRAMES_CODED : SSTV_INTRO_FRAMES;
-    uint16_t total = (uint16_t)((1 + intro / SSTV_ILEAVE + data_blocks + 1) * SSTV_ILEAVE);
+    int data_frames = SSTV_ILEAVE + intro + data_blocks * SSTV_ILEAVE;
+    uint16_t total = (uint16_t)sstv_pass_total(data_frames);
     uint16_t word = total | (use_coded ? SSTV_META_CODED_FLAG : 0);
     uint8_t meta[SSTV_PAYLOAD_BYTES];
     memset(meta, 0, SSTV_PAYLOAD_BYTES);
@@ -213,8 +273,7 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
         memcpy(meta + SSTV_META_NAME_OFFSET, name, n);
     }
     for(int i = 0; i < SSTV_ILEAVE; i++) sstv_frame_pack(sstv_hdr(SSTV_FT_META, 0), meta, logical + i * SSTV_FRAME_BYTES);
-    emit_block(logical, out, blocks++);
-    for(int f = 0; f < SSTV_ILEAVE && lines_after; f++) lines_after[f] = 0;
+    emitter_data_block(&em, logical, 0, 0);
 
     /* Tiny preview: one block of [SSTV_META_TINY][25 bytes], index = chunk. */
     uint8_t tiny[SSTV_TINY_BYTES];
@@ -224,9 +283,7 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
         memcpy(payload + 1, tiny + i * SSTV_PREVIEW_CHUNK, SSTV_PREVIEW_CHUNK);
         sstv_frame_pack(sstv_hdr(SSTV_FT_META, i), payload, logical + i * SSTV_FRAME_BYTES);
     }
-    emit_block(logical, out, blocks);
-    for(int f = 0; f < SSTV_ILEAVE && lines_after; f++) lines_after[blocks * SSTV_ILEAVE + f] = 0;
-    blocks++;
+    emitter_data_block(&em, logical, 0, 0);
 
     /* Preview: SSTV_PREVIEW_CHUNKS independent frames [SSTV_META_PREVIEW][25 bytes], index = chunk. */
     uint8_t preview[SSTV_PREVIEW_BYTES];
@@ -244,9 +301,7 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
             }
             sstv_frame_pack(sstv_hdr(SSTV_FT_META, c), payload, logical + i * SSTV_FRAME_BYTES);
         }
-        emit_block(logical, out, blocks);
-        for(int f = 0; f < SSTV_ILEAVE && lines_after; f++) lines_after[blocks * SSTV_ILEAVE + f] = 0;
-        blocks++;
+        emitter_data_block(&em, logical, 0, 0);
     }
 
     if(use_coded) {
@@ -256,23 +311,19 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
             memcpy(payload + 1, schedule + i * SSTV_PREVIEW_CHUNK, SSTV_PREVIEW_CHUNK);
             sstv_frame_pack(sstv_hdr(SSTV_FT_META, i), payload, logical + i * SSTV_FRAME_BYTES);
         }
-        emit_block(logical, out, blocks);
-        for(int f = 0; f < SSTV_ILEAVE && lines_after; f++) lines_after[blocks * SSTV_ILEAVE + f] = 0;
-        blocks++;
+        emitter_data_block(&em, logical, 0, 0);
 
         int line = 0;
         while(line < SSTV_HEIGHT) {
             int n = sstv_block_pack(image_bits, line, payload);
             if(n <= 0) break;
+            /* header index = data block number - 1 (the first coded block is data block 8) */
+            int index = em.data_frames / SSTV_ILEAVE - 1;
             for(int i = 0; i < SSTV_ILEAVE; i++) {
-                sstv_frame_pack(sstv_hdr(SSTV_FT_CODED, blocks - 1), payload + i * SSTV_PAYLOAD_BYTES, logical + i * SSTV_FRAME_BYTES);
+                sstv_frame_pack(sstv_hdr(SSTV_FT_CODED, index), payload + i * SSTV_PAYLOAD_BYTES, logical + i * SSTV_FRAME_BYTES);
             }
-            emit_block(logical, out, blocks);
             line += n;
-            if(lines_after) {
-                for(int f = 0; f < SSTV_ILEAVE; f++) lines_after[blocks * SSTV_ILEAVE + f] = (uint8_t)(f == SSTV_ILEAVE - 1 ? line : line - n);
-            }
-            blocks++;
+            emitter_data_block(&em, logical, line - n, line);
         }
     } else {
         for(int seg = 0; seg < SSTV_NUM_SEGS; seg += SSTV_ILEAVE) {
@@ -282,21 +333,14 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
                 memcpy(payload, image_bits + sstv_seg_line(s) * SSTV_LINE_BYTES + sstv_seg_byte_offset(s), SSTV_SEG_BYTES);
                 sstv_frame_pack(sstv_hdr(SSTV_FT_RAW, s), payload, logical + i * SSTV_FRAME_BYTES);
             }
-            emit_block(logical, out, blocks);
-            if(lines_after) {
-                /* the block covers segments seg..seg+3 = lines seg/2 and seg/2+1 */
-                for(int f = 0; f < SSTV_ILEAVE; f++) lines_after[blocks * SSTV_ILEAVE + f] = (uint8_t)(f == SSTV_ILEAVE - 1 ? seg / 2 + 2 : seg / 2);
-            }
-            blocks++;
+            /* the block covers segments seg..seg+3 = lines seg/2 and seg/2+1 */
+            emitter_data_block(&em, logical, seg / 2, seg / 2 + 2);
         }
     }
-    /* End meta block: same payload with SSTV_META_END. */
+    /* Parity of the last (possibly short) group, then the end meta block. */
+    emitter_close_group(&em, SSTV_HEIGHT);
     meta[0] = SSTV_META_END;
     for(int i = 0; i < SSTV_ILEAVE; i++) sstv_frame_pack(sstv_hdr(SSTV_FT_META, 1), meta, logical + i * SSTV_FRAME_BYTES);
-    emit_block(logical, out, blocks);
-    if(lines_after) {
-        for(int f = 0; f < SSTV_ILEAVE; f++) lines_after[blocks * SSTV_ILEAVE + f] = (uint8_t)SSTV_HEIGHT;
-    }
-    blocks++;
-    return blocks * SSTV_ILEAVE;
+    emitter_block(&em, logical, SSTV_HEIGHT, SSTV_HEIGHT);
+    return em.blocks * SSTV_ILEAVE;
 }
