@@ -38,19 +38,20 @@
  * 20 dB; two bits per symbol keep the line time close to the 2-FSK design (1.18 s).
  *
  * Why these tones: all are multiples of 500 Hz, so they are orthogonal over the 2 ms
- * detector window (and so is the 3 kHz ringing). None is 2x or 3x another (the buzzer is
- * nonlinear: 2000/4000 put a second harmonic straight into the other detector). Measured
- * decay to -20 dB at the Playdate mic: 3500 1.8 ms, 4000 1.9, 5500 1.3, 6000 1.0 ms,
- * versus 15 ms at 2000 Hz and 5 ms at 5000 Hz. Levels are within 9 dB, which the per-tone
- * gain trackers absorb. Symbol value v (0..3) is sent as SSTV_TONE_HZ[v]. */
+ * detector window. None is 2x or 3x another (the buzzer is nonlinear: 2000/4000 put a
+ * second harmonic straight into the other detector). A Playdate recording showed the tone
+ * level swinging with device position by 6 dB at 3.5 kHz but 20 dB at 6 kHz (shorter
+ * wavelength, deeper interference notches), so the set sits as low as the buzzer allows:
+ * 2000-2500 Hz ring for 15 ms and are out, 3000 Hz is the buzzer resonance (loud, decays
+ * in 1.2 ms, harmless behind the 2 ms guard). Symbol value v (0..3) is SSTV_TONE_HZ[v]. */
 #define SSTV_NUM_TONES 4
 #define SSTV_BITS_PER_SYMBOL 2
-#define SSTV_TONE0_HZ 3500
-#define SSTV_TONE1_HZ 4000
-#define SSTV_TONE2_HZ 5500
-#define SSTV_TONE3_HZ 6000
+#define SSTV_TONE0_HZ 3000
+#define SSTV_TONE1_HZ 3500
+#define SSTV_TONE2_HZ 4000
+#define SSTV_TONE3_HZ 4500
 #define SSTV_TONES_INIT {SSTV_TONE0_HZ, SSTV_TONE1_HZ, SSTV_TONE2_HZ, SSTV_TONE3_HZ}
-#define SSTV_FSYNC_HZ 5000 /* line sync; 16 ms is long enough for its slower tail */
+#define SSTV_FSYNC_HZ 5000 /* frame sync; 16 ms is long enough for its slower tail */
 
 /* Timing, microseconds. Every duration is a whole number of cycles of its tone. */
 #ifndef SSTV_SYMBOL_US
