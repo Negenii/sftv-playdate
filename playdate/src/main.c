@@ -23,12 +23,11 @@ static int image_rowbytes;
 static LCDFont* font_ui; /* Roobert 10 Bold: panel, labels */
 static LCDFont* font_num; /* Roobert 9 Mono Condensed: counters */
 static LCDFont* font_big; /* Roobert 20 Medium: titles */
-static LCDBitmap* dolphin_src; /* 62x64 Flipper sprite, white = ink (filled body) */
-static LCDBitmap* dolphin_lines_src; /* same sprite reduced to its outline */
-static LCDBitmap* dolphin; /* scene: LCD-style rendering, 2x2 dots on a 3 px pitch, 186x192 */
-static LCDBitmap* dolphin_tile; /* menu tile: outline at 2x, 124x128 */
-#define LCD_PITCH 3
-#define LCD_DOT 2
+static LCDBitmap* dolphin_src; /* 71x49 outline dolphin (firmware L1_Furippa1 frame 0), faces right */
+static LCDBitmap* dolphin; /* scene: 3x, 213x147 */
+static LCDBitmap* dolphin_tile; /* menu tile: 2x, 142x98 */
+#define DOLPHIN_W 71
+#define DOLPHIN_H 49
 static LCDBitmap* console; /* 140x118 Playdate silhouette, screen interior at (7,7) 88x53 */
 static LCDBitmap* thumb_mask; /* rounded corners for thumbnails */
 
@@ -550,10 +549,9 @@ static void fit_text(char* out, size_t cap, const char* in, int max_w) {
     }
 }
 
-/* Renders a Flipper sprite (white = ink) the way its LCD shows it: every lit pixel a dot x dot
- * square on a `pitch` grid, gutters and unlit pixels transparent. pitch == dot gives a plain
- * integer upscale. */
-static LCDBitmap* render_lcd(LCDBitmap* src, int pitch, int dot) {
+/* Integer upscale of a 1-bit sprite (black = ink) into a transparent bitmap: every ink pixel a
+ * dot x dot square on a `pitch` grid (pitch == dot: solid). */
+static LCDBitmap* render_scaled(LCDBitmap* src, int pitch, int dot) {
     int w, h, rb;
     uint8_t* data;
     pd->graphics->getBitmapData(src, &w, &h, &rb, NULL, &data);
@@ -561,7 +559,7 @@ static LCDBitmap* render_lcd(LCDBitmap* src, int pitch, int dot) {
     pd->graphics->pushContext(out);
     for(int y = 0; y < h; y++)
         for(int x = 0; x < w; x++)
-            if(data[y * rb + (x >> 3)] & (0x80 >> (x & 7)))
+            if(!(data[y * rb + (x >> 3)] & (0x80 >> (x & 7)))) /* 0 = black = ink */
                 pd->graphics->fillRect(x * pitch, y * pitch, dot, dot, kColorBlack);
     pd->graphics->popContext();
     return out;
@@ -696,31 +694,29 @@ static void draw_menu(void) {
 static void draw_scene(void) {
     unsigned now = pd->system->getCurrentTimeMilliseconds();
     pd->graphics->clear(kColorWhite);
-    const int dx = 14, dy = 34; /* dolphin, 186x192 */
+    const int dx = 12, dy = 44; /* dolphin, 213x147 */
     const int cx = 236, cy = 40; /* console */
-    const int text_cx = cx + CONSOLE_W / 2; /* texts sit under the console */
+    const int text_cx = LCD_COLUMNS / 2; /* texts run under both figures */
     if(dolphin) pd->graphics->drawBitmap(dolphin, dx, dy, kBitmapUnflipped);
     draw_console(cx, cy, started ? preview_bitmap : NULL);
     use_font(font_ui);
     char t[64], nm[NAME_CAP];
     if(started) {
-        draw_spout(dx + 117, dy + 21, cx + CONSOLE_SCREEN_X + CONSOLE_SCREEN_W / 2, cy + CONSOLE_SCREEN_Y + CONSOLE_SCREEN_H / 2, (float)(now % 1200) / 1200.0f);
+        draw_spout(dx + 105, dy + 3, cx + CONSOLE_SCREEN_X + CONSOLE_SCREEN_W / 2, cy + CONSOLE_SCREEN_Y + CONSOLE_SCREEN_H / 2, (float)(now % 1200) / 1200.0f);
         display_name(nm, sizeof nm, current_name);
         use_font(font_big);
-        fit_text(t, sizeof t, nm, 160);
-        draw_text_centered(t, text_cx, 172);
+        fit_text(t, sizeof t, nm, 360);
+        draw_text_centered(t, text_cx, 192);
         use_font(font_ui);
         int secs = total_frames > 0 ? (int)((unsigned)total_frames * (SSTV_PHYS_US / 1000) / 1000) : 0;
-        snprintf(t, sizeof t, "%s, %d:%02d", rx.coded ? "compressed" : "raw", secs / 60, secs % 60);
-        draw_text_centered(t, text_cx, 200);
-        snprintf(t, sizeof t, "preview %d/%d", preview_chunks, SSTV_INTRO_FRAMES);
-        draw_text_centered(t, text_cx, 218);
+        snprintf(t, sizeof t, "%s, %d:%02d, preview %d/%d", rx.coded ? "compressed" : "raw", secs / 60, secs % 60, preview_chunks, SSTV_INTRO_FRAMES);
+        draw_text_centered(t, text_cx, 220);
     } else {
         use_font(font_big);
-        draw_text_centered("Listening", text_cx, 172);
+        draw_text_centered("Listening", text_cx, 192);
         use_font(font_ui);
         const char* hint = mic_state < 0 ? "microphone access denied" : mic_state == 0 ? "waiting for microphone permission" : !mic_enabled ? "microphone is off" : "start a transmission on the Flipper";
-        draw_text_centered(hint, text_cx, 204);
+        draw_text_centered(hint, text_cx, 220);
     }
 }
 
@@ -951,9 +947,10 @@ static void init(void) {
     if(!font_num) font_num = font_ui;
     if(!font_big) font_big = font_ui;
     dolphin_src = pd->graphics->loadBitmap("images/dolphin", &err);
-    dolphin_lines_src = pd->graphics->loadBitmap("images/dolphin_lines", &err);
-    if(dolphin_src) dolphin = render_lcd(dolphin_src, LCD_PITCH, LCD_DOT);
-    if(dolphin_lines_src) dolphin_tile = render_lcd(dolphin_lines_src, 2, 2);
+    if(dolphin_src) {
+        dolphin = render_scaled(dolphin_src, 3, 3);
+        dolphin_tile = render_scaled(dolphin_src, 2, 2);
+    }
     console = pd->graphics->loadBitmap("images/console", &err);
 
     thumb_mask = pd->graphics->newBitmap(THUMB_W, THUMB_H, kColorBlack);

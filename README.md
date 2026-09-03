@@ -57,8 +57,8 @@ is saved as `Data/com.negenii.sftvrx/<name>.pbm` (same name overwrites). Gallery
 thumbnails, d-pad moves the cursor, A opens full screen, B goes back. A in receive mode clears
 the image, B returns to the menu, Up records 30 s of raw microphone audio to `rec.wav`.
 
-The dolphin sprites are cropped from the Flipper firmware's `L3_Hijack_radio` and `L1_Waves`
-animations (GPL-3, flipperdevices/flipperzero-firmware) as placeholders.
+The dolphin sprites are cropped from the Flipper firmware's `L1_Furippa1` (Playdate) and
+`L1_Waves` (Flipper) animations (GPL-3, flipperdevices/flipperzero-firmware) as placeholders.
 
 ## Debugging
 
