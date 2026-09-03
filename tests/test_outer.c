@@ -145,9 +145,15 @@ int main(void) {
     /* a whole coded block lost (two garbled frames): its lines come back after the parity */
     int c2[] = {44, 45};
     run_case("coded block lost", image, phys, frames, c2, 2, NULL, 0, SSTV_HEIGHT, 4);
-    /* the schedule block and a data block lost */
-    int c3[] = {28, 29, 36, 37};
+    /* the schedule block (intro group, physical 28-31) and the first picture block (group 1,
+       physical 44-47) both lost: repaired by their own group parity */
+    int c3[] = {28, 29, 44, 45};
     run_case("coded schedule + block lost", image, phys, frames, c3, 4, NULL, 0, SSTV_HEIGHT, 8);
+    /* the user's case: a tiny block (physical 4-7) and a preview block (physical 12-15) lost;
+       the intro group's parity (sent right after the intro) rebuilds them, so tiny 4/4 and
+       preview 20/20 still arrive -- and would arrive while the scene is still up */
+    int cp[] = {4, 5, 12, 13};
+    run_case("coded intro previews lost", image, phys, frames, cp, 4, NULL, 0, SSTV_HEIGHT, 8);
 
     free(image);
     free(phys);

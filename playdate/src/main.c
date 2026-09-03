@@ -398,7 +398,7 @@ static int expected_lines(unsigned now) {
     int intro = rx.coded ? SSTV_INTRO_FRAMES_CODED : SSTV_INTRO_FRAMES;
     int pass_data = 0; /* data positions in the pass (START + intro + data) */
     for(int d = 1; d <= SSTV_MAX_DATA_FRAMES; d++) {
-        if(sstv_pass_total(d) == total_frames) {
+        if(sstv_pass_total(d, sstv_pass_intro(rx.coded)) == total_frames) {
             pass_data = d;
             break;
         }
@@ -408,7 +408,7 @@ static int expected_lines(unsigned now) {
     if(data_frames <= 0) return 0;
     /* physical frames elapsed since START ended -> data frames sent (parity blocks stand still) */
     int phys = SSTV_ILEAVE + (int)((float)(now - started_ms) * 1000.0f / (float)SSTV_PHYS_US);
-    float frames = (float)(sstv_pass_data_before(phys, pass_data) - SSTV_ILEAVE - intro);
+    float frames = (float)(sstv_pass_data_before(phys, pass_data, sstv_pass_intro(rx.coded)) - SSTV_ILEAVE - intro);
     if(frames <= 0) return 0;
     if(frames >= (float)data_frames) return SSTV_HEIGHT;
     int blocks = data_frames / SSTV_ILEAVE;

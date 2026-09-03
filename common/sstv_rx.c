@@ -53,9 +53,10 @@ static void coded_line(void* ctx, uint16_t line, const uint8_t* pixels) {
 
 /* Inverse of sstv_pass_total: data positions of a pass announcing `total` frames, 0 if the
  * total fits no layout (e.g. a revision 6 transmitter). */
-static int data_frames_from_total(int total) {
+static int data_frames_from_total(int total, int coded) {
+    int intro = sstv_pass_intro(coded);
     for(int d = 1; d <= SSTV_MAX_DATA_FRAMES; d++) {
-        if(sstv_pass_total(d) == total) return d;
+        if(sstv_pass_total(d, intro) == total) return d;
     }
     return 0;
 }
@@ -88,7 +89,7 @@ static void store(sstv_rx* rx, int pos, const uint8_t* payload) {
     memcpy(rx->data[pos], payload, SSTV_PAYLOAD_BYTES);
     rx->have[pos] = 1;
     /* a late data frame may complete a group whose parity already arrived */
-    int g = pos / SSTV_OUTER_GROUP;
+    int g = sstv_pass_group_of(pos, sstv_pass_intro(rx->coded));
     if(g < SSTV_OUTER_GROUPS_MAX && !rx->group_done[g]) {
         for(int j = 0; j < SSTV_OUTER_PARITY; j++) {
             if(rx->have_parity[g][j]) {
@@ -119,6 +120,7 @@ static void handle_frame(sstv_rx* rx, uint16_t hdr, const uint8_t* payload, int 
             int layer = sub == SSTV_META_TINY ? 0 : sub == SSTV_META_PREVIEW ? 1 : 2;
             static const int totals[3] = {SSTV_TINY_BYTES, SSTV_PREVIEW_BYTES, SSTV_MAX_CODED_BLOCKS};
             static const int chunks[3] = {SSTV_TINY_CHUNKS, SSTV_PREVIEW_CHUNKS, SSTV_SCHEDULE_CHUNKS};
+            if(sub == SSTV_META_SCHEDULE) rx->coded = true; /* schedule exists only in coded passes */
             if(index >= chunks[layer]) return;
             int n = totals[layer] - index * SSTV_PREVIEW_CHUNK;
             if(n > SSTV_PREVIEW_CHUNK) n = SSTV_PREVIEW_CHUNK;
@@ -135,7 +137,7 @@ static void handle_frame(sstv_rx* rx, uint16_t hdr, const uint8_t* payload, int 
                 rx->coded = coded;
             }
             if(sub == SSTV_META_END) rx->pass_open = false;
-            rx->data_frames = data_frames_from_total(total);
+            rx->data_frames = data_frames_from_total(total, coded);
             if(sub == SSTV_META_END) {
                 /* last chance: groups whose size was unknown (START lost) or whose parity
                    arrived before their last data frame */
@@ -171,9 +173,12 @@ static void try_repair(sstv_rx* rx, int g) {
     /* Without START the pass length is unknown: assume a full group. A short last group then
      * looks like it has too many missing frames, so nothing happens until END announces the
      * length and the final sweep runs. */
-    int n = rx->data_frames > 0 ? sstv_pass_group_size(rx->data_frames, g) : SSTV_OUTER_GROUP;
+    int intro = sstv_pass_intro(rx->coded);
+    /* Without START/END the pass length is unknown: assume full groups (intro, then 108). A
+     * short last group then looks over-erased and waits for the END sweep. */
+    int n = rx->data_frames > 0 ? sstv_pass_group_size(rx->data_frames, intro, g) : (g == 0 ? intro : SSTV_OUTER_GROUP);
     if(n <= 0) return;
-    int base = g * SSTV_OUTER_GROUP;
+    int base = sstv_pass_group_base(intro, g);
     int erasures[SSTV_OUTER_PARITY];
     int ne = 0, missing_data = 0;
     for(int p = 0; p < n; p++) {

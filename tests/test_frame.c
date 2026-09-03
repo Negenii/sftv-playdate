@@ -95,7 +95,7 @@ int main(void) {
     int frames = sstv_build_physical(image, "white.pbm", phys, lines_after, &coded);
     CHECK(coded);
     CHECK_EQ_INT(frames % SSTV_ILEAVE, 0);
-    CHECK(frames <= sstv_pass_total(88 + SSTV_INTRO_FRAMES_CODED));
+    CHECK(frames <= sstv_pass_total(88 + SSTV_INTRO_FRAMES_CODED, sstv_pass_intro(1)));
     CHECK_EQ_INT(lines_after[frames - 1], SSTV_HEIGHT);
     /* meta block first: name in every logical frame */
     sstv_deinterleave(phys, back);
@@ -123,7 +123,7 @@ int main(void) {
         }
         CHECK_EQ_INT(sum, SSTV_HEIGHT);
         int coded_data = SSTV_ILEAVE + SSTV_INTRO_FRAMES_CODED + nblocks * SSTV_ILEAVE;
-        CHECK_EQ_INT(frames, sstv_pass_total(coded_data));
+        CHECK_EQ_INT(frames, sstv_pass_total(coded_data, sstv_pass_intro(1)));
     }
     /* preview: a white image gives an all-zero preview, chunks 0..19 follow the start block */
     {
@@ -146,14 +146,15 @@ int main(void) {
     frames = sstv_build_physical(image, "noise", phys, lines_after, &coded);
     CHECK(!coded);
     const int raw_data = SSTV_ILEAVE + SSTV_INTRO_FRAMES + SSTV_NUM_SEGS; /* 508 */
-    CHECK_EQ_INT(frames, sstv_pass_total(raw_data));
-    /* the first parity block sits right after data position 107; its frames carry the RS
-       parity of every payload column of positions 0..107 */
+    const int raw_intro = sstv_pass_intro(0);
+    CHECK_EQ_INT(frames, sstv_pass_total(raw_data, raw_intro));
+    /* the intro is group 0: its 12 parity frames come right after it (physical frame raw_intro)
+       and carry the RS parity of every payload column of positions 0..raw_intro-1 */
     {
         uint8_t col[SSTV_OUTER_GROUP + SSTV_OUTER_PARITY];
         uint8_t got[SSTV_OUTER_PARITY][SSTV_PAYLOAD_BYTES];
         for(int p = 0; p < SSTV_OUTER_PARITY; p += SSTV_ILEAVE) {
-            sstv_deinterleave(phys + (SSTV_OUTER_GROUP + p) * SSTV_FRAME_BYTES, back);
+            sstv_deinterleave(phys + (raw_intro + p) * SSTV_FRAME_BYTES, back);
             for(int i = 0; i < SSTV_ILEAVE; i++) {
                 CHECK(sstv_frame_unpack(back + i * SSTV_FRAME_BYTES, &blk, got[p + i]));
                 CHECK_EQ_INT(sstv_hdr_type(blk), SSTV_FT_PARITY);
@@ -161,12 +162,12 @@ int main(void) {
             }
         }
         for(int k = 0; k < SSTV_PAYLOAD_BYTES; k++) {
-            for(int pos = 0; pos < SSTV_OUTER_GROUP; pos++) {
+            for(int pos = 0; pos < raw_intro; pos++) {
                 sstv_deinterleave(phys + (pos / SSTV_ILEAVE) * SSTV_ILEAVE * SSTV_FRAME_BYTES, back);
                 col[pos] = back[(pos % SSTV_ILEAVE) * SSTV_FRAME_BYTES + 2 + k];
             }
             uint8_t par[SSTV_OUTER_PARITY];
-            rs_encode(col, SSTV_OUTER_GROUP, par);
+            rs_encode(col, raw_intro, par);
             for(int j = 0; j < SSTV_OUTER_PARITY; j++) CHECK_EQ_INT(got[j][k], par[j]);
         }
     }
@@ -180,7 +181,7 @@ int main(void) {
     for(int f = 0; f < frames; f++) {
         sstv_deinterleave(phys + (f / SSTV_ILEAVE) * SSTV_ILEAVE * SSTV_FRAME_BYTES, back);
         CHECK(sstv_frame_unpack(back + (f % SSTV_ILEAVE) * SSTV_FRAME_BYTES, &blk, pl));
-        int kind = sstv_pass_frame_kind(f, raw_data);
+        int kind = sstv_pass_frame_kind(f, raw_data, raw_intro);
         int type = sstv_hdr_type(blk);
         if(kind == SSTV_PASS_PARITY) CHECK_EQ_INT(type, SSTV_FT_PARITY);
         else if(kind == SSTV_PASS_END) CHECK(type == SSTV_FT_META && pl[0] == SSTV_META_END);
@@ -188,11 +189,11 @@ int main(void) {
         /* data frames sit at the position the helpers predict */
         if(kind == SSTV_PASS_DATA) {
             int pos = type == SSTV_FT_META ? sstv_pass_meta_position(pl[0], sstv_hdr_index(blk), f % SSTV_ILEAVE) : sstv_pass_position(blk, f % SSTV_ILEAVE);
-            CHECK_EQ_INT(pos, sstv_pass_data_before(f, raw_data));
+            CHECK_EQ_INT(pos, sstv_pass_data_before(f, raw_data, raw_intro));
         }
     }
     CHECK_EQ_INT(lines_after[frames - 1], SSTV_HEIGHT);
-    const int data0 = SSTV_ILEAVE + SSTV_INTRO_FRAMES; /* first data frame */
+    const int data0 = SSTV_ILEAVE + SSTV_INTRO_FRAMES + SSTV_OUTER_PARITY; /* first picture frame: after START, previews and the intro parity */
     CHECK_EQ_INT(lines_after[data0 - 1], 0);
     CHECK_EQ_INT(lines_after[data0 + 3], 2); /* first data block = lines 0,1 */
     {
@@ -234,20 +235,31 @@ int main(void) {
     CHECK_EQ_INT(sstv_pass_meta_position(SSTV_META_PREVIEW, 19, 3), 8 + 19);
     CHECK_EQ_INT(sstv_pass_meta_position(SSTV_META_SCHEDULE, 1, 1), 28 + 1);
     CHECK_EQ_INT(sstv_pass_meta_position(SSTV_META_END, 1, 1), -1);
-    CHECK_EQ_INT(sstv_pass_groups(508), 5);
-    CHECK_EQ_INT(sstv_pass_group_size(508, 0), 108);
-    CHECK_EQ_INT(sstv_pass_group_size(508, 4), 508 - 4 * 108);
-    CHECK_EQ_INT(sstv_pass_total(508), 508 + 5 * SSTV_OUTER_PARITY + SSTV_ILEAVE);
-    CHECK_EQ_INT(sstv_pass_frame_kind(107, 508), SSTV_PASS_DATA);
-    CHECK_EQ_INT(sstv_pass_frame_kind(108, 508), SSTV_PASS_PARITY);
-    CHECK_EQ_INT(sstv_pass_frame_kind(120, 508), SSTV_PASS_DATA);
-    CHECK_EQ_INT(sstv_pass_frame_kind(sstv_pass_total(508) - 1, 508), SSTV_PASS_END);
-    CHECK_EQ_INT(sstv_pass_data_before(0, 508), 0);
-    CHECK_EQ_INT(sstv_pass_data_before(108, 508), 108);
-    CHECK_EQ_INT(sstv_pass_data_before(115, 508), 108); /* inside the first parity blocks */
-    CHECK_EQ_INT(sstv_pass_data_before(121, 508), 109);
-    CHECK_EQ_INT(sstv_pass_data_before(sstv_pass_total(508), 508), 508);
-    CHECK(SSTV_MAX_FRAMES >= sstv_pass_total(SSTV_MAX_DATA_FRAMES));
+    /* grouping: intro is group 0, then SSTV_OUTER_GROUP-frame data groups */
+    const int intro = sstv_pass_intro(0); /* raw intro = SSTV_ILEAVE + SSTV_INTRO_FRAMES */
+    CHECK_EQ_INT(sstv_pass_intro(0), SSTV_ILEAVE + SSTV_INTRO_FRAMES);
+    CHECK_EQ_INT(sstv_pass_groups(508, intro), 1 + (508 - intro + SSTV_OUTER_GROUP - 1) / SSTV_OUTER_GROUP);
+    CHECK_EQ_INT(sstv_pass_group_size(508, intro, 0), intro);
+    CHECK_EQ_INT(sstv_pass_group_size(508, intro, 1), SSTV_OUTER_GROUP);
+    CHECK_EQ_INT(sstv_pass_group_base(intro, 0), 0);
+    CHECK_EQ_INT(sstv_pass_group_base(intro, 1), intro);
+    CHECK_EQ_INT(sstv_pass_group_base(intro, 2), intro + SSTV_OUTER_GROUP);
+    CHECK_EQ_INT(sstv_pass_group_of(0, intro), 0);
+    CHECK_EQ_INT(sstv_pass_group_of(intro - 1, intro), 0);
+    CHECK_EQ_INT(sstv_pass_group_of(intro, intro), 1);
+    CHECK_EQ_INT(sstv_pass_group_of(intro + SSTV_OUTER_GROUP, intro), 2);
+    CHECK_EQ_INT(sstv_pass_total(508, intro), 508 + sstv_pass_groups(508, intro) * SSTV_OUTER_PARITY + SSTV_ILEAVE);
+    /* frame_kind: intro data, then intro parity, then group-1 data */
+    CHECK_EQ_INT(sstv_pass_frame_kind(intro - 1, 508, intro), SSTV_PASS_DATA);
+    CHECK_EQ_INT(sstv_pass_frame_kind(intro, 508, intro), SSTV_PASS_PARITY);
+    CHECK_EQ_INT(sstv_pass_frame_kind(intro + SSTV_OUTER_PARITY, 508, intro), SSTV_PASS_DATA);
+    CHECK_EQ_INT(sstv_pass_frame_kind(sstv_pass_total(508, intro) - 1, 508, intro), SSTV_PASS_END);
+    CHECK_EQ_INT(sstv_pass_data_before(0, 508, intro), 0);
+    CHECK_EQ_INT(sstv_pass_data_before(intro, 508, intro), intro);
+    CHECK_EQ_INT(sstv_pass_data_before(intro + 3, 508, intro), intro); /* inside intro parity */
+    CHECK_EQ_INT(sstv_pass_data_before(intro + SSTV_OUTER_PARITY + 1, 508, intro), intro + 1);
+    CHECK_EQ_INT(sstv_pass_data_before(sstv_pass_total(508, intro), 508, intro), 508);
+    CHECK(SSTV_MAX_FRAMES >= sstv_pass_total(SSTV_MAX_DATA_FRAMES, sstv_pass_intro(1)));
 
     free(lines_after);
     free(image);

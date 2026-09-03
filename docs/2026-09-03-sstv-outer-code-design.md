@@ -29,11 +29,14 @@ minus END:
 | 28..31 | SCHEDULE chunks 0..3 (coded passes only) |
 | then | data: RAW segment s at 28 + s; CODED block b, frame i at (b + 1) × 4 + i, where b is the header index (data block number − 1, as today: the first coded block has index 7 and sits at 32) |
 
-Positions are grouped: group g = positions 108g .. 108g + 107 (27 blocks, ~73 s). After the
-last block of each group the transmitter inserts 3 parity blocks = 12 frames of type
-`PARITY` (3, the free header type), index = g × 12 + j. The last group is shorter (shortened
-RS codeword). END (4 identical META frames) is sent after the last parity block and is not
-covered, so the receiver finishes only after the last repair opportunity.
+Grouping (revision 7.1): group 0 is the whole intro (START + tiny + preview + schedule); its
+12 parity frames are sent right after it, before the picture, so the receiver repairs a lost
+tiny/preview while the intro scene is still on screen (the whole-pass parity would arrive too
+late, after the sheet has covered the scene). Groups 1+ are SSTV_OUTER_GROUP (108) picture
+frames each, each followed by its 12 parity frames. Parity frame j of group g has type PARITY
+(3, the free header type), index g × 12 + j. Group sizes come from `sstv_pass_intro(coded)`
+(the group-0 size) and are shared by transmitter, receiver and both timelines. END (4 identical
+META frames) is sent after the last parity block and is not covered.
 
 Parity: for each byte column k of the 26 payload bytes of a logical frame, the codeword is
 [d_0[k] … d_{n−1}[k] | p_0[k] … p_11[k]] with the existing RS(…, 12) code over GF(256)

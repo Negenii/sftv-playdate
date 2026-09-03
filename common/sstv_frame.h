@@ -73,11 +73,21 @@ static inline int sstv_seg_byte_offset(int seg) {
 #define SSTV_PASS_END 2
 int sstv_pass_position(uint16_t hdr, int i); /* -1 for META (use the meta variant) and PARITY */
 int sstv_pass_meta_position(int subtype, int index, int i); /* -1 for END */
-int sstv_pass_groups(int data_frames);
-int sstv_pass_group_size(int data_frames, int g);
-int sstv_pass_total(int data_frames); /* physical frames of the whole pass */
-int sstv_pass_frame_kind(int phys, int data_frames);
-int sstv_pass_data_before(int phys, int data_frames); /* data frames among physical frames < phys */
+
+/* Grouping (revision 7.1): group 0 is the intro (START + previews + schedule) so its parity
+ * arrives right after it, while the console scene is still up; groups 1+ are SSTV_OUTER_GROUP
+ * picture frames each. `intro` is the group-0 size = SSTV_ILEAVE + SSTV_INTRO_FRAMES[_CODED],
+ * from sstv_pass_intro(coded). */
+static inline int sstv_pass_intro(int coded) {
+    return SSTV_ILEAVE + (coded ? SSTV_INTRO_FRAMES_CODED : SSTV_INTRO_FRAMES);
+}
+int sstv_pass_groups(int data_frames, int intro);
+int sstv_pass_group_size(int data_frames, int intro, int g);
+int sstv_pass_group_base(int intro, int g); /* first data position of group g */
+int sstv_pass_group_of(int pos, int intro); /* group holding data position pos */
+int sstv_pass_total(int data_frames, int intro); /* physical frames of the whole pass */
+int sstv_pass_frame_kind(int phys, int data_frames, int intro);
+int sstv_pass_data_before(int phys, int data_frames, int intro); /* data frames among physical frames < phys */
 
 /* Coded block payload: [line count][first line#][codec record]... consecutive lines,
  * zero padded. */

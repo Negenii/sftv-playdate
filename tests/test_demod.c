@@ -62,11 +62,12 @@ static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
     sstv_rx_phys(&c->rx, frame, soft);
 }
 
-/* Removes the preview blocks so the first data block directly follows the START block
- * (tests that send only the first few frames). */
+/* Removes the preview blocks and the intro group's parity so the first picture block directly
+ * follows the START block (tests that send only the first few frames; raw layout). */
 static void drop_preview(uint8_t* phys, int frames) {
-    memmove(phys + SSTV_ILEAVE * SSTV_FRAME_BYTES, phys + (SSTV_ILEAVE + SSTV_INTRO_FRAMES) * SSTV_FRAME_BYTES,
-            (size_t)(frames - SSTV_ILEAVE - SSTV_INTRO_FRAMES) * SSTV_FRAME_BYTES);
+    int skip = SSTV_INTRO_FRAMES + SSTV_OUTER_PARITY; /* intro data after START, then its parity */
+    memmove(phys + SSTV_ILEAVE * SSTV_FRAME_BYTES, phys + (SSTV_ILEAVE + skip) * SSTV_FRAME_BYTES,
+            (size_t)(frames - SSTV_ILEAVE - skip) * SSTV_FRAME_BYTES);
 }
 
 static capture* capture_new(void) {
@@ -199,7 +200,7 @@ static void test_full_image_clean(void) {
     CHECK_EQ_INT(ok, SSTV_HEIGHT);
     CHECK_EQ_INT(end_seen, 1);
     CHECK(strcmp(last_name, "image") == 0);
-    CHECK_EQ_INT(last_total, sstv_pass_total(SSTV_ILEAVE + SSTV_INTRO_FRAMES + SSTV_NUM_SEGS)); /* raw pass length announced */
+    CHECK_EQ_INT(last_total, sstv_pass_total(SSTV_ILEAVE + SSTV_INTRO_FRAMES + SSTV_NUM_SEGS, sstv_pass_intro(0))); /* raw pass length announced */
     CHECK(!last_coded);
     /* a compressible image needs fewer frames and still arrives intact */
     for(int y = 0; y < SSTV_HEIGHT; y++) {
@@ -229,7 +230,7 @@ static void test_full_image_clean(void) {
     int sum = 0, nblocks = 0;
     for(int i = 0; i < SSTV_MAX_CODED_BLOCKS; i++) { sum += schedule_got[i]; if(schedule_got[i]) nblocks++; }
     CHECK_EQ_INT(sum, SSTV_HEIGHT);
-    CHECK_EQ_INT(frames, sstv_pass_total(SSTV_ILEAVE + SSTV_INTRO_FRAMES_CODED + nblocks * SSTV_ILEAVE));
+    CHECK_EQ_INT(frames, sstv_pass_total(SSTV_ILEAVE + SSTV_INTRO_FRAMES_CODED + nblocks * SSTV_ILEAVE, sstv_pass_intro(1)));
     CHECK(last_coded);
     CHECK_EQ_INT(last_total, frames);
     free(s);

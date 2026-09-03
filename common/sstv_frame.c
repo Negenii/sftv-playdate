@@ -133,25 +133,36 @@ int sstv_pass_meta_position(int subtype, int index, int i) {
     }
 }
 
-int sstv_pass_groups(int data_frames) {
-    return (data_frames + SSTV_OUTER_GROUP - 1) / SSTV_OUTER_GROUP;
+int sstv_pass_groups(int data_frames, int intro) {
+    if(data_frames <= intro) return 1;
+    return 1 + (data_frames - intro + SSTV_OUTER_GROUP - 1) / SSTV_OUTER_GROUP;
 }
 
-int sstv_pass_group_size(int data_frames, int g) {
-    int left = data_frames - g * SSTV_OUTER_GROUP;
+int sstv_pass_group_size(int data_frames, int intro, int g) {
+    if(g == 0) return data_frames < intro ? data_frames : intro;
+    int start = intro + (g - 1) * SSTV_OUTER_GROUP;
+    int left = data_frames - start;
     if(left <= 0) return 0;
     return left < SSTV_OUTER_GROUP ? left : SSTV_OUTER_GROUP;
 }
 
-int sstv_pass_total(int data_frames) {
-    return data_frames + sstv_pass_groups(data_frames) * SSTV_OUTER_PARITY + SSTV_ILEAVE;
+int sstv_pass_group_base(int intro, int g) {
+    return g == 0 ? 0 : intro + (g - 1) * SSTV_OUTER_GROUP;
+}
+
+int sstv_pass_group_of(int pos, int intro) {
+    return pos < intro ? 0 : 1 + (pos - intro) / SSTV_OUTER_GROUP;
+}
+
+int sstv_pass_total(int data_frames, int intro) {
+    return data_frames + sstv_pass_groups(data_frames, intro) * SSTV_OUTER_PARITY + SSTV_ILEAVE;
 }
 
 /* Walks the groups: each occupies group_size + SSTV_OUTER_PARITY physical frames. */
-int sstv_pass_frame_kind(int phys, int data_frames) {
+int sstv_pass_frame_kind(int phys, int data_frames, int intro) {
     int at = 0;
-    for(int g = 0; g < sstv_pass_groups(data_frames); g++) {
-        int n = sstv_pass_group_size(data_frames, g);
+    for(int g = 0; g < sstv_pass_groups(data_frames, intro); g++) {
+        int n = sstv_pass_group_size(data_frames, intro, g);
         if(phys < at + n) return SSTV_PASS_DATA;
         if(phys < at + n + SSTV_OUTER_PARITY) return SSTV_PASS_PARITY;
         at += n + SSTV_OUTER_PARITY;
@@ -159,10 +170,10 @@ int sstv_pass_frame_kind(int phys, int data_frames) {
     return SSTV_PASS_END;
 }
 
-int sstv_pass_data_before(int phys, int data_frames) {
+int sstv_pass_data_before(int phys, int data_frames, int intro) {
     int at = 0, data = 0;
-    for(int g = 0; g < sstv_pass_groups(data_frames); g++) {
-        int n = sstv_pass_group_size(data_frames, g);
+    for(int g = 0; g < sstv_pass_groups(data_frames, intro); g++) {
+        int n = sstv_pass_group_size(data_frames, intro, g);
         if(phys <= at + n) return data + (phys - at);
         data += n;
         at += n + SSTV_OUTER_PARITY;
@@ -262,7 +273,7 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
     int data_blocks = use_coded ? coded_blocks : SSTV_NUM_SEGS / SSTV_ILEAVE;
     int intro = use_coded ? SSTV_INTRO_FRAMES_CODED : SSTV_INTRO_FRAMES;
     int data_frames = SSTV_ILEAVE + intro + data_blocks * SSTV_ILEAVE;
-    uint16_t total = (uint16_t)sstv_pass_total(data_frames);
+    uint16_t total = (uint16_t)sstv_pass_total(data_frames, sstv_pass_intro(use_coded));
     uint16_t word = total | (use_coded ? SSTV_META_CODED_FLAG : 0);
     uint8_t meta[SSTV_PAYLOAD_BYTES];
     memset(meta, 0, SSTV_PAYLOAD_BYTES);
@@ -315,6 +326,10 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
         }
         emitter_data_block(&em, logical, 0, 0);
 
+        /* Close the intro (START + previews + schedule) as group 0 so its parity is sent now,
+         * before the picture, and the receiver can repair the preview while the scene is up. */
+        emitter_close_group(&em, 0);
+
         int line = 0;
         while(line < SSTV_HEIGHT) {
             int n = sstv_block_pack(image_bits, line, payload);
@@ -328,6 +343,7 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
             emitter_data_block(&em, logical, line - n, line);
         }
     } else {
+        emitter_close_group(&em, 0); /* intro = group 0, parity now (see the coded branch) */
         for(int seg = 0; seg < SSTV_NUM_SEGS; seg += SSTV_ILEAVE) {
             for(int i = 0; i < SSTV_ILEAVE; i++) {
                 int s = seg + i;
