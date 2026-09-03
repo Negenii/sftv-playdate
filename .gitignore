@@ -9,3 +9,4 @@ build/
 tests/bin/
 .ufbt/
 tools/.venv/
+recordings/

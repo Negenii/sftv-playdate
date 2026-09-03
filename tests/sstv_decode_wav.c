@@ -45,6 +45,9 @@ static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
         for(int i = 0; i < SSTV_FRAME_BITS; i++) fprintf(dump, " %.3f", (double)soft[i]);
         fprintf(dump, "\n");
         if(getenv("SSTV_DUMP_ENERGY")) {
+            /* Frame timing: sample index at the last decision and samples per symbol, so a
+             * script can locate every symbol window in the WAV. */
+            fprintf(dump, "T %lld %.4f\n", (long long)g_demod->n, (double)g_demod->bit_len);
             fprintf(dump, "E");
             for(int i = 0; i < SSTV_SYMBOLS_PER_FRAME; i++)
                 for(int k = 0; k < SSTV_NUM_TONES; k++) fprintf(dump, " %.4f", (double)g_demod->dbg_nrm[i][k]);
