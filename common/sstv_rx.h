@@ -28,6 +28,7 @@ typedef struct {
     int count; /* physical frames in the window */
     int frames_in; /* physical frames received */
     int blocks_ok; /* blocks with at least one good logical frame */
+    int last_type; /* type of the most recent accepted block (SSTV_FT_*) */
     int frames_ok; /* logical frames that passed RS + CRC */
     int frames_bad;
     int rs_corrected;

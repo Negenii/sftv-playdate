@@ -261,6 +261,7 @@ static int try_block(sstv_rx* rx) {
         index = (t == SSTV_FT_RAW || t == SSTV_FT_PARITY) ? x - i : x;
     }
     rx->blocks_ok++;
+    rx->last_type = type;
     for(int i = 0; i < SSTV_ILEAVE; i++) {
         if(ok[i]) {
             rx->frames_ok++;

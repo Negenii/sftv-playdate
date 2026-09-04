@@ -25,7 +25,9 @@ static LCDFont* font_num; /* Roobert 9 Mono Condensed: counters */
 static LCDFont* font_big; /* Roobert 20 Medium: titles */
 static LCDBitmap* dolphin_src; /* 71x49 outline dolphin (firmware L1_Furippa1 frame 0), faces right */
 static LCDBitmap* dolphin_tile; /* menu tile and scene: 2x, 142x98 */
-static LCDBitmap* dolphin_open_tile; /* same at 2x with the mouth open (signal heard, pre-pass) */
+static LCDBitmap* dolphin_open_tile; /* legacy, kept for the menu tile fallback */
+static LCDBitmap* fr_idle, *fr_signal, *fr_preview, *fr_data, *fr_repair; /* 128x49 receive-scene dolphin poses */
+static int last_block_type = -1; static unsigned last_block_ms; /* drives the scene dolphin */
 #define DOLPHIN_W 71
 #define DOLPHIN_H 49
 static LCDBitmap* console; /* 140x118 Playdate silhouette, screen interior at (7,7) 88x53 */
@@ -468,7 +470,7 @@ static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
     led_frame_ms = pd->system->getCurrentTimeMilliseconds();
     int before = rx.blocks_ok;
     sstv_rx_phys(&rx, frame, soft);
-    if(rx.blocks_ok != before) led_block_ms = led_frame_ms;
+    if(rx.blocks_ok != before) { led_block_ms = led_frame_ms; last_block_type = rx.last_type; last_block_ms = led_frame_ms; }
 }
 
 static void start_mic(void) {
@@ -725,6 +727,18 @@ static void draw_menu(void) {
     }
 }
 
+/* The receive-scene dolphin pose for the current state: idle, signal heard, START/preview,
+ * picture data, or outer-code repair. */
+static LCDBitmap* scene_dolphin(unsigned now) {
+    if(!started) return (now - hearing_ms < 500 && fr_signal) ? fr_signal : fr_idle;
+    if(now - last_block_ms < 800) {
+        if(last_block_type == SSTV_FT_PARITY) return fr_repair;
+        if(last_block_type == SSTV_FT_RAW || last_block_type == SSTV_FT_CODED) return fr_data;
+        return fr_preview; /* META: START, tiny, preview, schedule */
+    }
+    return fr_data;
+}
+
 /* Intro scene: dolphin sends the preview to a Playdate. Shown while listening and until the
  * first picture lines arrive. */
 static void draw_scene(void) {
@@ -734,10 +748,11 @@ static void draw_scene(void) {
     const int cx = 240, cy = 40; /* console */
     const int dx = 20, dy = cy + (CONSOLE_H - DOLPHIN_H * 2) / 2; /* dolphin */
     const int text_cx = LCD_COLUMNS / 2; /* texts run under both figures */
-    /* A signal is coming in but not yet decoded: the dolphin opens its mouth. */
-    bool hearing = !started && now - hearing_ms < 500;
-    LCDBitmap* dfin = (hearing && dolphin_open_tile) ? dolphin_open_tile : dolphin_tile;
-    if(dfin) pd->graphics->drawBitmap(dfin, dx, dy, kBitmapUnflipped);
+    /* Dolphin pose follows the reception state (idle / signal / preview / data / repair). */
+    LCDBitmap* dfin = scene_dolphin(now);
+    const float dscale = 1.6f; /* 128x49 -> 205x78 */
+    if(dfin) pd->graphics->drawScaledBitmap(dfin, dx, dy, dscale, dscale);
+    else if(dolphin_tile) pd->graphics->drawBitmap(dolphin_tile, dx, dy, kBitmapUnflipped);
     draw_console(cx, cy, started ? preview_bitmap : NULL);
     use_font(font_ui);
     char t[64], nm[NAME_CAP];
@@ -997,6 +1012,11 @@ static void init(void) {
     if(dolphin_src) dolphin_tile = render_scaled(dolphin_src, 2, 2);
     LCDBitmap* dolphin_open_src = pd->graphics->loadBitmap("images/dolphin_open", &err);
     if(dolphin_open_src) dolphin_open_tile = render_scaled(dolphin_open_src, 2, 2);
+    fr_idle = pd->graphics->loadBitmap("images/frame_11", &err);    /* listening, no signal */
+    fr_signal = pd->graphics->loadBitmap("images/frame_22", &err);  /* a tone is heard */
+    fr_preview = pd->graphics->loadBitmap("images/frame_31", &err); /* START + preview */
+    fr_data = pd->graphics->loadBitmap("images/frame_51", &err);    /* picture data */
+    fr_repair = pd->graphics->loadBitmap("images/frame_41", &err);  /* outer-code parity */
     console = pd->graphics->loadBitmap("images/console", &err);
 
     thumb_mask = pd->graphics->newBitmap(THUMB_W, THUMB_H, kColorBlack);
