@@ -6,11 +6,16 @@
 static void handle_frame(sstv_rx* rx, uint16_t hdr, const uint8_t* payload, int i, bool announce);
 static void try_repair(sstv_rx* rx, int g);
 
+void sstv_rx_set_control_cb(sstv_rx* rx, sstv_control_cb cb) {
+    rx->control_cb = cb;
+}
+
 void sstv_rx_init(sstv_rx* rx, sstv_pixel_cb pixel_cb, sstv_meta_cb meta_cb, sstv_preview_cb preview_cb, void* ctx) {
     memset(rx, 0, sizeof *rx);
     rx->pixel_cb = pixel_cb;
     rx->meta_cb = meta_cb;
     rx->preview_cb = preview_cb;
+    rx->control_cb = NULL;
     rx->ctx = ctx;
     sstv_rx_start_pass(rx);
 }
@@ -149,6 +154,12 @@ static void handle_frame(sstv_rx* rx, uint16_t hdr, const uint8_t* payload, int 
                 name[SSTV_NAME_MAX] = 0;
                 rx->meta_cb(rx->ctx, name, sub == SSTV_META_END, total, coded);
             }
+        } else if(sub == SSTV_META_PAUSE || sub == SSTV_META_RESUME) {
+            if(rx->control_cb) {
+                uint32_t arg = (uint32_t)(payload[1] | (payload[2] << 8));
+                rx->control_cb(rx->ctx, sub, arg);
+            }
+            return; /* control frames carry no data position */
         } else {
             return;
         }

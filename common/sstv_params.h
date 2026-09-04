@@ -58,6 +58,8 @@
 #define SSTV_PREVIEW_CHUNK (SSTV_PAYLOAD_BYTES - 1) /* 25 */
 #define SSTV_PREVIEW_CHUNKS ((SSTV_PREVIEW_BYTES + SSTV_PREVIEW_CHUNK - 1) / SSTV_PREVIEW_CHUNK) /* 20 = 5 blocks */
 #define SSTV_META_SCHEDULE 4 /* coded passes only: lines per block, one byte each, one block */
+#define SSTV_META_PAUSE 5 /* transmitter paused: receiver waits, picture frozen (payload[1..2] = paused-at frame) */
+#define SSTV_META_RESUME 6 /* transmitter resuming: payload[1..2] = next physical frame index, so the receiver realigns its animation clock */
 #define SSTV_SCHEDULE_CHUNKS 4
 #define SSTV_MAX_CODED_BLOCKS (SSTV_SCHEDULE_CHUNKS * SSTV_PREVIEW_CHUNK) /* 100: the schedule must fit one block */
 #define SSTV_INTRO_FRAMES (SSTV_TINY_CHUNKS + SSTV_PREVIEW_CHUNKS) /* preview frames between START and data (raw) */
@@ -160,5 +162,7 @@
 /* Derived. */
 #define SSTV_SYMBOLS_PER_FRAME (SSTV_FRAME_BITS / SSTV_BITS_PER_SYMBOL) /* 164 */
 #define SSTV_LEADER_SYMBOLS (SSTV_LEADER_US / SSTV_SYMBOL_US)
+#define SSTV_RESUME_LEADER_US 400000 /* short re-calibration leader after a pause (the long start leader is 2 s) */
+#define SSTV_RESUME_LEADER_SYMBOLS (SSTV_RESUME_LEADER_US / SSTV_SYMBOL_US) /* 100 symbols */
 #define SSTV_PHYS_US (SSTV_SYNC_US + SSTV_SYMBOLS_PER_FRAME * SSTV_SYMBOL_US) /* 672000 per physical frame */
 #define SSTV_LINE_US (SSTV_PHYS_US * SSTV_SEGS_PER_LINE) /* 1344000 */

@@ -21,6 +21,9 @@ extern "C" {
 typedef void (*sstv_pixel_cb)(void* ctx, uint16_t line, int x_byte, int nbytes, const uint8_t* pixels);
 typedef void (*sstv_meta_cb)(void* ctx, const char* name, bool is_end, int total_frames, bool coded);
 typedef void (*sstv_preview_cb)(void* ctx, int layer, int chunk, int nbytes, const uint8_t* data);
+/* control_cb: a transmitter control frame arrived. subtype = SSTV_META_PAUSE or
+ * SSTV_META_RESUME; arg = the frame index it carries (paused-at, or resume-from). */
+typedef void (*sstv_control_cb)(void* ctx, int subtype, uint32_t arg);
 
 typedef struct {
     uint8_t phys[SSTV_ILEAVE][SSTV_FRAME_BYTES];
@@ -49,10 +52,12 @@ typedef struct {
     sstv_pixel_cb pixel_cb;
     sstv_meta_cb meta_cb;
     sstv_preview_cb preview_cb;
+    sstv_control_cb control_cb; /* NULL unless registered */
     void* ctx;
 } sstv_rx;
 
 void sstv_rx_init(sstv_rx* rx, sstv_pixel_cb pixel_cb, sstv_meta_cb meta_cb, sstv_preview_cb preview_cb, void* ctx);
+void sstv_rx_set_control_cb(sstv_rx* rx, sstv_control_cb cb);
 void sstv_rx_reset_counters(sstv_rx* rx);
 
 /* Forgets the previous pass's frames (called on START; sstv_rx_init calls it too). */

@@ -53,6 +53,8 @@ static void begin_pass(unsigned now); /* start the pass on the first decoded fra
 static void start_mic(void);
 static void stop_mic(void);
 static unsigned started_ms; /* when the START block ended: the pass timeline starts here */
+static bool rx_paused; /* transmitter paused: freeze the timeline until RESUME */
+static unsigned pause_anchor; /* the timeline clock is held here while paused */
 static int total_frames; /* physical frames in the pass, announced in START */
 static bool image_dirty; /* something received since the last save */
 static bool finished; /* END meta received */
@@ -500,6 +502,26 @@ static void on_meta(void* ctx, const char* name, bool is_end, int frames, bool c
     ui_mode = ModeReceive;
 }
 
+static void on_control(void* ctx, int subtype, uint32_t arg) {
+    (void)ctx;
+    unsigned now = pd->system->getCurrentTimeMilliseconds();
+    if(subtype == SSTV_META_PAUSE) {
+        if(!rx_paused) {
+            rx_paused = true;
+            pause_anchor = now; /* hold the animation clock here */
+        }
+    } else if(subtype == SSTV_META_RESUME) {
+        if(rx_paused) {
+            rx_paused = false;
+            int n = (int)arg;
+            if(n < SSTV_ILEAVE) n = SSTV_ILEAVE;
+            /* set the origin so elapsed maps to physical frame n right now */
+            started_ms = now - (unsigned)((uint64_t)(n - SSTV_ILEAVE) * SSTV_PHYS_US / 1000);
+            last_data_ms = now;
+        }
+    }
+}
+
 static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
     (void)ctx;
     led_frame_ms = pd->system->getCurrentTimeMilliseconds();
@@ -778,7 +800,7 @@ static LCDBitmap* scene_dolphin(unsigned now) {
 /* Intro scene: dolphin sends the preview to a Playdate. Shown while listening and until the
  * first picture lines arrive. */
 static void draw_scene(void) {
-    unsigned now = pd->system->getCurrentTimeMilliseconds();
+    unsigned now = rx_paused ? pause_anchor : pd->system->getCurrentTimeMilliseconds();
     pd->graphics->clear(kColorWhite);
     char t[64];
     /* dolphin (2x) and console (140x118) below the top bar (drawn by draw_receive) */
@@ -830,7 +852,7 @@ static void draw_panel(void) {
     int x = x0 + 8, y = 8, right = x0 + PANEL_W - 8;
     char t[64], nm[NAME_CAP];
     unsigned now = pd->system->getCurrentTimeMilliseconds();
-    bool quiet = segs_done > 0 && !finished && now - last_data_ms > LOST_TIMEOUT_MS;
+    bool quiet = segs_done > 0 && !finished && !rx_paused && now - last_data_ms > LOST_TIMEOUT_MS;
     use_font(font_ui);
     int lh = font_height() + 3;
 
@@ -839,7 +861,7 @@ static void draw_panel(void) {
     draw_text(t, x, y);
     y += lh + 4;
     /* state and mode pills */
-    const char* state = finished ? "DONE" : segs_done == SSTV_NUM_SEGS ? "DONE" : quiet ? "LOST" : segs_done > 0 || started ? "RX" : "IDLE";
+    const char* state = rx_paused ? "PAUSE" : finished ? "DONE" : segs_done == SSTV_NUM_SEGS ? "DONE" : quiet ? "LOST" : segs_done > 0 || started ? "RX" : "IDLE";
     int px = x;
     px += draw_pill(state, px, y, true) + 5;
     px += draw_pill(rx.coded ? "ZIP" : "RAW", px, y, false) + 5;
@@ -907,7 +929,8 @@ static void draw_finished_banner(void) {
  * shows the same sheet leaving through its top edge). It covers the intro scene as it rises. */
 static void draw_receive(void) {
     unsigned now = pd->system->getCurrentTimeMilliseconds();
-    int shown = expected_lines(now);
+    unsigned enow = rx_paused ? pause_anchor : now; /* the timeline stands still while paused */
+    int shown = expected_lines(enow);
     if(lines_reached > shown) shown = lines_reached; /* never hide a line that arrived */
     float target = (float)(LCD_ROWS - shown);
     float d = target - sheet_y;
@@ -941,7 +964,7 @@ static void draw_receive(void) {
     }
     /* Picture fully in but the pass is not done yet: the outer-code parity is still arriving.
      * Show a spinner and "Verifying" until END (or the timeout) finishes the pass. */
-    if(started && !finished && y <= 0) {
+    if(started && !finished && !rx_paused && y <= 0) {
         use_font(font_ui);
         const char* v = "Verifying";
         int r = 6, sp = 2 * r, pad = 10, gap = 6, tw = text_width(v);
@@ -951,6 +974,14 @@ static void draw_receive(void) {
         int scx = bx + pad, scy = by + (h - sp) / 2;
         pd->graphics->drawEllipse(scx, scy, sp, sp, 2, a0, a0 + 270.0f, kColorWhite);
         draw_text_white(v, bx + pad + sp + gap, by + (h - font_height()) / 2);
+    }
+    if(rx_paused) {
+        use_font(font_ui);
+        const char* pm = "Paused - waiting for sender";
+        int tw = text_width(pm), w = tw + 28, h = 28;
+        int bx = (LCD_COLUMNS - w) / 2, by = 12;
+        pd->graphics->fillRoundRect(bx, by, w, h, h / 2, kColorBlack);
+        draw_text_white(pm, bx + 14, by + (h - font_height()) / 2);
     }
     if(show_panel) draw_panel();
     draw_finished_banner();
@@ -1197,6 +1228,7 @@ static void init(void) {
     rec_len = -1;
     mic_ring_init(&ring);
     sstv_rx_init(&rx, on_pixels, on_meta, on_preview, NULL);
+    sstv_rx_set_control_cb(&rx, on_control);
     sstv_demod_init(&demod, 44100.0f, on_phys, NULL);
     clear_image();
     menu_open();
