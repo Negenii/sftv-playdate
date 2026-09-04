@@ -781,10 +781,6 @@ static void draw_scene(void) {
             pd->graphics->drawRoundRect(bx, by, bw, 10, 5, 1, kColorBlack);
             int fill = (int)((float)(bw - 4) * frac);
             if(fill > 0) pd->graphics->fillRoundRect(bx + 2, by + 2, fill, 6, 3, kColorBlack);
-        } else {
-            int secs = total_frames > 0 ? (int)((unsigned)total_frames * (SSTV_PHYS_US / 1000) / 1000) : 0;
-            snprintf(t, sizeof t, "%s, %d:%02d", rx.coded ? "compressed" : "raw", secs / 60, secs % 60);
-            draw_text_centered(t, text_cx, 220);
         }
     } else {
         use_font(font_ui);
