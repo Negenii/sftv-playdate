@@ -23,6 +23,7 @@ static int image_rowbytes;
 static LCDFont* font_ui; /* Roobert 10 Bold: panel, labels */
 static LCDFont* font_num; /* Roobert 9 Mono Condensed: counters */
 static LCDFont* font_big; /* Roobert 20 Medium: titles */
+static LCDFont* font_glyph; /* Roobert 11 extended: has the Ⓐ / Ⓑ button glyphs */
 static LCDBitmap* dolphin_src; /* 71x49 outline dolphin (firmware L1_Furippa1 frame 0), faces right */
 static LCDBitmap* dolphin_tile; /* menu tile and scene: 2x, 142x98 */
 static LCDBitmap* dolphin_open_tile; /* legacy, kept for the menu tile fallback */
@@ -628,7 +629,10 @@ static void draw_title_bar(const char* title, const char* hint) {
     pd->graphics->fillRect(0, 0, LCD_COLUMNS, 24, kColorBlack);
     use_font(font_ui);
     draw_text_white(title, 8, 5);
-    if(hint) draw_text_white(hint, LCD_COLUMNS - 32 - text_width(hint), 5);
+    if(hint) {
+        use_font(font_glyph);
+        draw_text_white(hint, LCD_COLUMNS - 32 - text_width(hint), 5);
+    }
 }
 
 /* The Playdate silhouette at (x, y). Its screen is dark when off; while a picture is coming in
@@ -857,7 +861,8 @@ static void draw_panel(void) {
     }
     /* hints */
     pd->graphics->drawLine(x0, LCD_ROWS - 20, LCD_COLUMNS, LCD_ROWS - 20, 1, kColorBlack);
-    draw_text("A clear   B menu", x, LCD_ROWS - 16);
+    use_font(font_glyph);
+    draw_text("Ⓐ clear   Ⓑ menu", x, LCD_ROWS - 16);
 }
 
 /* Banner over the picture for a few seconds after the END frame. */
@@ -900,7 +905,8 @@ static void draw_receive(void) {
         pd->graphics->fillRoundRect(bx, by, w, 52, 10, kColorWhite);
         pd->graphics->drawRoundRect(bx, by, w, 52, 10, 2, kColorBlack);
         draw_text(msg, bx + 12, by + 8);
-        draw_text("A leave      B stay", bx + 12, by + 28);
+        use_font(font_glyph);
+        draw_text("Ⓐ leave    Ⓑ stay", bx + 12, by + 28);
     }
 }
 
@@ -908,7 +914,7 @@ static void draw_grid(void) {
     pd->graphics->clear(kColorWhite);
     char t[48], nm[NAME_CAP];
     snprintf(t, sizeof t, "Gallery   %d image%s", gallery_count, gallery_count == 1 ? "" : "s");
-    draw_title_bar(t, "A open   B back");
+    draw_title_bar(t, "Ⓐ open   Ⓑ back");
     use_font(font_ui);
     if(gallery_count == 0) {
         draw_text_centered("no saved images yet", LCD_COLUMNS / 2, 110);
@@ -1050,6 +1056,8 @@ static void init(void) {
     font_ui = pd->graphics->loadFont("fonts/Roobert-10-Bold", &err);
     font_num = pd->graphics->loadFont("fonts/Roobert-9-Mono-Condensed", &err);
     font_big = pd->graphics->loadFont("fonts/Roobert-20-Medium", &err);
+    font_glyph = pd->graphics->loadFont("fonts/Roobert-11-Medium-extended", &err);
+    if(!font_glyph) font_glyph = font_ui;
     if(!font_num) font_num = font_ui;
     if(!font_big) font_big = font_ui;
     dolphin_src = pd->graphics->loadBitmap("images/dolphin", &err);
