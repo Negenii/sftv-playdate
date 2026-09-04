@@ -619,7 +619,7 @@ static void draw_led(void) {
     /* Virtual LED in the top-right corner: filled on every received frame, ring when a block
      * decodes, outline otherwise. Always visible. */
     unsigned now = pd->system->getCurrentTimeMilliseconds();
-    int cx = LCD_COLUMNS - 12, cy = 12;
+    int cx = LCD_COLUMNS - 16, cy = BAR_H / 2; /* centred vertically in the top bar */
     pd->graphics->fillEllipse(cx - 8, cy - 8, 16, 16, 0.0f, 0.0f, kColorWhite);
     if(now - led_block_ms < 400) {
         pd->graphics->drawEllipse(cx - 7, cy - 7, 14, 14, 3, 0.0f, 0.0f, kColorBlack);
