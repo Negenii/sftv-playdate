@@ -758,12 +758,18 @@ static void draw_led(void) {
 }
 
 /* Black title bar with a left title and a right hint. */
-static void draw_title_bar(const char* title, const char* hint) {
+static void draw_title_bar_font(const char* title, const char* hint, LCDFont* title_font) {
     pd->graphics->fillRect(0, 0, LCD_COLUMNS, BAR_H, kColorBlack);
-    use_font(font_glyph); /* one font for the title and the hint glyphs */
+    use_font(title_font);
     int ty = (BAR_H - font_height()) / 2;
     draw_text_white(title, 10, ty);
-    if(hint) draw_text_white(hint, LCD_COLUMNS - 10 - text_width(hint), ty);
+    if(hint) {
+        use_font(font_glyph); /* hints use the button-glyph font */
+        draw_text_white(hint, LCD_COLUMNS - 10 - text_width(hint), ty);
+    }
+}
+static void draw_title_bar(const char* title, const char* hint) {
+    draw_title_bar_font(title, hint, font_glyph);
 }
 
 /* The Playdate silhouette at (x, y). Its screen is dark when off; while a picture is coming in
@@ -936,6 +942,7 @@ static void draw_panel(void) {
     int lh = font_height() + 3;
 
     display_name(nm, sizeof nm, current_name);
+    use_font(rx.note ? font_notes : font_ui);
     fit_text(t, sizeof t, nm, PANEL_W - 16 - 20);
     draw_text(t, x, y);
     y += lh + 4;
@@ -1006,7 +1013,7 @@ static void draw_finished_banner(void) {
     if(!finished || now - finished_ms > 6000) return;
     char t[80], nm[NAME_CAP];
     display_name(nm, sizeof nm, current_name);
-    use_font(font_ui);
+    use_font(rx.note ? font_notes : font_ui);
     if(rx.note)
         snprintf(t, sizeof t, "Received note \"%s\"  %d chars", nm, rx.note_len);
     else
@@ -1087,7 +1094,7 @@ chrome:;
             char nm[NAME_CAP], bar[NAME_CAP + 16];
             display_name(nm, sizeof nm, current_name);
             snprintf(bar, sizeof bar, "Receiving: \"%s\"", nm);
-            draw_title_bar(bar, NULL);
+            draw_title_bar_font(bar, NULL, rx.note ? font_notes : font_glyph);
         } else {
             draw_title_bar("Listening", NULL);
         }
@@ -1158,6 +1165,7 @@ static void draw_grid(void) {
         pd->graphics->drawRoundRect(cx - 1, cy - 1, THUMB_W + 2, THUMB_H + 2, THUMB_R, 1, kColorBlack);
         if(idx == gallery_index) pd->graphics->drawRoundRect(cx - 5, cy - 5, THUMB_W + 10, THUMB_H + 10, THUMB_R + 3, 3, kColorBlack);
         display_name(nm, sizeof nm, gallery_names[idx]);
+        use_font(gallery_kind[idx] == 1 ? font_notes : font_ui);
         fit_text(t, sizeof t, nm, cell_w - 12);
         draw_text_centered(t, (k % GRID_COLS) * cell_w + cell_w / 2, cy + THUMB_H + 9);
     }
@@ -1173,7 +1181,7 @@ static void draw_full(void) {
     /* name + hints show for 3 s after entering or any press, then hide for a clean full view */
     if(pd->system->getCurrentTimeMilliseconds() - full_ui_ms < 3000) {
         display_name(nm, sizeof nm, gallery_names[gallery_index]);
-        use_font(font_ui);
+        use_font(full_is_note ? font_notes : font_ui);
         fit_text(t, sizeof t, nm, 200);
         draw_pill(t, 8, LCD_ROWS - font_height() - 12, true);
         use_font(font_glyph);
