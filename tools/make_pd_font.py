@@ -39,13 +39,26 @@ def main():
     rows = (len(chars) + COLS - 1) // COLS
     img = Image.new("RGBA", (COLS * cell_w, rows * cell_h), (0, 0, 0, 0))
 
+    # glyphs missing from this TTF render as a .notdef box; substitute a readable ASCII glyph
+    FALLBACK = {"\u0451": "\u0435", "\u0401": "\u0415", "\u2014": "-", "\u2013": "-",
+                "\u00ab": "<", "\u00bb": ">", "\u201c": '"', "\u201d": '"',
+                "\u2026": ".", "\u2116": "N"}
+    def notdef_bits():
+        c = Image.new("L", (cell_w, cell_h), 0)
+        ImageDraw.Draw(c).text((0, 0), "\ue000", fill=255, font=font)
+        return list(c.getdata())
+    ND = notdef_bits()
+
     for i, ch in enumerate(chars):
         cx = (i % COLS) * cell_w
         cy = (i // COLS) * cell_h
         # render the glyph in grayscale, then threshold to crisp 1-bit ink
         cell = Image.new("L", (cell_w, cell_h), 0)
-        d = ImageDraw.Draw(cell)
-        d.text((0, 0), ch, fill=255, font=font)
+        ImageDraw.Draw(cell).text((0, 0), ch, fill=255, font=font)
+        if list(cell.getdata()) == ND:  # this codepoint is missing -> use a fallback
+            sub = FALLBACK.get(ch, " ")
+            cell = Image.new("L", (cell_w, cell_h), 0)
+            ImageDraw.Draw(cell).text((0, 0), sub, fill=255, font=font)
         px = cell.load()
         for y in range(cell_h):
             for x in range(cell_w):
