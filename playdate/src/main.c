@@ -23,6 +23,7 @@ static int image_rowbytes;
 static LCDFont* font_ui; /* Roobert 10 Bold: panel, labels */
 static LCDFont* font_num; /* Roobert 9 Mono Condensed: counters */
 static LCDFont* font_big; /* Roobert 20 Medium: titles */
+static LCDFont* font_glyph; /* Roobert 11 extended: has the Ⓐ / Ⓑ button glyphs */
 static LCDBitmap* dolphin_src; /* 71x49 outline dolphin (firmware L1_Furippa1 frame 0), faces right */
 static LCDBitmap* dolphin_tile; /* menu tile and scene: 2x, 142x98 */
 static LCDBitmap* dolphin_open_tile; /* legacy, kept for the menu tile fallback */
@@ -60,6 +61,7 @@ static bool mic_running; /* callback installed */
 static bool show_panel; /* side panel with statistics, toggled with Right */
 static bool confirm_leave; /* B during an active pass asks before leaving Receive */
 static bool preview_dirty; /* a preview/tiny chunk arrived: refresh once per frame, not per chunk */
+static bool confirm_delete; /* full view: A asks before deleting the image */
 static unsigned led_frame_ms; /* virtual LED: last physical frame time */
 static unsigned led_block_ms; /* last decoded block time */
 static volatile unsigned mic_dropped;
@@ -263,6 +265,7 @@ static void menu_open(void) {
     }
     ui_mode = ModeMenu;
     confirm_leave = false;
+    confirm_delete = false;
     stop_mic();
 }
 
@@ -564,37 +567,6 @@ static void draw_text_centered(const char* text, int cx, int y) {
 }
 
 /* Rounded label in the current font; filled = black pill with white text. Returns width. */
-/* A Playdate-style button glyph: a filled disc with the letter, drawn to match the text line.
- * on_dark: white disc + black letter (for the black title bar); else black disc + white letter.
- * Returns its width. */
-static int draw_button_glyph(char c, int x, int y, bool on_dark) {
-    use_font(font_ui);
-    int d = font_height() + 3, cyy = y + font_height() / 2;
-    char sbuf[2] = {c, 0};
-    int tw = text_width(sbuf);
-    if(on_dark) {
-        pd->graphics->fillEllipse(x, cyy - d / 2, d, d, 0.0f, 0.0f, kColorWhite);
-        draw_text(sbuf, x + (d - tw) / 2, y);
-    } else {
-        pd->graphics->fillEllipse(x, cyy - d / 2, d, d, 0.0f, 0.0f, kColorBlack);
-        draw_text_white(sbuf, x + (d - tw) / 2, y);
-    }
-    return d;
-}
-
-/* Draws "(A) labelA   (B) labelB" with real button discs. Returns the total width. */
-static int draw_button_hint(int x, int y, char ca, const char* la, char cb, const char* lb, bool on_dark) {
-    int hx = x;
-    hx += draw_button_glyph(ca, hx, y, on_dark) + 4;
-    use_font(font_ui);
-    if(on_dark) draw_text_white(la, hx, y); else draw_text(la, hx, y);
-    hx += text_width(la) + 12;
-    hx += draw_button_glyph(cb, hx, y, on_dark) + 4;
-    if(on_dark) draw_text_white(lb, hx, y); else draw_text(lb, hx, y);
-    hx += text_width(lb);
-    return hx - x;
-}
-
 static int draw_pill(const char* text, int x, int y, bool filled) {
     int h = font_height() + 4, w = text_width(text) + 12;
     if(filled) {
@@ -659,7 +631,10 @@ static void draw_title_bar(const char* title, const char* hint) {
     pd->graphics->fillRect(0, 0, LCD_COLUMNS, 24, kColorBlack);
     use_font(font_ui);
     draw_text_white(title, 8, 5);
-    if(hint) draw_text_white(hint, LCD_COLUMNS - 32 - text_width(hint), 5);
+    if(hint) {
+        use_font(font_glyph);
+        draw_text_white(hint, LCD_COLUMNS - 32 - text_width(hint), 5);
+    }
 }
 
 /* The Playdate silhouette at (x, y). Its screen is dark when off; while a picture is coming in
@@ -888,7 +863,8 @@ static void draw_panel(void) {
     }
     /* hints */
     pd->graphics->drawLine(x0, LCD_ROWS - 20, LCD_COLUMNS, LCD_ROWS - 20, 1, kColorBlack);
-    draw_button_hint(x, LCD_ROWS - 16, 'A', "clear", 'B', "menu", false);
+    use_font(font_glyph);
+    draw_text("Ⓐ clear   Ⓑ menu", x, LCD_ROWS - 16);
 }
 
 /* Banner over the picture for a few seconds after the END frame. */
@@ -931,7 +907,8 @@ static void draw_receive(void) {
         pd->graphics->fillRoundRect(bx, by, w, 52, 10, kColorWhite);
         pd->graphics->drawRoundRect(bx, by, w, 52, 10, 2, kColorBlack);
         draw_text(msg, bx + 12, by + 8);
-        draw_button_hint(bx + 12, by + 28, 'A', "leave", 'B', "stay", false);
+        use_font(font_glyph);
+        draw_text("Ⓐ leave    Ⓑ stay", bx + 12, by + 28);
     }
 }
 
@@ -939,8 +916,7 @@ static void draw_grid(void) {
     pd->graphics->clear(kColorWhite);
     char t[48], nm[NAME_CAP];
     snprintf(t, sizeof t, "Gallery   %d image%s", gallery_count, gallery_count == 1 ? "" : "s");
-    draw_title_bar(t, NULL);
-    draw_button_hint(LCD_COLUMNS - 8 - (18 + 4 + 34 + 12 + 18 + 4 + 30), 4, 'A', "open", 'B', "back", true);
+    draw_title_bar(t, "Ⓐ open   Ⓑ back");
     use_font(font_ui);
     if(gallery_count == 0) {
         draw_text_centered("no saved images yet", LCD_COLUMNS / 2, 110);
@@ -974,6 +950,20 @@ static void draw_full(void) {
     use_font(font_ui);
     fit_text(t, sizeof t, nm, 200);
     draw_pill(t, 8, LCD_ROWS - font_height() - 12, true);
+    /* button hints (glyphs need the extended font) */
+    use_font(font_glyph);
+    const char* hint = "Ⓐ delete   Ⓑ back";
+    draw_pill(hint, LCD_COLUMNS - 8 - (text_width(hint) + 12), 8, true);
+    if(confirm_delete) {
+        const char* msg = "Delete this image?";
+        use_font(font_ui);
+        int w = text_width(msg) + 24, bx = (LCD_COLUMNS - w) / 2, by = LCD_ROWS / 2 - 28;
+        pd->graphics->fillRoundRect(bx, by, w, 52, 10, kColorWhite);
+        pd->graphics->drawRoundRect(bx, by, w, 52, 10, 2, kColorBlack);
+        draw_text(msg, bx + 12, by + 8);
+        use_font(font_glyph);
+        draw_text("Ⓐ delete    Ⓑ keep", bx + 12, by + 28);
+    }
 }
 
 /* ---- main loop ---- */
@@ -1071,6 +1061,24 @@ static int update(void* userdata) {
         else draw_full();
         break;
     case ModeFull:
+        if(confirm_delete) {
+            if(pushed & kButtonA) {
+                if(gallery_index >= 0 && gallery_index < gallery_count)
+                    pd->file->unlink(gallery_names[gallery_index], 0);
+                confirm_delete = false;
+                gallery_scan(); /* refresh the list and thumbnails */
+                if(gallery_count == 0) { menu_open(); }
+                else {
+                    if(gallery_index >= gallery_count) gallery_index = gallery_count - 1;
+                    if(!gallery_load_full(gallery_index)) ui_mode = ModeGrid;
+                }
+            } else if(pushed & kButtonB) {
+                confirm_delete = false;
+            }
+            if(ui_mode == ModeFull) draw_full(); else draw_grid();
+            break;
+        }
+        if(pushed & kButtonA) confirm_delete = true;
         if(pushed & kButtonB) ui_mode = ModeGrid;
         if((pushed & kButtonRight) && gallery_count > 0) { gallery_index = (gallery_index + 1) % gallery_count; gallery_load_full(gallery_index); }
         if((pushed & kButtonLeft) && gallery_count > 0) { gallery_index = (gallery_index + gallery_count - 1) % gallery_count; gallery_load_full(gallery_index); }
@@ -1087,6 +1095,8 @@ static void init(void) {
     font_ui = pd->graphics->loadFont("fonts/Roobert-10-Bold", &err);
     font_num = pd->graphics->loadFont("fonts/Roobert-9-Mono-Condensed", &err);
     font_big = pd->graphics->loadFont("fonts/Roobert-20-Medium", &err);
+    font_glyph = pd->graphics->loadFont("fonts/Roobert-11-Medium-extended", &err);
+    if(!font_glyph) font_glyph = font_ui;
     if(!font_num) font_num = font_ui;
     if(!font_big) font_big = font_ui;
     dolphin_src = pd->graphics->loadBitmap("images/dolphin", &err);
