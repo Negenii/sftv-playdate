@@ -10,12 +10,18 @@ void sstv_rx_set_control_cb(sstv_rx* rx, sstv_control_cb cb) {
     rx->control_cb = cb;
 }
 
+void sstv_rx_set_note_cb(sstv_rx* rx, sstv_note_cb cb) {
+    rx->note_cb = cb;
+}
+
 void sstv_rx_init(sstv_rx* rx, sstv_pixel_cb pixel_cb, sstv_meta_cb meta_cb, sstv_preview_cb preview_cb, void* ctx) {
     memset(rx, 0, sizeof *rx);
     rx->pixel_cb = pixel_cb;
     rx->meta_cb = meta_cb;
     rx->preview_cb = preview_cb;
     rx->control_cb = NULL;
+    rx->note_cb = NULL;
+    rx->note = false;
     rx->ctx = ctx;
     sstv_rx_start_pass(rx);
 }
@@ -58,7 +64,11 @@ static void coded_line(void* ctx, uint16_t line, const uint8_t* pixels) {
 
 /* Inverse of sstv_pass_total: data positions of a pass announcing `total` frames, 0 if the
  * total fits no layout (e.g. a revision 6 transmitter). */
-static int data_frames_from_total(int total, int coded) {
+static int data_frames_from_total(int total, int coded, int note) {
+    if(note) {
+        int d = total - SSTV_OUTER_PARITY - SSTV_ILEAVE; /* single group: intro = data_frames */
+        return d > 0 ? d : 0;
+    }
     int intro = sstv_pass_intro(coded);
     for(int d = 1; d <= SSTV_MAX_DATA_FRAMES; d++) {
         if(sstv_pass_total(d, intro) == total) return d;
@@ -66,9 +76,15 @@ static int data_frames_from_total(int total, int coded) {
     return 0;
 }
 
+/* Group-0 size / intro for the current pass (a note is one group = all its data frames). */
+static int rx_intro(const sstv_rx* rx) {
+    return rx->note ? rx->data_frames : sstv_pass_intro(rx->coded);
+}
+
 /* Header of the frame at a data position (raw or coded pass). */
 static uint16_t header_for_position(const sstv_rx* rx, int pos) {
     if(pos < SSTV_ILEAVE) return sstv_hdr(SSTV_FT_META, 0);
+    if(rx->note) return sstv_hdr(SSTV_FT_RAW, pos - SSTV_ILEAVE);
     if(pos < SSTV_ILEAVE + SSTV_TINY_CHUNKS) return sstv_hdr(SSTV_FT_META, pos - SSTV_ILEAVE);
     if(pos < SSTV_ILEAVE + SSTV_INTRO_FRAMES) return sstv_hdr(SSTV_FT_META, pos - SSTV_ILEAVE - SSTV_TINY_CHUNKS);
     if(rx->coded) {
@@ -94,7 +110,7 @@ static void store(sstv_rx* rx, int pos, const uint8_t* payload) {
     memcpy(rx->data[pos], payload, SSTV_PAYLOAD_BYTES);
     rx->have[pos] = 1;
     /* a late data frame may complete a group whose parity already arrived */
-    int g = sstv_pass_group_of(pos, sstv_pass_intro(rx->coded));
+    int g = sstv_pass_group_of(pos, rx_intro(rx));
     if(g < SSTV_OUTER_GROUPS_MAX && !rx->group_done[g]) {
         for(int j = 0; j < SSTV_OUTER_PARITY; j++) {
             if(rx->have_parity[g][j]) {
@@ -133,7 +149,9 @@ static void handle_frame(sstv_rx* rx, uint16_t hdr, const uint8_t* payload, int 
         } else if(sub == SSTV_META_START || sub == SSTV_META_END) {
             uint16_t word = (uint16_t)(payload[1] | (payload[2] << 8));
             bool coded = (word & SSTV_META_CODED_FLAG) != 0;
-            int total = word & ~SSTV_META_CODED_FLAG;
+            bool note = (word & SSTV_META_NOTE_FLAG) != 0;
+            int total = word & ~(SSTV_META_CODED_FLAG | SSTV_META_NOTE_FLAG);
+            rx->note = note;
             if(sub == SSTV_META_START && announce) {
                 if(!rx->pass_open) {
                     sstv_rx_start_pass(rx);
@@ -142,7 +160,7 @@ static void handle_frame(sstv_rx* rx, uint16_t hdr, const uint8_t* payload, int 
                 rx->coded = coded;
             }
             if(sub == SSTV_META_END) rx->pass_open = false;
-            rx->data_frames = data_frames_from_total(total, coded);
+            rx->data_frames = data_frames_from_total(total, coded, note);
             if(sub == SSTV_META_END) {
                 /* last chance: groups whose size was unknown (START lost) or whose parity
                    arrived before their last data frame */
@@ -165,11 +183,16 @@ static void handle_frame(sstv_rx* rx, uint16_t hdr, const uint8_t* payload, int 
         }
         store(rx, sstv_pass_meta_position(sub, index, i), payload);
     } else if(type == SSTV_FT_RAW) {
-        rx->coded = false;
-        if(rx->pixel_cb) {
-            rx->pixel_cb(rx->ctx, (uint16_t)sstv_seg_line(index), sstv_seg_byte_offset(index), SSTV_SEG_BYTES, payload);
+        if(rx->note) {
+            if(rx->note_cb) rx->note_cb(rx->ctx, index, SSTV_NOTE_CHUNK, payload);
+            store(rx, SSTV_ILEAVE + index, payload);
+        } else {
+            rx->coded = false;
+            if(rx->pixel_cb) {
+                rx->pixel_cb(rx->ctx, (uint16_t)sstv_seg_line(index), sstv_seg_byte_offset(index), SSTV_SEG_BYTES, payload);
+            }
+            store(rx, sstv_pass_position(hdr, i), payload);
         }
-        store(rx, sstv_pass_position(hdr, i), payload);
     } else if(type == SSTV_FT_CODED) {
         rx->coded = true;
         store(rx, sstv_pass_position(hdr, i), payload);
@@ -184,7 +207,7 @@ static void try_repair(sstv_rx* rx, int g) {
     /* Without START the pass length is unknown: assume a full group. A short last group then
      * looks like it has too many missing frames, so nothing happens until END announces the
      * length and the final sweep runs. */
-    int intro = sstv_pass_intro(rx->coded);
+    int intro = rx_intro(rx);
     /* Without START/END the pass length is unknown: assume full groups (intro, then 108). A
      * short last group then looks over-erased and waits for the END sweep. */
     int n = rx->data_frames > 0 ? sstv_pass_group_size(rx->data_frames, intro, g) : (g == 0 ? intro : SSTV_OUTER_GROUP);

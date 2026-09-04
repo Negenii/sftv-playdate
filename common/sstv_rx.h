@@ -24,6 +24,9 @@ typedef void (*sstv_preview_cb)(void* ctx, int layer, int chunk, int nbytes, con
 /* control_cb: a transmitter control frame arrived. subtype = SSTV_META_PAUSE or
  * SSTV_META_RESUME; arg = the frame index it carries (paused-at, or resume-from). */
 typedef void (*sstv_control_cb)(void* ctx, int subtype, uint32_t arg);
+/* note_cb: a note pass delivered a text chunk. chunk = frame index, nbytes text bytes at
+ * chunk * SSTV_NOTE_CHUNK. In a note pass RAW frames carry text, not pixels. */
+typedef void (*sstv_note_cb)(void* ctx, int chunk, int nbytes, const uint8_t* text);
 
 typedef struct {
     uint8_t phys[SSTV_ILEAVE][SSTV_FRAME_BYTES];
@@ -53,11 +56,14 @@ typedef struct {
     sstv_meta_cb meta_cb;
     sstv_preview_cb preview_cb;
     sstv_control_cb control_cb; /* NULL unless registered */
+    sstv_note_cb note_cb; /* NULL unless registered */
+    bool note; /* current pass carries a text note (from the START/END note flag) */
     void* ctx;
 } sstv_rx;
 
 void sstv_rx_init(sstv_rx* rx, sstv_pixel_cb pixel_cb, sstv_meta_cb meta_cb, sstv_preview_cb preview_cb, void* ctx);
 void sstv_rx_set_control_cb(sstv_rx* rx, sstv_control_cb cb);
+void sstv_rx_set_note_cb(sstv_rx* rx, sstv_note_cb cb);
 void sstv_rx_reset_counters(sstv_rx* rx);
 
 /* Forgets the previous pass's frames (called on START; sstv_rx_init calls it too). */

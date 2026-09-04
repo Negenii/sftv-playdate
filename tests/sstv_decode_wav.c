@@ -25,9 +25,17 @@ static void on_pixels(void* ctx, uint16_t line, int x_byte, int nbytes, const ui
     c->seen[line] |= mask;
 }
 
+static char note_text[SSTV_NOTE_MAX_CHARS + 64];
+static void on_note(void* ctx, int chunk, int nbytes, const uint8_t* text) {
+    (void)ctx;
+    int off = chunk * SSTV_NOTE_CHUNK;
+    for(int k = 0; k < nbytes && off + k < (int)sizeof note_text - 1; k++) note_text[off + k] = (char)text[k];
+}
+
 static void on_meta(void* ctx, const char* name, bool is_end, int total_frames, bool coded) {
     (void)ctx;
     printf("meta: %s name=\"%s\" frames=%d coded=%d\n", is_end ? "end" : "start", name, total_frames, coded);
+    if(is_end && note_text[0]) printf("note: \"%s\"\n", note_text);
 }
 
 static int preview_chunks, tiny_chunks;
@@ -71,6 +79,7 @@ int main(int argc, char** argv) {
 
     decoder_ctx* c = calloc(1, sizeof *c);
     sstv_rx_init(&c->rx, on_pixels, on_meta, on_preview, c);
+    sstv_rx_set_note_cb(&c->rx, on_note);
     if(getenv("SSTV_DUMP")) dump = fopen(getenv("SSTV_DUMP"), "w");
     sstv_demod d;
     g_demod = &d;

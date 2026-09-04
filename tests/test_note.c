@@ -1,7 +1,9 @@
 #include "sstv_frame.h"
 #include "sstv_params.h"
+#include "sstv_rx.h"
 #include "test_util.h"
 #include <string.h>
+#include <stdlib.h>
 
 /* Deinterleave one physical block and return the header of its logical frame i. */
 static uint16_t frame_hdr(const uint8_t* phys_block, int i) {
@@ -76,9 +78,67 @@ static void test_note_empty(void) {
     CHECK(total == 8 + SSTV_OUTER_PARITY + SSTV_ILEAVE);
 }
 
+
+/* ---- receiver loopback (frame level, like test_outer) ---- */
+static char note_got[SSTV_NOTE_MAX_CHARS + 64];
+static int note_starts, note_ends;
+
+static void n_pixels(void* c, uint16_t l, int xb, int nb, const uint8_t* p) { (void)c;(void)l;(void)xb;(void)nb;(void)p; }
+static void n_preview(void* c, int a, int b, int nb, const uint8_t* d) { (void)c;(void)a;(void)b;(void)nb;(void)d; }
+static void n_meta(void* c, const char* nm, bool end, int t, bool cd) { (void)c;(void)nm;(void)t;(void)cd; if(end) note_ends++; else note_starts++; }
+static void n_note(void* c, int chunk, int nbytes, const uint8_t* text) {
+    (void)c;
+    int off = chunk * SSTV_NOTE_CHUNK;
+    for(int k = 0; k < nbytes && off + k < (int)sizeof note_got - 1; k++) note_got[off + k] = (char)text[k];
+}
+
+/* Feeds every physical frame; frames in `skip` (whole 4-frame blocks) never arrive. */
+static void feed_note(const char* text, const char* name, const int* skip, int n_skip) {
+    static uint8_t out[SSTV_MAX_FRAMES * SSTV_FRAME_BYTES];
+    int total = sstv_build_note(text, name, out, NULL);
+    float soft[SSTV_FRAME_BITS];
+    for(int i = 0; i < SSTV_FRAME_BITS; i++) soft[i] = 1.0f;
+    memset(note_got, 0, sizeof note_got);
+    note_starts = note_ends = 0;
+    sstv_rx rx;
+    sstv_rx_init(&rx, n_pixels, n_meta, n_preview, NULL);
+    sstv_rx_set_note_cb(&rx, n_note);
+    for(int f = 0; f < total; f++) {
+        bool drop = false;
+        for(int i = 0; i < n_skip; i++) if(skip[i] == f) drop = true;
+        if(drop) continue;
+        sstv_rx_phys(&rx, out + f * SSTV_FRAME_BYTES, soft);
+    }
+    /* trim trailing NULs */
+    int n = (int)strlen(note_got);
+    (void)n;
+}
+
+static void test_note_loopback(void) {
+    feed_note("Hello from Flipper! This is a note.", "Hello", NULL, 0);
+    CHECK(strcmp(note_got, "Hello from Flipper! This is a note.") == 0);
+    CHECK_EQ_INT(note_starts, 1);
+    CHECK_EQ_INT(note_ends, 1);
+
+    feed_note("", "Empty", NULL, 0);
+    CHECK(strcmp(note_got, "") == 0);
+}
+
+static void test_note_repair(void) {
+    char text[SSTV_NOTE_MAX_CHARS + 1];
+    for(int i = 0; i < SSTV_NOTE_MAX_CHARS; i++) text[i] = (char)('!' + i % 90);
+    text[SSTV_NOTE_MAX_CHARS] = 0;
+    /* drop the two whole text blocks (physical frames 4..11); the outer parity rebuilds them */
+    int skip[8] = {4, 5, 6, 7, 8, 9, 10, 11};
+    feed_note(text, "Max", skip, 8);
+    CHECK(strcmp(note_got, text) == 0);
+}
+
 int main(void) {
     test_note_layout();
     test_note_max();
     test_note_empty();
+    test_note_loopback();
+    test_note_repair();
     TEST_MAIN_END();
 }
