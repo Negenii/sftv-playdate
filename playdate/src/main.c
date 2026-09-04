@@ -133,6 +133,22 @@ static bool name_is_blank(const char* s) {
     return true;
 }
 
+/* First free name of the form <prefix>N (no extension) so an unnamed pass never overwrites. */
+static void next_named(const char* prefix, const char* ext, char* out, size_t cap) {
+    FileStat st;
+    for(int n = 1; n < 10000; n++) {
+        char probe[NAME_CAP];
+        snprintf(probe, sizeof probe, "%s%d.%s", prefix, n, ext);
+        if(pd->file->stat(probe, &st) != 0) {
+            snprintf(out, cap, "%s%d", prefix, n);
+            return;
+        }
+    }
+    snprintf(out, cap, "%s", prefix);
+}
+static void next_note_name(char* out, size_t cap) {
+    next_named("note_", "txt", out, cap);
+}
 /* First free untitled_N (no extension) so an unnamed pass never overwrites another file. */
 static void next_untitled(char* out, size_t cap) {
     FileStat st;
@@ -199,7 +215,7 @@ static void save_note(void) {
     if(!note_dirty) return;
     /* trim trailing NULs already handled by the buffer being zeroed; find the length */
     char base[NAME_CAP];
-    if(name_is_blank(current_name)) next_untitled(base, sizeof base);
+    if(name_is_blank(current_name)) next_note_name(base, sizeof base);
     else display_name(base, sizeof base, current_name);
     char fname[NAME_CAP + 8];
     snprintf(fname, sizeof fname, "%s.txt", base);
@@ -564,7 +580,8 @@ static void on_meta(void* ctx, const char* name, bool is_end, int frames, bool c
     started_ms = now;
     total_frames = frames;
     if(name_is_blank(name)) {
-        next_untitled(current_name, NAME_CAP); /* couldn't read the name: make a fresh unique one */
+        if(rx.note) next_note_name(current_name, NAME_CAP); /* notes are numbered note_N (always Latin) */
+        else next_untitled(current_name, NAME_CAP);
     } else {
         strncpy(current_name, name, NAME_CAP - 1);
         current_name[NAME_CAP - 1] = 0;
@@ -942,7 +959,7 @@ static void draw_panel(void) {
     int lh = font_height() + 3;
 
     display_name(nm, sizeof nm, current_name);
-    use_font(rx.note ? font_notes : font_ui);
+    use_font(font_ui);
     fit_text(t, sizeof t, nm, PANEL_W - 16 - 20);
     draw_text(t, x, y);
     y += lh + 4;
@@ -1013,7 +1030,7 @@ static void draw_finished_banner(void) {
     if(!finished || now - finished_ms > 6000) return;
     char t[80], nm[NAME_CAP];
     display_name(nm, sizeof nm, current_name);
-    use_font(rx.note ? font_notes : font_ui);
+    use_font(font_ui);
     if(rx.note)
         snprintf(t, sizeof t, "Received note \"%s\"  %d chars", nm, rx.note_len);
     else
@@ -1077,8 +1094,18 @@ static void draw_receive(void) {
         /* the full picture bitmap already carries the checker preview placeholder for lines
          * that have not arrived, so the band below the frontier shows the preview */
         pd->graphics->drawBitmap(image, 0, y, kBitmapUnflipped);
-        if(frontier > 0 && frontier < LCD_ROWS)
-            pd->graphics->fillRect(0, frontier - 2, LCD_COLUMNS, 2, kColorBlack); /* drawing frontier */
+        if(y > 0) pd->graphics->fillRect(0, y, LCD_COLUMNS, 1, kColorBlack); /* paper top edge */
+        if(frontier > 0 && frontier < LCD_ROWS) {
+            pd->graphics->fillRect(0, frontier - 1, LCD_COLUMNS, 1, kColorBlack); /* thin drawing line */
+            /* 1px roots hang down from the drawing line, alternating lengths, animated */
+            for(int rx0 = 2; rx0 < LCD_COLUMNS; rx0 += 6) {
+                float ph = (float)now / 130.0f + (float)rx0 * 0.5f;
+                int len = 2 + (int)(2.5f * (0.5f + 0.5f * sinf(ph)));
+                if((rx0 / 6) & 1) len += 1; /* alternate */
+                if(frontier + len > LCD_ROWS) len = LCD_ROWS - frontier;
+                if(len > 0) pd->graphics->fillRect(rx0, frontier, 1, len, kColorBlack);
+            }
+        }
     }
 chrome:;
     /* The bar stays on top so the picture slides in from under it. As the picture's top edge
@@ -1094,7 +1121,7 @@ chrome:;
             char nm[NAME_CAP], bar[NAME_CAP + 16];
             display_name(nm, sizeof nm, current_name);
             snprintf(bar, sizeof bar, "Receiving: \"%s\"", nm);
-            draw_title_bar_font(bar, NULL, rx.note ? font_notes : font_glyph);
+            draw_title_bar(bar, NULL);
         } else {
             draw_title_bar("Listening", NULL);
         }
@@ -1102,7 +1129,7 @@ chrome:;
     }
     /* Picture fully in but the pass is not done yet: the outer-code parity is still arriving.
      * Show a spinner and "Verifying" until END (or the timeout) finishes the pass. */
-    if(started && !finished && !rx_paused && !rx.note && frontier >= LCD_ROWS) {
+    if(started && !finished && !rx_paused && !rx.note && expected_lines(enow) >= SSTV_HEIGHT) {
         use_font(font_ui);
         const char* v = "Verifying";
         int r = 6, sp = 2 * r, pad = 10, gap = 6, tw = text_width(v);
@@ -1165,7 +1192,7 @@ static void draw_grid(void) {
         pd->graphics->drawRoundRect(cx - 1, cy - 1, THUMB_W + 2, THUMB_H + 2, THUMB_R, 1, kColorBlack);
         if(idx == gallery_index) pd->graphics->drawRoundRect(cx - 5, cy - 5, THUMB_W + 10, THUMB_H + 10, THUMB_R + 3, 3, kColorBlack);
         display_name(nm, sizeof nm, gallery_names[idx]);
-        use_font(gallery_kind[idx] == 1 ? font_notes : font_ui);
+        use_font(font_ui);
         fit_text(t, sizeof t, nm, cell_w - 12);
         draw_text_centered(t, (k % GRID_COLS) * cell_w + cell_w / 2, cy + THUMB_H + 9);
     }
@@ -1181,7 +1208,7 @@ static void draw_full(void) {
     /* name + hints show for 3 s after entering or any press, then hide for a clean full view */
     if(pd->system->getCurrentTimeMilliseconds() - full_ui_ms < 3000) {
         display_name(nm, sizeof nm, gallery_names[gallery_index]);
-        use_font(full_is_note ? font_notes : font_ui);
+        use_font(font_ui);
         fit_text(t, sizeof t, nm, 200);
         draw_pill(t, 8, LCD_ROWS - font_height() - 12, true);
         use_font(font_glyph);

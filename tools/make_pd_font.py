@@ -12,9 +12,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 OUT = os.path.join(os.path.dirname(__file__), "..", "playdate", "Source", "fonts")
 NAME = "Notes-14"
-SIZE = 18  # px; the sticky note is large, so a readable size
-TTF = "/System/Library/Fonts/SFNS.ttf"  # SF Pro: clean geometric sans, close to Roobert
-WEIGHT = 600  # semibold reads better once thresholded to 1-bit
+SIZE = 16  # native pixel grid of haxrcorp4089 -> crisp, matches the Flipper look
+TTF = os.path.join(os.path.dirname(__file__), "haxrcorp4089.ttf")  # same font as the Flipper (u8g2 haxrcorp4089)
 COLS = 16
 
 # glyph set: ASCII printable, common punctuation, Cyrillic (Ё ё + А..я)
@@ -26,10 +25,6 @@ chars += [chr(c) for c in range(0x410, 0x450)]  # А..я
 
 def main():
     font = ImageFont.truetype(TTF, SIZE)
-    try:
-        font.set_variation_by_axes([WEIGHT])
-    except Exception:
-        pass
     ascent, descent = font.getmetrics()
     cell_h = ascent + descent
     # cell width = widest advance, rounded up
