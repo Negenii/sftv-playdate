@@ -9,6 +9,7 @@
 #include "sstv_rx.h"
 #include "sstv_frame.h"
 #include "mic_ring.h"
+#include "sticky_note.h"
 
 #define LOST_TIMEOUT_MS 5000
 #define PANEL_W 200
@@ -56,6 +57,7 @@ static void stop_mic(void);
 static unsigned started_ms; /* when the START block ended: the pass timeline starts here */
 static bool rx_paused; /* transmitter paused: freeze the timeline until RESUME */
 static unsigned pause_anchor; /* the timeline clock is held here while paused */
+static char note_buf[SSTV_NOTE_MAX_CHARS + 1]; /* assembled note text (note passes) */
 static int total_frames; /* physical frames in the pass, announced in START */
 static bool image_dirty; /* something received since the last save */
 static bool finished; /* END meta received */
@@ -398,6 +400,7 @@ static void on_pixels(void* ctx, uint16_t line, int x_byte, int nbytes, const ui
 }
 
 static void clear_image(void) {
+    memset(note_buf, 0, sizeof note_buf); /* rx.note itself is owned by the START/END flag */
     memset(image_data, 0xFF, (size_t)image_rowbytes * SSTV_HEIGHT);
     memset(seg_seen, 0, sizeof seg_seen);
     memset(preview_bits, 0, sizeof preview_bits);
@@ -521,6 +524,12 @@ static void on_control(void* ctx, int subtype, uint32_t arg) {
             last_data_ms = now;
         }
     }
+}
+
+static void on_note(void* ctx, int chunk, int nbytes, const uint8_t* text) {
+    (void)ctx;
+    int off = chunk * SSTV_NOTE_CHUNK;
+    for(int k = 0; k < nbytes && off + k < SSTV_NOTE_MAX_CHARS; k++) note_buf[off + k] = (char)text[k];
 }
 
 static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
@@ -931,6 +940,21 @@ static void draw_finished_banner(void) {
 static void draw_receive(void) {
     unsigned now = pd->system->getCurrentTimeMilliseconds();
     unsigned enow = rx_paused ? pause_anchor : now; /* the timeline stands still while paused */
+    int y, frontier;
+    if(rx.note) {
+        /* a note pass: a sticky note rises from the bottom and the text fills in as it arrives */
+        float ntarget = started ? (float)(BAR_H + 6) : (float)LCD_ROWS;
+        float d = ntarget - sheet_y;
+        if(d < -0.5f || d > 0.5f) sheet_y += d * 0.15f;
+        else sheet_y = ntarget;
+        y = (int)(sheet_y + 0.5f);
+        frontier = y; /* used by the bar slide below */
+        if(y > 0) draw_scene();
+        else pd->graphics->clear(kColorWhite);
+        int nx = 22, nw = LCD_COLUMNS - 44, nh = LCD_ROWS - y - 12;
+        if(nh > 24) draw_sticky_note(pd, font_ui, nx, y, nw, nh, note_buf);
+        goto chrome; /* skip the picture-sheet code */
+    }
     int shown = expected_lines(enow);
     if(lines_reached > shown) shown = lines_reached; /* never hide a line that arrived */
     /* The drawing frontier (the newest line) leads SHEET_LEAD px above the bottom edge, so you
@@ -944,8 +968,8 @@ static void draw_receive(void) {
     float d = (float)target - sheet_y;
     if(d < -0.5f || d > 0.5f) sheet_y += d * 0.15f;
     else sheet_y = (float)target;
-    int y = (int)(sheet_y + 0.5f); /* screen y of image row 0 (the sheet's top) */
-    int frontier = y + shown; /* screen y of the newest drawn line */
+    y = (int)(sheet_y + 0.5f); /* screen y of image row 0 (the sheet's top) */
+    frontier = y + shown; /* screen y of the newest drawn line */
     if(frontier > LCD_ROWS) frontier = LCD_ROWS;
     if(y > 0) draw_scene(); /* listening, or START + preview received; the sheet grows over it */
     else pd->graphics->clear(kColorWhite);
@@ -956,6 +980,7 @@ static void draw_receive(void) {
         if(frontier > 0 && frontier < LCD_ROWS)
             pd->graphics->fillRect(0, frontier - 2, LCD_COLUMNS, 2, kColorBlack); /* drawing frontier */
     }
+chrome:;
     /* The bar stays on top so the picture slides in from under it. As the picture's top edge
      * nears the bar, the bar slides up and off with its own smooth animation (not the sheet's
      * speed), uncovering the top of the image. */
@@ -977,7 +1002,7 @@ static void draw_receive(void) {
     }
     /* Picture fully in but the pass is not done yet: the outer-code parity is still arriving.
      * Show a spinner and "Verifying" until END (or the timeout) finishes the pass. */
-    if(started && !finished && !rx_paused && frontier >= LCD_ROWS) {
+    if(started && !finished && !rx_paused && !rx.note && frontier >= LCD_ROWS) {
         use_font(font_ui);
         const char* v = "Verifying";
         int r = 6, sp = 2 * r, pad = 10, gap = 6, tw = text_width(v);
@@ -1242,6 +1267,7 @@ static void init(void) {
     mic_ring_init(&ring);
     sstv_rx_init(&rx, on_pixels, on_meta, on_preview, NULL);
     sstv_rx_set_control_cb(&rx, on_control);
+    sstv_rx_set_note_cb(&rx, on_note);
     sstv_demod_init(&demod, 44100.0f, on_phys, NULL);
     clear_image();
     menu_open();

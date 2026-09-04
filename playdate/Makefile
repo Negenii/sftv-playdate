@@ -13,7 +13,7 @@ endif
 
 VPATH += src ../common
 
-SRC = src/main.c src/mic_ring.c ../common/crc8.c ../common/rs.c ../common/sstv_codec.c ../common/sstv_frame.c ../common/sstv_demod.c ../common/sstv_rx.c ../common/sstv_preview.c
+SRC = src/main.c src/mic_ring.c src/sticky_note.c ../common/crc8.c ../common/rs.c ../common/sstv_codec.c ../common/sstv_frame.c ../common/sstv_demod.c ../common/sstv_rx.c ../common/sstv_preview.c
 
 UINCDIR = ../common
 
