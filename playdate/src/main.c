@@ -902,13 +902,18 @@ static void draw_receive(void) {
     draw_finished_banner();
     if(confirm_leave) {
         const char* msg = "Leave? Reception in progress";
+        const char* keys = "Ⓐ leave    Ⓑ stay";
         use_font(font_ui);
-        int w = text_width(msg) + 24, bx = (LCD_COLUMNS - w) / 2, by = LCD_ROWS / 2 - 28;
+        int w1 = text_width(msg);
+        use_font(font_glyph);
+        int w2 = text_width(keys);
+        int w = (w1 > w2 ? w1 : w2) + 24, bx = (LCD_COLUMNS - w) / 2, by = LCD_ROWS / 2 - 28;
         pd->graphics->fillRoundRect(bx, by, w, 52, 10, kColorWhite);
         pd->graphics->drawRoundRect(bx, by, w, 52, 10, 2, kColorBlack);
+        use_font(font_ui);
         draw_text(msg, bx + 12, by + 8);
         use_font(font_glyph);
-        draw_text("Ⓐ leave    Ⓑ stay", bx + 12, by + 28);
+        draw_text(keys, bx + 12, by + 28);
     }
 }
 
@@ -956,13 +961,18 @@ static void draw_full(void) {
     draw_pill(hint, LCD_COLUMNS - 8 - (text_width(hint) + 12), 8, true);
     if(confirm_delete) {
         const char* msg = "Delete this image?";
+        const char* keys = "Ⓐ delete    Ⓑ keep";
         use_font(font_ui);
-        int w = text_width(msg) + 24, bx = (LCD_COLUMNS - w) / 2, by = LCD_ROWS / 2 - 28;
+        int w1 = text_width(msg);
+        use_font(font_glyph);
+        int w2 = text_width(keys);
+        int w = (w1 > w2 ? w1 : w2) + 24, bx = (LCD_COLUMNS - w) / 2, by = LCD_ROWS / 2 - 28;
         pd->graphics->fillRoundRect(bx, by, w, 52, 10, kColorWhite);
         pd->graphics->drawRoundRect(bx, by, w, 52, 10, 2, kColorBlack);
+        use_font(font_ui);
         draw_text(msg, bx + 12, by + 8);
         use_font(font_glyph);
-        draw_text("Ⓐ delete    Ⓑ keep", bx + 12, by + 28);
+        draw_text(keys, bx + 12, by + 28);
     }
 }
 
