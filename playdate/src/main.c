@@ -44,6 +44,7 @@ static uint8_t seg_seen[SSTV_HEIGHT]; /* bit 0: left half, bit 1: right half */
 static int segs_done; /* of SSTV_NUM_SEGS */
 static int lines_reached; /* highest line with data + 1: how much of the sheet is on screen */
 static float sheet_y = LCD_ROWS; /* top of the sheet; it slides in from the bottom edge */
+static float bar_y; /* top-bar vertical offset: 0 down/visible, -BAR_H slid up/hidden */
 static unsigned last_data_ms;
 static char current_name[NAME_CAP] = "untitled";
 static bool started; /* START meta received, transmission in progress */
@@ -385,6 +386,7 @@ static void clear_image(void) {
     segs_done = 0;
     lines_reached = 0;
     sheet_y = LCD_ROWS;
+    bar_y = 0;
     image_dirty = false;
     finished = false;
     started = false;
@@ -890,9 +892,15 @@ static void draw_receive(void) {
         pd->graphics->drawBitmap(image, 0, y, kBitmapUnflipped);
         if(y > 0) pd->graphics->fillRect(0, y - 2, LCD_COLUMNS, 2, kColorBlack); /* sheet edge */
     }
-    /* top bar stays on top so the picture slides in from under it; hidden once finished so the
-     * whole image is visible */
-    if(!finished) {
+    /* The bar stays on top so the picture slides in from under it. As the picture's top edge
+     * nears the bar, the bar slides up and off with its own smooth animation (not the sheet's
+     * speed), uncovering the top of the image. */
+    float bar_target = (y < BAR_H + 40) ? -(float)BAR_H : 0.0f;
+    float bd = bar_target - bar_y;
+    if(bd < -0.5f || bd > 0.5f) bar_y += bd * 0.18f; else bar_y = bar_target;
+    int boff = (int)(bar_y - 0.5f);
+    if(boff > -BAR_H) { /* still at least partly on screen */
+        pd->graphics->setDrawOffset(0, boff);
         if(started) {
             char nm[NAME_CAP], bar[NAME_CAP + 12];
             display_name(nm, sizeof nm, current_name);
@@ -901,6 +909,7 @@ static void draw_receive(void) {
         } else {
             draw_title_bar("Listening", NULL);
         }
+        pd->graphics->setDrawOffset(0, 0);
     }
     if(show_panel) draw_panel();
     draw_finished_banner();
