@@ -58,6 +58,7 @@ static int finished_lines;
 static int mic_state; /* 0 asking, 1 allowed, -1 denied */
 static bool mic_running; /* callback installed */
 static bool show_panel; /* side panel with statistics, toggled with Right */
+static bool confirm_leave; /* B during an active pass asks before leaving Receive */
 static unsigned led_frame_ms; /* virtual LED: last physical frame time */
 static unsigned led_block_ms; /* last decoded block time */
 static volatile unsigned mic_dropped;
@@ -260,6 +261,7 @@ static void menu_open(void) {
         pd->system->realloc(px, 0);
     }
     ui_mode = ModeMenu;
+    confirm_leave = false;
     stop_mic();
 }
 
@@ -891,6 +893,15 @@ static void draw_receive(void) {
     }
     if(show_panel) draw_panel();
     draw_finished_banner();
+    if(confirm_leave) {
+        const char* msg = "Leave? Reception in progress";
+        use_font(font_ui);
+        int w = text_width(msg) + 24, bx = (LCD_COLUMNS - w) / 2, by = LCD_ROWS / 2 - 28;
+        pd->graphics->fillRoundRect(bx, by, w, 52, 10, kColorWhite);
+        pd->graphics->drawRoundRect(bx, by, w, 52, 10, 2, kColorBlack);
+        draw_text(msg, bx + 12, by + 8);
+        draw_text("A leave      B stay", bx + 12, by + 28);
+    }
 }
 
 static void draw_grid(void) {
@@ -977,6 +988,8 @@ static int update(void* userdata) {
         if(pushed & kButtonA) {
             if(menu_index == 0) {
                 ui_mode = ModeReceive; /* the microphone runs only here */
+                confirm_leave = false;
+                clear_image(); /* each visit to Receive starts a fresh listen */
                 start_mic();
             } else {
                 gallery_open();
@@ -985,8 +998,17 @@ static int update(void* userdata) {
         draw_menu();
         break;
     case ModeReceive:
+        if(confirm_leave) {
+            if(pushed & kButtonA) { confirm_leave = false; menu_open(); }
+            else if(pushed & kButtonB) confirm_leave = false;
+            draw_receive();
+            break;
+        }
         if(pushed & kButtonA) clear_image();
-        if(pushed & kButtonB) menu_open();
+        if(pushed & kButtonB) {
+            if(started && !finished) confirm_leave = true; /* a pass is in progress: ask first */
+            else menu_open();
+        }
         if(pushed & kButtonRight) show_panel = !show_panel;
         if((pushed & kButtonUp) && rec_len < 0) {
             rec_prefix = "rec";
