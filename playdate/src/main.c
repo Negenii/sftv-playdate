@@ -754,7 +754,7 @@ static void draw_scene(void) {
     pd->graphics->clear(kColorWhite);
     char t[64];
     /* dolphin (2x) and console (140x118) below the top bar (drawn by draw_receive) */
-    const int cx = 240, cy = 44; /* console */
+    const int cx = 240, cy = 60; /* console (lowered under the bar, centred over the text) */
     const int dx = 20, dy = cy + (CONSOLE_H - DOLPHIN_H * 2) / 2; /* dolphin */
     const int text_cx = LCD_COLUMNS / 2; /* texts run under both figures */
     LCDBitmap* dfin = scene_dolphin(now);
