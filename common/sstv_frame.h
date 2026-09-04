@@ -103,6 +103,14 @@ int sstv_block_unpack(const uint8_t* payload, int valid_bytes, sstv_block_line_c
  * (a multiple of SSTV_ILEAVE); *coded (may be NULL) tells which mode was chosen. */
 int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* out, uint8_t* lines_after, bool* coded);
 
+/* Builds every physical frame of a text note: START (note flag) + name, then the ASCII text as
+ * RAW frames (SSTV_NOTE_CHUNK bytes each, header index = chunk), all in one outer-code group
+ * with its parity, then END. `text` is NUL-terminated ASCII, truncated to SSTV_NOTE_MAX_CHARS.
+ * out holds SSTV_MAX_FRAMES * SSTV_FRAME_BYTES. lines_after (may be NULL) receives, per physical
+ * frame, how many text chunks are complete once that frame is out. Returns the physical frame
+ * count (a multiple of SSTV_ILEAVE). */
+int sstv_build_note(const char* text, const char* name, uint8_t* out, uint8_t* lines_after);
+
 #ifdef __cplusplus
 }
 #endif

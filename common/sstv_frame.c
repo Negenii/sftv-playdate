@@ -362,3 +362,58 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
     emitter_block(&em, logical, SSTV_HEIGHT, SSTV_HEIGHT);
     return em.blocks * SSTV_ILEAVE;
 }
+
+int sstv_build_note(const char* text, const char* name, uint8_t* out, uint8_t* lines_after) {
+    uint8_t logical[SSTV_ILEAVE * SSTV_FRAME_BYTES];
+    uint8_t payload[SSTV_PAYLOAD_BYTES];
+
+    int len = 0;
+    while(text && text[len] && len < SSTV_NOTE_MAX_CHARS) len++;
+    int chunks = (len + SSTV_NOTE_CHUNK - 1) / SSTV_NOTE_CHUNK; /* real text frames */
+    int text_frames = ((chunks + SSTV_ILEAVE - 1) / SSTV_ILEAVE) * SSTV_ILEAVE; /* pad to a block */
+    if(text_frames == 0) text_frames = SSTV_ILEAVE; /* always at least one (empty) text block */
+
+    int data_frames = SSTV_ILEAVE + text_frames; /* START + text = the whole of group 0 */
+    uint16_t total = (uint16_t)(data_frames + SSTV_OUTER_PARITY + SSTV_ILEAVE); /* + parity + END */
+
+    pass_emitter em;
+    emitter_init(&em, out, lines_after);
+
+    /* Start meta block: [SSTV_META_START][total | NOTE flag][name] in every logical frame. */
+    uint16_t word = total | SSTV_META_NOTE_FLAG;
+    uint8_t meta[SSTV_PAYLOAD_BYTES];
+    memset(meta, 0, SSTV_PAYLOAD_BYTES);
+    meta[0] = SSTV_META_START;
+    meta[1] = (uint8_t)(word & 0xFF);
+    meta[2] = (uint8_t)(word >> 8);
+    if(name) {
+        size_t n = strlen(name);
+        if(n > SSTV_NAME_MAX) n = SSTV_NAME_MAX;
+        memcpy(meta + SSTV_META_NAME_OFFSET, name, n);
+    }
+    for(int i = 0; i < SSTV_ILEAVE; i++)
+        sstv_frame_pack(sstv_hdr(SSTV_FT_META, 0), meta, logical + i * SSTV_FRAME_BYTES);
+    emitter_data_block(&em, logical, 0, 0);
+
+    /* Text frames: RAW, index = chunk, payload = 25 ASCII bytes (26th stays 0). */
+    for(int block = 0; block < text_frames; block += SSTV_ILEAVE) {
+        for(int i = 0; i < SSTV_ILEAVE; i++) {
+            int c = block + i;
+            memset(payload, 0, SSTV_PAYLOAD_BYTES);
+            int off = c * SSTV_NOTE_CHUNK;
+            for(int k = 0; k < SSTV_NOTE_CHUNK && off + k < len; k++) payload[k] = (uint8_t)text[off + k];
+            sstv_frame_pack(sstv_hdr(SSTV_FT_RAW, c), payload, logical + i * SSTV_FRAME_BYTES);
+        }
+        int done_before = block;              /* chunks complete before this block */
+        int done_after = block + SSTV_ILEAVE; /* and after it */
+        emitter_data_block(&em, logical, done_before, done_after);
+    }
+
+    /* Close the single group (its 12 parity frames), then END. */
+    emitter_close_group(&em, text_frames);
+    meta[0] = SSTV_META_END;
+    for(int i = 0; i < SSTV_ILEAVE; i++)
+        sstv_frame_pack(sstv_hdr(SSTV_FT_META, 1), meta, logical + i * SSTV_FRAME_BYTES);
+    emitter_block(&em, logical, text_frames, text_frames);
+    return em.blocks * SSTV_ILEAVE;
+}

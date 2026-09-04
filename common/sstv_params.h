@@ -38,6 +38,10 @@
 #define SSTV_META_NAME_OFFSET 3 /* [subtype][frames lo][frames hi][name...] */
 #define SSTV_NAME_MAX (SSTV_PAYLOAD_BYTES - SSTV_META_NAME_OFFSET) /* 23 characters */
 #define SSTV_META_CODED_FLAG 0x8000
+#define SSTV_META_NOTE_FLAG 0x4000 /* START/END total word: this pass carries a text note (never coded, so bit 15 stays 0) */
+#define SSTV_NOTE_MAX_CHARS 200
+#define SSTV_NOTE_CHUNK SSTV_SEG_BYTES /* 25 ASCII bytes per RAW text frame */
+#define SSTV_NOTE_MAX_FRAMES 8 /* ceil(200/25) = 8, already a multiple of SSTV_ILEAVE */
 #define SSTV_META_START 0
 #define SSTV_META_END 1
 #define SSTV_META_PREVIEW 2
