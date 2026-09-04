@@ -760,7 +760,7 @@ static void draw_scene(void) {
         display_name(nm, sizeof nm, current_name);
         use_font(font_big);
         fit_text(t, sizeof t, nm, 360);
-        draw_text_centered(t, text_cx, 190);
+        draw_text_centered(t, text_cx, 178);
         use_font(font_ui);
         if(preview_chunks < SSTV_INTRO_FRAMES && segs_done == 0) {
             /* Preview is arriving. The bar advances by elapsed time (smooth, per frame) but is
@@ -824,34 +824,35 @@ static void draw_panel(void) {
     snprintf(t, sizeof t, "%d / %d lines", segs_done / 2, SSTV_HEIGHT);
     draw_text(t, x, y);
     y += lh + 6;
-    /* counters: label left, number right in the mono font */
-    struct { const char* k; int v; } rows[] = {
-        {"recv", rx.frames_in}, {"preview", preview_chunks}, {"frames ok", rx.frames_ok}, {"frames bad", rx.frames_bad},
-        {"rs fixed", rx.rs_corrected}, {"fixed", rx.frames_repaired}, {"flywheel", demod.flywheel_frames}, {"dropped", (int)mic_dropped},
+    /* counters: label left, value right; ok/bad and rs/repaired combined into one line each */
+    char v0[16], v1[16], v2[16], v3[16], v4[16], v5[16];
+    snprintf(v0, sizeof v0, "%d", rx.frames_in);
+    snprintf(v1, sizeof v1, "%d", preview_chunks);
+    snprintf(v2, sizeof v2, "%d/%d", rx.frames_ok, rx.frames_bad);
+    snprintf(v3, sizeof v3, "%d/%d", rx.rs_corrected, rx.frames_repaired);
+    snprintf(v4, sizeof v4, "%d", demod.flywheel_frames);
+    snprintf(v5, sizeof v5, "%d", (int)mic_dropped);
+    struct { const char* k; const char* v; } rows[] = {
+        {"recv", v0}, {"preview", v1}, {"frames ok/bad", v2}, {"rs fixed/fixed", v3},
+        {"flywheel", v4}, {"dropped", v5},
     };
-    int ncols = 2, colw = (right - x) / ncols;
-    size_t nrows_c = sizeof rows / sizeof rows[0];
-    for(size_t i = 0; i < nrows_c; i++) {
-        int col = (int)(i % ncols), row = (int)(i / ncols);
-        int cxl = x + col * colw, cxr = cxl + colw - 6;
-        int cy = y + row * lh;
+    for(size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
         use_font(font_ui);
-        draw_text(rows[i].k, cxl, cy);
+        draw_text(rows[i].k, x, y);
         use_font(font_num);
-        snprintf(t, sizeof t, "%d", rows[i].v);
-        draw_text(t, cxr - text_width(t), cy + 1);
+        draw_text(rows[i].v, right - text_width(rows[i].v), y + 1);
+        y += lh;
     }
-    y += (int)((nrows_c + ncols - 1) / ncols) * lh;
-    /* tone and level */
-    y += 4;
+    /* tone: a three-lamp traffic light for data tones 1/2/3 (the active one filled) */
+    y += 6;
     use_font(font_ui);
-    static const char tone_names[] = "0123S";
-    snprintf(t, sizeof t, "tone %c", st.tone >= 0 && st.tone <= SSTV_NUM_TONES ? tone_names[st.tone] : '-');
-    draw_text(t, x, y);
-    int lb_x = x + 52, lb_w = right - lb_x;
-    pd->graphics->drawRoundRect(lb_x, y + 3, lb_w, 8, 4, 1, kColorBlack);
-    int lf = (int)(st.level * (float)(lb_w - 2));
-    if(lf > 0) pd->graphics->fillRoundRect(lb_x + 1, y + 4, lf, 6, 3, kColorBlack);
+    draw_text("tone", x, y);
+    int r = 7, gap = 8, cx0 = x + 44, ccy = y + font_height() / 2;
+    for(int k = 0; k < 3; k++) {
+        int ccx = cx0 + k * (2 * r + gap);
+        if(st.tone == k + 1) pd->graphics->fillEllipse(ccx, ccy - r, 2 * r, 2 * r, 0.0f, 0.0f, kColorBlack);
+        else pd->graphics->drawEllipse(ccx, ccy - r, 2 * r, 2 * r, 1, 0.0f, 0.0f, kColorBlack);
+    }
     /* hints */
     pd->graphics->drawLine(x0, LCD_ROWS - 20, LCD_COLUMNS, LCD_ROWS - 20, 1, kColorBlack);
     draw_text("A clear   B menu", x, LCD_ROWS - 16);
