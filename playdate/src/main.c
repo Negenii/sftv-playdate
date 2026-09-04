@@ -27,6 +27,7 @@ static LCDFont* font_ui; /* Roobert 10 Bold: panel, labels */
 static LCDFont* font_num; /* Roobert 9 Mono Condensed: counters */
 static LCDFont* font_big; /* Roobert 20 Medium: titles */
 static LCDFont* font_glyph; /* Roobert 11 extended: has the Ⓐ / Ⓑ button glyphs */
+static LCDFont* font_notes; /* ASCII + Cyrillic: note text (UTF-8) */
 static LCDBitmap* dolphin_src; /* 71x49 outline dolphin (firmware L1_Furippa1 frame 0), faces right */
 static LCDBitmap* dolphin_tile; /* menu tile and scene: 2x, 142x98 */
 static LCDBitmap* dolphin_open_tile; /* legacy, kept for the menu tile fallback */
@@ -283,7 +284,7 @@ static LCDBitmap* make_thumb(const uint8_t* px) {
 static LCDBitmap* make_note_thumb(const char* text) {
     LCDBitmap* t = pd->graphics->newBitmap(THUMB_W, THUMB_H, kColorWhite);
     pd->graphics->pushContext(t);
-    draw_sticky_note(pd, font_ui, 0, 0, THUMB_W, THUMB_H, text);
+    draw_sticky_note(pd, font_notes, 0, 0, THUMB_W, THUMB_H, text);
     pd->graphics->popContext();
     if(thumb_mask) pd->graphics->setBitmapMask(t, thumb_mask);
     return t;
@@ -1044,7 +1045,7 @@ static void draw_receive(void) {
         if(y > 0) draw_scene();
         else pd->graphics->clear(kColorWhite);
         int nx = 22, nw = LCD_COLUMNS - 44, nh = LCD_ROWS - y - 12;
-        if(nh > 24) draw_sticky_note(pd, font_ui, nx, y, nw, nh, note_buf);
+        if(nh > 24) draw_sticky_note(pd, font_notes, nx, y, nw, nh, note_buf);
         goto chrome; /* skip the picture-sheet code */
     }
     int shown = expected_lines(enow);
@@ -1165,7 +1166,7 @@ static void draw_grid(void) {
 static void draw_full(void) {
     pd->graphics->clear(kColorWhite);
     if(full_is_note)
-        draw_sticky_note(pd, font_ui, 24, 36, LCD_COLUMNS - 48, LCD_ROWS - 72, full_note_text); /* leave room for the top/bottom hint pills */
+        draw_sticky_note(pd, font_notes, 24, 36, LCD_COLUMNS - 48, LCD_ROWS - 72, full_note_text); /* leave room for the top/bottom hint pills */
     else if(gallery_bitmap)
         pd->graphics->drawBitmap(gallery_bitmap, 0, 0, kBitmapUnflipped);
     char t[64], nm[NAME_CAP];
@@ -1332,7 +1333,9 @@ static void init(void) {
     font_num = pd->graphics->loadFont("fonts/Roobert-9-Mono-Condensed", &err);
     font_big = pd->graphics->loadFont("fonts/Roobert-20-Medium", &err);
     font_glyph = pd->graphics->loadFont("fonts/Roobert-11-Medium-extended", &err);
+    font_notes = pd->graphics->loadFont("fonts/Notes-14", &err);
     if(!font_glyph) font_glyph = font_ui;
+    if(!font_notes) font_notes = font_ui;
     if(!font_num) font_num = font_ui;
     if(!font_big) font_big = font_ui;
     dolphin_src = pd->graphics->loadBitmap("images/dolphin", &err);
