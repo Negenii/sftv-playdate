@@ -27,38 +27,38 @@ def main():
     font = ImageFont.truetype(TTF, SIZE)
     ascent, descent = font.getmetrics()
     cell_h = ascent + descent
-    # cell width = widest advance, rounded up
-    cell_w = 0
-    adv = {}
-    for ch in chars:
-        w = int(round(font.getlength(ch)))
-        adv[ch] = max(1, w)
-        cell_w = max(cell_w, w)
-    cell_w += 1  # a little right padding so nothing clips
-
-    rows = (len(chars) + COLS - 1) // COLS
-    img = Image.new("RGBA", (COLS * cell_w, rows * cell_h), (0, 0, 0, 0))
 
     # glyphs missing from this TTF render as a .notdef box; substitute a readable ASCII glyph
     FALLBACK = {"\u0451": "\u0435", "\u0401": "\u0415", "\u2014": "-", "\u2013": "-",
                 "\u00ab": "<", "\u00bb": ">", "\u201c": '"', "\u201d": '"',
                 "\u2026": ".", "\u2116": "N"}
-    def notdef_bits():
-        c = Image.new("L", (cell_w, cell_h), 0)
-        ImageDraw.Draw(c).text((0, 0), "\ue000", fill=255, font=font)
-        return list(c.getdata())
-    ND = notdef_bits()
+    DET_W = 32
+    def det_bits(ch):  # render into a fixed cell for a size-independent .notdef comparison
+        c = Image.new("L", (DET_W, cell_h), 0)
+        ImageDraw.Draw(c).text((0, 0), ch, fill=255, font=font)
+        return c.tobytes()
+    ND = det_bits("\ue000")
 
+    def eff(ch):  # effective render char: fall back when this codepoint is missing
+        if det_bits(ch) == ND:
+            return FALLBACK.get(ch, " ")
+        return ch
+
+    # advance widths come from the *rendered* glyph, so a fallback keeps its own spacing
+    adv, cell_w = {}, 0
+    for ch in chars:
+        w = max(1, int(round(font.getlength(eff(ch)))))
+        adv[ch] = w
+        cell_w = max(cell_w, w)
+    cell_w += 1
+
+    rows = (len(chars) + COLS - 1) // COLS
+    img = Image.new("RGBA", (COLS * cell_w, rows * cell_h), (0, 0, 0, 0))
     for i, ch in enumerate(chars):
         cx = (i % COLS) * cell_w
         cy = (i // COLS) * cell_h
-        # render the glyph in grayscale, then threshold to crisp 1-bit ink
         cell = Image.new("L", (cell_w, cell_h), 0)
-        ImageDraw.Draw(cell).text((0, 0), ch, fill=255, font=font)
-        if list(cell.getdata()) == ND:  # this codepoint is missing -> use a fallback
-            sub = FALLBACK.get(ch, " ")
-            cell = Image.new("L", (cell_w, cell_h), 0)
-            ImageDraw.Draw(cell).text((0, 0), sub, fill=255, font=font)
+        ImageDraw.Draw(cell).text((0, 0), eff(ch), fill=255, font=font)
         px = cell.load()
         for y in range(cell_h):
             for x in range(cell_w):
