@@ -766,16 +766,21 @@ static void draw_scene(void) {
     use_font(font_ui);
     if(started) {
         draw_spout(dx + 70, dy + 2, cx + CONSOLE_SCREEN_X + CONSOLE_SCREEN_W / 2, cy + CONSOLE_SCREEN_Y + CONSOLE_SCREEN_H / 2, (float)(now % 1200) / 1200.0f);
-        if(preview_chunks < SSTV_INTRO_FRAMES && segs_done == 0) {
-            /* Preview is arriving. The bar advances by elapsed time (smooth, per frame) but is
-             * clamped between the decoded chunk count and one 4-frame block ahead, so a lost
-             * block holds it in place until that block decodes or is repaired. */
+        if(segs_done == 0) {
+            /* Preview + intro repair progress: the bar spans everything before the picture
+             * (tiny + preview, the schedule for coded passes, and the intro group's parity), so
+             * it reaches 100% right before the picture starts. It advances by elapsed time, and
+             * while the preview chunks are still arriving it is clamped between the decoded count
+             * and one 4-frame block ahead, so a lost block holds it; the parity tail runs on time. */
+            int intro_total = SSTV_INTRO_FRAMES + (rx.coded ? SSTV_SCHEDULE_CHUNKS : 0) + SSTV_OUTER_PARITY;
             float est = (float)(now - started_ms) / (float)(SSTV_PHYS_US / 1000);
-            float shown = est;
-            if(shown < (float)preview_chunks) shown = (float)preview_chunks;
-            if(shown > (float)(preview_chunks + SSTV_ILEAVE)) shown = (float)(preview_chunks + SSTV_ILEAVE);
-            if(shown > (float)SSTV_INTRO_FRAMES) shown = (float)SSTV_INTRO_FRAMES;
-            float frac = shown / (float)SSTV_INTRO_FRAMES;
+            if(preview_chunks < SSTV_INTRO_FRAMES) {
+                if(est < (float)preview_chunks) est = (float)preview_chunks;
+                if(est > (float)(preview_chunks + SSTV_ILEAVE)) est = (float)(preview_chunks + SSTV_ILEAVE);
+            }
+            if(est > (float)intro_total) est = (float)intro_total;
+            if(est < 0.0f) est = 0.0f;
+            float frac = est / (float)intro_total;
             int ty = 200;
             draw_text_centered("Receiving preview", text_cx, ty);
             int bw = 220, bx = text_cx - bw / 2, by = ty + font_height() + 8;
