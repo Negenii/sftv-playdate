@@ -750,8 +750,7 @@ static void draw_scene(void) {
     const int text_cx = LCD_COLUMNS / 2; /* texts run under both figures */
     /* Dolphin pose follows the reception state (idle / signal / preview / data / repair). */
     LCDBitmap* dfin = scene_dolphin(now);
-    const float dscale = 1.6f; /* 128x49 -> 205x78 */
-    if(dfin) pd->graphics->drawScaledBitmap(dfin, dx, dy, dscale, dscale);
+    if(dfin) pd->graphics->drawBitmap(dfin, dx, dy, kBitmapUnflipped);
     else if(dolphin_tile) pd->graphics->drawBitmap(dolphin_tile, dx, dy, kBitmapUnflipped);
     draw_console(cx, cy, started ? preview_bitmap : NULL);
     use_font(font_ui);
@@ -1012,11 +1011,14 @@ static void init(void) {
     if(dolphin_src) dolphin_tile = render_scaled(dolphin_src, 2, 2);
     LCDBitmap* dolphin_open_src = pd->graphics->loadBitmap("images/dolphin_open", &err);
     if(dolphin_open_src) dolphin_open_tile = render_scaled(dolphin_open_src, 2, 2);
-    fr_idle = pd->graphics->loadBitmap("images/frame_11", &err);    /* listening, no signal */
-    fr_signal = pd->graphics->loadBitmap("images/frame_22", &err);  /* a tone is heard */
-    fr_preview = pd->graphics->loadBitmap("images/frame_31", &err); /* START + preview */
-    fr_data = pd->graphics->loadBitmap("images/frame_51", &err);    /* picture data */
-    fr_repair = pd->graphics->loadBitmap("images/frame_41", &err);  /* outer-code parity */
+    /* 47x49 head poses, pixel-doubled to 94x98 (clean square pixels), beak facing the console */
+    struct { LCDBitmap** dst; const char* path; } poses[] = {
+        {&fr_idle, "images/frame_11"}, {&fr_signal, "images/frame_22"}, {&fr_preview, "images/frame_31"},
+        {&fr_data, "images/frame_51"}, {&fr_repair, "images/frame_41"}};
+    for(size_t i = 0; i < sizeof poses / sizeof poses[0]; i++) {
+        LCDBitmap* src = pd->graphics->loadBitmap(poses[i].path, &err);
+        if(src) { *poses[i].dst = render_scaled(src, 2, 2); pd->graphics->freeBitmap(src); }
+    }
     console = pd->graphics->loadBitmap("images/console", &err);
 
     thumb_mask = pd->graphics->newBitmap(THUMB_W, THUMB_H, kColorBlack);
