@@ -12,6 +12,7 @@
 
 #define LOST_TIMEOUT_MS 5000
 #define PANEL_W 200
+#define BAR_H 30 /* gallery top bar height (Playdate-style, room for the button glyphs) */
 #define MAX_GALLERY 64
 #define NAME_CAP 40
 
@@ -629,13 +630,11 @@ static void draw_led(void) {
 
 /* Black title bar with a left title and a right hint. */
 static void draw_title_bar(const char* title, const char* hint) {
-    pd->graphics->fillRect(0, 0, LCD_COLUMNS, 24, kColorBlack);
-    use_font(font_ui);
-    draw_text_white(title, 8, 5);
-    if(hint) {
-        use_font(font_glyph);
-        draw_text_white(hint, LCD_COLUMNS - 32 - text_width(hint), 5);
-    }
+    pd->graphics->fillRect(0, 0, LCD_COLUMNS, BAR_H, kColorBlack);
+    use_font(font_glyph); /* one font for the title and the hint glyphs */
+    int ty = (BAR_H - font_height()) / 2;
+    draw_text_white(title, 10, ty);
+    if(hint) draw_text_white(hint, LCD_COLUMNS - 10 - text_width(hint), ty);
 }
 
 /* The Playdate silhouette at (x, y). Its screen is dark when off; while a picture is coming in
@@ -928,13 +927,13 @@ static void draw_grid(void) {
         draw_text_centered("no saved images yet", LCD_COLUMNS / 2, 110);
         return;
     }
-    int cell_w = LCD_COLUMNS / GRID_COLS, cell_h = (LCD_ROWS - 24) / GRID_ROWS;
+    int cell_w = LCD_COLUMNS / GRID_COLS, cell_h = (LCD_ROWS - BAR_H) / GRID_ROWS;
     gallery_ensure_thumbs(gallery_page, GRID_PER_PAGE);
     for(int k = 0; k < GRID_PER_PAGE; k++) {
         int idx = gallery_page + k;
         if(idx >= gallery_count) break;
         int cx = (k % GRID_COLS) * cell_w + (cell_w - THUMB_W) / 2;
-        int cy = 24 + (k / GRID_COLS) * cell_h + 12;
+        int cy = BAR_H + (k / GRID_COLS) * cell_h + 12;
         if(thumbs[idx]) pd->graphics->drawBitmap(thumbs[idx], cx, cy, kBitmapUnflipped);
         pd->graphics->drawRoundRect(cx - 1, cy - 1, THUMB_W + 2, THUMB_H + 2, THUMB_R, 1, kColorBlack);
         if(idx == gallery_index) pd->graphics->drawRoundRect(cx - 5, cy - 5, THUMB_W + 10, THUMB_H + 10, THUMB_R + 3, 3, kColorBlack);
