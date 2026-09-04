@@ -315,11 +315,59 @@ static void free_thumbs(void) {
     }
 }
 
+static void gallery_ensure_thumbs(int first, int count);
+static bool sort_newest; /* system-menu option: newest received on top */
+static PDMenuItem* sort_item;
+static unsigned long long mtime_key(const FileStat* s) {
+    return (unsigned long long)s->m_year * 10000000000ULL + (unsigned long long)s->m_month * 100000000ULL +
+           (unsigned long long)s->m_day * 1000000ULL + (unsigned long long)s->m_hour * 10000ULL +
+           (unsigned long long)s->m_minute * 100ULL + (unsigned long long)s->m_second;
+}
+
 static void gallery_scan(void) {
     save_received();
     free_thumbs();
     gallery_count = 0;
     pd->file->listfiles(".", gallery_list_cb, NULL, 0);
+    if(sort_newest && gallery_count > 1) {
+        int idx[MAX_GALLERY];
+        unsigned long long key[MAX_GALLERY];
+        for(int i = 0; i < gallery_count; i++) {
+            idx[i] = i;
+            FileStat st;
+            key[i] = pd->file->stat(gallery_names[i], &st) == 0 ? mtime_key(&st) : 0ULL;
+        }
+        for(int i = 1; i < gallery_count; i++) { /* insertion sort, newest first */
+            int j = i;
+            while(j > 0 && key[idx[j - 1]] < key[idx[j]]) {
+                int t = idx[j - 1];
+                idx[j - 1] = idx[j];
+                idx[j] = t;
+                j--;
+            }
+        }
+        static char names2[MAX_GALLERY][NAME_CAP];
+        static uint8_t kind2[MAX_GALLERY];
+        for(int i = 0; i < gallery_count; i++) {
+            strncpy(names2[i], gallery_names[idx[i]], NAME_CAP - 1);
+            names2[i][NAME_CAP - 1] = 0;
+            kind2[i] = gallery_kind[idx[i]];
+        }
+        memcpy(gallery_names, names2, sizeof gallery_names);
+        memcpy(gallery_kind, kind2, sizeof gallery_kind);
+    }
+}
+
+/* system menu: toggle gallery sort */
+static void sort_menu_cb(void* ud) {
+    (void)ud;
+    sort_newest = pd->system->getMenuItemValue(sort_item) != 0;
+    if(ui_mode == ModeGrid) {
+        gallery_scan();
+        gallery_index = 0;
+        gallery_page = 0;
+        gallery_ensure_thumbs(0, GRID_PER_PAGE);
+    }
 }
 
 static bool gallery_load_full(int idx) {
@@ -1455,6 +1503,7 @@ int eventHandler(PlaydateAPI* playdate, PDSystemEvent event, uint32_t arg) {
         pd = playdate;
         pd->display->setRefreshRate(50);
         init();
+        sort_item = pd->system->addCheckmarkMenuItem("Newest first", 0, sort_menu_cb, NULL);
         pd->system->setUpdateCallback(update, NULL);
     } else if(event == kEventTerminate || event == kEventLock || event == kEventLowPower) {
         /* The audio thread keeps calling the mic callback after the game is unloaded
