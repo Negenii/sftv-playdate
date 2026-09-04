@@ -1047,7 +1047,7 @@ static int update(void* userdata) {
         else draw_grid();
         break;
     }
-    draw_led();
+    if(ui_mode == ModeReceive) draw_led(); /* the frame dot belongs to Receive, not the menu/gallery */
     return 1;
 }
 
