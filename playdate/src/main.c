@@ -1010,8 +1010,19 @@ static void draw_receive(void) {
     unsigned enow = rx_paused ? pause_anchor : now; /* the timeline stands still while paused */
     int y, frontier;
     if(rx.note) {
-        /* a note pass: a sticky note rises from the bottom and the text fills in as it arrives */
-        float ntarget = started ? (float)(BAR_H + 6) : (float)LCD_ROWS;
+        /* a note pass: the sticky note slides out smoothly as its frames arrive, then rests */
+        const int rest = BAR_H + 6;
+        float frac = 0.0f;
+        if(finished) {
+            frac = 1.0f;
+        } else if(started) {
+            int textframes = rx.data_frames > SSTV_ILEAVE ? rx.data_frames - SSTV_ILEAVE : SSTV_NOTE_MAX_FRAMES;
+            int elapsed = (int)((float)(enow - started_ms) * 1000.0f / (float)SSTV_PHYS_US);
+            frac = textframes > 0 ? (float)elapsed / (float)textframes : 1.0f;
+            if(frac < 0.0f) frac = 0.0f;
+            if(frac > 1.0f) frac = 1.0f;
+        }
+        float ntarget = (float)LCD_ROWS - frac * (float)(LCD_ROWS - rest);
         float d = ntarget - sheet_y;
         if(d < -0.5f || d > 0.5f) sheet_y += d * 0.15f;
         else sheet_y = ntarget;
