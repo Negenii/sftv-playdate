@@ -929,11 +929,13 @@ static void draw_scene(void) {
     LCDBitmap* dfin = scene_dolphin(now);
     if(dfin) pd->graphics->drawBitmap(dfin, dx, dy, kBitmapUnflipped);
     else if(dolphin_tile) pd->graphics->drawBitmap(dolphin_tile, dx, dy, kBitmapUnflipped);
-    draw_console(cx, cy, started ? preview_bitmap : NULL);
+    draw_console(cx, cy, (started && !rx.note) ? preview_bitmap : NULL);
     use_font(font_ui);
     if(started) {
         draw_spout(dx + 70, dy + 2, cx + CONSOLE_SCREEN_X + CONSOLE_SCREEN_W / 2, cy + CONSOLE_SCREEN_Y + CONSOLE_SCREEN_H / 2, (float)(now % 1200) / 1200.0f);
-        if(segs_done == 0) {
+        if(rx.note) {
+            draw_text_centered("Receiving note", text_cx, 200); /* notes have no preview */
+        } else if(segs_done == 0) {
             /* Preview + intro repair progress: the bar spans everything before the picture
              * (tiny + preview, the schedule for coded passes, and the intro group's parity), so
              * it reaches 100% right before the picture starts. It advances by elapsed time, and
