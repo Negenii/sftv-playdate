@@ -45,7 +45,8 @@ static mic_ring ring;
 /* Receive state. Half-line segments (raw mode) or whole lines (coded mode) arrive verified. */
 static uint8_t seg_seen[SSTV_HEIGHT]; /* bit 0: left half, bit 1: right half */
 static int segs_done; /* of SSTV_NUM_SEGS */
-static int lines_reached; /* highest line with data + 1: how much of the sheet is on screen */
+static int lines_reached; /* highest line with data + 1: decoded lines available */
+static float revealed; /* lines actually shown; eases up toward lines_reached, never past it */
 static float sheet_y = LCD_ROWS; /* top of the sheet; it slides in from the bottom edge */
 static float bar_y; /* top-bar vertical offset: 0 down/visible, -BAR_H slid up/hidden */
 static unsigned last_data_ms;
@@ -510,6 +511,7 @@ static void clear_image(void) {
     if(preview_bitmap) preview_refresh_bitmap();
     segs_done = 0;
     lines_reached = 0;
+    revealed = 0.0f;
     rx_paused = false; /* a fresh session clears any leftover pause banner */
     sheet_y = LCD_ROWS;
     bar_y = 0;
@@ -526,6 +528,7 @@ static void finish(unsigned now) {
     finished_ms = now;
     finished_lines = segs_done / 2;
     lines_reached = SSTV_HEIGHT; /* pull the whole sheet in, gaps and all */
+    revealed = SSTV_HEIGHT;
     save_received();
 }
 
@@ -1086,9 +1089,15 @@ static void draw_receive(void) {
         if(nh > 24) draw_sticky_note(pd, font_notes, nx, y, nw, nh, note_buf);
         goto chrome; /* skip the picture-sheet code */
     }
-    /* the drawing line advances by the timeline (smooth), so coded blocks reveal line by line
-     * instead of snapping in a batch; lines_reached is no longer used to pull the sheet up */
-    int shown = finished ? SSTV_HEIGHT : expected_lines(enow);
+    /* The drawing line follows the decoded lines, not the clock: revealed eases toward
+     * lines_reached and never overtakes it. A coded block decodes as a batch (lines_reached
+     * jumps), then its lines are painted in one by one as revealed catches up, and the line
+     * waits at the last decoded row until the next block arrives (no preview running ahead). */
+    if(!rx_paused && revealed < (float)lines_reached) {
+        revealed += 0.8f; /* lines per frame */
+        if(revealed > (float)lines_reached) revealed = (float)lines_reached;
+    }
+    int shown = finished ? SSTV_HEIGHT : (int)(revealed + 0.5f);
     /* The drawing frontier (the newest line) leads SHEET_LEAD px above the bottom edge, so you
      * watch lines land there over a semi-transparent preview placeholder in the band below.
      * The image top climbs until it hits the screen top (SHEET_LEAD lines before the end); the
@@ -1148,7 +1157,7 @@ chrome:;
     }
     /* Picture fully in but the pass is not done yet: the outer-code parity is still arriving.
      * Show a spinner and "Verifying" until END (or the timeout) finishes the pass. */
-    if(started && !finished && !rx_paused && !rx.note && expected_lines(enow) >= SSTV_HEIGHT) {
+    if(started && !finished && !rx_paused && !rx.note && (int)revealed >= SSTV_HEIGHT) {
         use_font(font_ui);
         const char* v = "Verifying";
         int r = 6, sp = 2 * r, pad = 10, gap = 6, tw = text_width(v);
