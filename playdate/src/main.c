@@ -13,6 +13,7 @@
 #define LOST_TIMEOUT_MS 5000
 #define PANEL_W 200
 #define BAR_H 30 /* gallery top bar height (Playdate-style, room for the button glyphs) */
+#define SHEET_LEAD 50 /* the drawing frontier leads this many px above the bottom edge */
 #define MAX_GALLERY 64
 #define NAME_CAP 40
 
@@ -932,16 +933,28 @@ static void draw_receive(void) {
     unsigned enow = rx_paused ? pause_anchor : now; /* the timeline stands still while paused */
     int shown = expected_lines(enow);
     if(lines_reached > shown) shown = lines_reached; /* never hide a line that arrived */
-    float target = (float)(LCD_ROWS - shown);
-    float d = target - sheet_y;
+    /* The drawing frontier (the newest line) leads SHEET_LEAD px above the bottom edge, so you
+     * watch lines land there over a semi-transparent preview placeholder in the band below.
+     * The image top climbs until it hits the screen top (SHEET_LEAD lines before the end); the
+     * frontier then walks down through the band, filling the last lines over the placeholder. */
+    int target;
+    if(shown <= 0) target = LCD_ROWS; /* nothing yet: scene only */
+    else if(shown <= LCD_ROWS - SHEET_LEAD) target = LCD_ROWS - SHEET_LEAD - shown; /* rising */
+    else target = 0; /* image aligned to the top; the frontier now descends into the band */
+    float d = (float)target - sheet_y;
     if(d < -0.5f || d > 0.5f) sheet_y += d * 0.15f;
-    else sheet_y = target;
-    int y = (int)(sheet_y + 0.5f);
+    else sheet_y = (float)target;
+    int y = (int)(sheet_y + 0.5f); /* screen y of image row 0 (the sheet's top) */
+    int frontier = y + shown; /* screen y of the newest drawn line */
+    if(frontier > LCD_ROWS) frontier = LCD_ROWS;
     if(y > 0) draw_scene(); /* listening, or START + preview received; the sheet grows over it */
     else pd->graphics->clear(kColorWhite);
     if(y < LCD_ROWS) {
+        /* the full picture bitmap already carries the checker preview placeholder for lines
+         * that have not arrived, so the band below the frontier shows the preview */
         pd->graphics->drawBitmap(image, 0, y, kBitmapUnflipped);
-        if(y > 0) pd->graphics->fillRect(0, y - 2, LCD_COLUMNS, 2, kColorBlack); /* sheet edge */
+        if(frontier > 0 && frontier < LCD_ROWS)
+            pd->graphics->fillRect(0, frontier - 2, LCD_COLUMNS, 2, kColorBlack); /* drawing frontier */
     }
     /* The bar stays on top so the picture slides in from under it. As the picture's top edge
      * nears the bar, the bar slides up and off with its own smooth animation (not the sheet's
@@ -964,7 +977,7 @@ static void draw_receive(void) {
     }
     /* Picture fully in but the pass is not done yet: the outer-code parity is still arriving.
      * Show a spinner and "Verifying" until END (or the timeout) finishes the pass. */
-    if(started && !finished && !rx_paused && y <= 0) {
+    if(started && !finished && !rx_paused && frontier >= LCD_ROWS) {
         use_font(font_ui);
         const char* v = "Verifying";
         int r = 6, sp = 2 * r, pad = 10, gap = 6, tw = text_width(v);
