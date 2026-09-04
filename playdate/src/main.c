@@ -752,24 +752,25 @@ static LCDBitmap* scene_dolphin(unsigned now) {
 static void draw_scene(void) {
     unsigned now = pd->system->getCurrentTimeMilliseconds();
     pd->graphics->clear(kColorWhite);
-    /* dolphin (2x, 142x98) and console (140x118) at the same scale, centred on one line */
-    const int cx = 240, cy = 40; /* console */
+    char t[64], nm[NAME_CAP];
+    /* title in the top bar: the file name while receiving, else "Listening" */
+    if(started) {
+        display_name(nm, sizeof nm, current_name);
+        draw_title_bar(nm, NULL);
+    } else {
+        draw_title_bar("Listening", NULL);
+    }
+    /* dolphin (2x) and console (140x118) below the bar */
+    const int cx = 240, cy = 44; /* console */
     const int dx = 20, dy = cy + (CONSOLE_H - DOLPHIN_H * 2) / 2; /* dolphin */
     const int text_cx = LCD_COLUMNS / 2; /* texts run under both figures */
-    /* Dolphin pose follows the reception state (idle / signal / preview / data / repair). */
     LCDBitmap* dfin = scene_dolphin(now);
     if(dfin) pd->graphics->drawBitmap(dfin, dx, dy, kBitmapUnflipped);
     else if(dolphin_tile) pd->graphics->drawBitmap(dolphin_tile, dx, dy, kBitmapUnflipped);
     draw_console(cx, cy, started ? preview_bitmap : NULL);
     use_font(font_ui);
-    char t[64], nm[NAME_CAP];
     if(started) {
         draw_spout(dx + 70, dy + 2, cx + CONSOLE_SCREEN_X + CONSOLE_SCREEN_W / 2, cy + CONSOLE_SCREEN_Y + CONSOLE_SCREEN_H / 2, (float)(now % 1200) / 1200.0f);
-        display_name(nm, sizeof nm, current_name);
-        use_font(font_big);
-        fit_text(t, sizeof t, nm, 360);
-        draw_text_centered(t, text_cx, 178);
-        use_font(font_ui);
         if(preview_chunks < SSTV_INTRO_FRAMES && segs_done == 0) {
             /* Preview is arriving. The bar advances by elapsed time (smooth, per frame) but is
              * clamped between the decoded chunk count and one 4-frame block ahead, so a lost
@@ -791,13 +792,9 @@ static void draw_scene(void) {
             draw_text_centered(t, text_cx, 220);
         }
     } else {
-        use_font(font_big);
-        int ly = 176;
-        draw_text_centered("Listening", text_cx, ly);
-        int big_h = font_height();
         use_font(font_ui);
         const char* hint = mic_state < 0 ? "microphone access denied" : mic_state == 0 ? "waiting for microphone permission" : "start a transmission on the Flipper";
-        draw_text_centered(hint, text_cx, ly + big_h + 8);
+        draw_text_centered(hint, text_cx, 208);
     }
 }
 
