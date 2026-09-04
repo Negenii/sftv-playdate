@@ -752,15 +752,8 @@ static LCDBitmap* scene_dolphin(unsigned now) {
 static void draw_scene(void) {
     unsigned now = pd->system->getCurrentTimeMilliseconds();
     pd->graphics->clear(kColorWhite);
-    char t[64], nm[NAME_CAP];
-    /* title in the top bar: the file name while receiving, else "Listening" */
-    if(started) {
-        display_name(nm, sizeof nm, current_name);
-        draw_title_bar(nm, NULL);
-    } else {
-        draw_title_bar("Listening", NULL);
-    }
-    /* dolphin (2x) and console (140x118) below the bar */
+    char t[64];
+    /* dolphin (2x) and console (140x118) below the top bar (drawn by draw_receive) */
     const int cx = 240, cy = 44; /* console */
     const int dx = 20, dy = cy + (CONSOLE_H - DOLPHIN_H * 2) / 2; /* dolphin */
     const int text_cx = LCD_COLUMNS / 2; /* texts run under both figures */
@@ -896,6 +889,18 @@ static void draw_receive(void) {
     if(y < LCD_ROWS) {
         pd->graphics->drawBitmap(image, 0, y, kBitmapUnflipped);
         if(y > 0) pd->graphics->fillRect(0, y - 2, LCD_COLUMNS, 2, kColorBlack); /* sheet edge */
+    }
+    /* top bar stays on top so the picture slides in from under it; hidden once finished so the
+     * whole image is visible */
+    if(!finished) {
+        if(started) {
+            char nm[NAME_CAP], bar[NAME_CAP + 12];
+            display_name(nm, sizeof nm, current_name);
+            snprintf(bar, sizeof bar, "Receiving: %s", nm);
+            draw_title_bar(bar, NULL);
+        } else {
+            draw_title_bar("Listening", NULL);
+        }
     }
     if(show_panel) draw_panel();
     draw_finished_banner();
