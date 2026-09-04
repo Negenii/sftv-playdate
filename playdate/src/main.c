@@ -476,12 +476,14 @@ static void start_mic(void) {
     if(mic_state != 1 || mic_running || ui_mode != ModeReceive) return;
     pd->sound->setMicCallback(mic_cb, NULL, kMicInputAutodetect);
     mic_running = true;
+    pd->system->setAutoLockDisabled(1); /* a pass has no button input for minutes; stay awake */
 }
 
 static void stop_mic(void) {
     if(!mic_running) return;
     pd->sound->setMicCallback(NULL, NULL, kMicInputAutodetect);
     mic_running = false;
+    pd->system->setAutoLockDisabled(0);
 }
 
 static void mic_access_cb(bool allowed, void* userdata) {
