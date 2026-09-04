@@ -379,17 +379,24 @@ int sstv_build_note(const char* text, const char* name, uint8_t* out, uint8_t* l
     pass_emitter em;
     emitter_init(&em, out, lines_after);
 
-    /* Start meta block: [SSTV_META_START][total | NOTE flag][name] in every logical frame. */
-    uint16_t word = total | SSTV_META_NOTE_FLAG;
+    /* Detect UTF-8 (any byte with the high bit set). */
+    bool utf8 = false;
+    for(int i = 0; i < len; i++)
+        if((uint8_t)text[i] & 0x80) { utf8 = true; break; }
+
+    /* Start meta block: [START][total | flags][content length][name] in every logical frame. */
+    uint16_t word = total | SSTV_META_NOTE_FLAG | (utf8 ? SSTV_META_UTF8_FLAG : 0);
     uint8_t meta[SSTV_PAYLOAD_BYTES];
     memset(meta, 0, SSTV_PAYLOAD_BYTES);
     meta[0] = SSTV_META_START;
     meta[1] = (uint8_t)(word & 0xFF);
     meta[2] = (uint8_t)(word >> 8);
+    meta[SSTV_NOTE_LEN_OFFSET] = (uint8_t)(len & 0xFF);
+    meta[SSTV_NOTE_LEN_OFFSET + 1] = (uint8_t)((unsigned)len >> 8);
     if(name) {
         size_t n = strlen(name);
-        if(n > SSTV_NAME_MAX) n = SSTV_NAME_MAX;
-        memcpy(meta + SSTV_META_NAME_OFFSET, name, n);
+        if(n > SSTV_NOTE_NAME_MAX) n = SSTV_NOTE_NAME_MAX;
+        memcpy(meta + SSTV_NOTE_NAME_OFFSET, name, n);
     }
     for(int i = 0; i < SSTV_ILEAVE; i++)
         sstv_frame_pack(sstv_hdr(SSTV_FT_META, 0), meta, logical + i * SSTV_FRAME_BYTES);

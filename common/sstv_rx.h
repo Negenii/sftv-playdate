@@ -58,6 +58,8 @@ typedef struct {
     sstv_control_cb control_cb; /* NULL unless registered */
     sstv_note_cb note_cb; /* NULL unless registered */
     bool note; /* current pass carries a text note (from the START/END note flag) */
+    bool note_utf8; /* note charset: true = UTF-8, false = ASCII */
+    int note_len; /* announced note content length in bytes (HTTP-style) */
     void* ctx;
 } sstv_rx;
 

@@ -22,6 +22,8 @@ void sstv_rx_init(sstv_rx* rx, sstv_pixel_cb pixel_cb, sstv_meta_cb meta_cb, sst
     rx->control_cb = NULL;
     rx->note_cb = NULL;
     rx->note = false;
+    rx->note_utf8 = false;
+    rx->note_len = 0;
     rx->ctx = ctx;
     sstv_rx_start_pass(rx);
 }
@@ -150,8 +152,13 @@ static void handle_frame(sstv_rx* rx, uint16_t hdr, const uint8_t* payload, int 
             uint16_t word = (uint16_t)(payload[1] | (payload[2] << 8));
             bool coded = (word & SSTV_META_CODED_FLAG) != 0;
             bool note = (word & SSTV_META_NOTE_FLAG) != 0;
-            int total = word & ~(SSTV_META_CODED_FLAG | SSTV_META_NOTE_FLAG);
+            bool utf8 = (word & SSTV_META_UTF8_FLAG) != 0;
+            int total = word & ~(SSTV_META_CODED_FLAG | SSTV_META_NOTE_FLAG | SSTV_META_UTF8_FLAG);
             rx->note = note;
+            if(note) {
+                rx->note_utf8 = utf8;
+                rx->note_len = payload[SSTV_NOTE_LEN_OFFSET] | (payload[SSTV_NOTE_LEN_OFFSET + 1] << 8);
+            }
             if(sub == SSTV_META_START && announce) {
                 if(!rx->pass_open) {
                     sstv_rx_start_pass(rx);
@@ -168,8 +175,10 @@ static void handle_frame(sstv_rx* rx, uint16_t hdr, const uint8_t* payload, int 
             }
             if(announce && rx->meta_cb) {
                 char name[SSTV_PAYLOAD_BYTES];
-                memcpy(name, payload + SSTV_META_NAME_OFFSET, SSTV_NAME_MAX);
-                name[SSTV_NAME_MAX] = 0;
+                int noff = note ? SSTV_NOTE_NAME_OFFSET : SSTV_META_NAME_OFFSET;
+                int nmax = note ? SSTV_NOTE_NAME_MAX : SSTV_NAME_MAX;
+                memcpy(name, payload + noff, (size_t)nmax);
+                name[nmax] = 0;
                 rx->meta_cb(rx->ctx, name, sub == SSTV_META_END, total, coded);
             }
         } else if(sub == SSTV_META_PAUSE || sub == SSTV_META_RESUME) {

@@ -39,9 +39,16 @@
 #define SSTV_NAME_MAX (SSTV_PAYLOAD_BYTES - SSTV_META_NAME_OFFSET) /* 23 characters */
 #define SSTV_META_CODED_FLAG 0x8000
 #define SSTV_META_NOTE_FLAG 0x4000 /* START/END total word: this pass carries a text note (never coded, so bit 15 stays 0) */
-#define SSTV_NOTE_MAX_CHARS 200
+#define SSTV_META_UTF8_FLAG 0x2000 /* note charset: set = UTF-8 bytes, clear = plain ASCII */
+#define SSTV_NOTE_MAX_CHARS 1000 /* stays one outer-code group: 40 text + 4 START <= SSTV_OUTER_GROUP */
 #define SSTV_NOTE_CHUNK SSTV_SEG_BYTES /* 25 ASCII bytes per RAW text frame */
-#define SSTV_NOTE_MAX_FRAMES 8 /* ceil(200/25) = 8, already a multiple of SSTV_ILEAVE */
+#define SSTV_NOTE_MAX_FRAMES ((((SSTV_NOTE_MAX_CHARS + SSTV_NOTE_CHUNK - 1) / SSTV_NOTE_CHUNK) + SSTV_ILEAVE - 1) / SSTV_ILEAVE * SSTV_ILEAVE) /* 40 */
+/* Note START/END meta: [subtype][total lo][total hi][len lo][len hi][name...]. The content
+ * length (bytes) is announced up front like HTTP Content-Length, so both ends agree on the
+ * exact frame count and a short note sends only as many blocks as it needs. */
+#define SSTV_NOTE_LEN_OFFSET 3
+#define SSTV_NOTE_NAME_OFFSET 5
+#define SSTV_NOTE_NAME_MAX (SSTV_PAYLOAD_BYTES - SSTV_NOTE_NAME_OFFSET) /* 21 */
 #define SSTV_META_START 0
 #define SSTV_META_END 1
 #define SSTV_META_PREVIEW 2

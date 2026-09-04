@@ -44,8 +44,11 @@ static void test_note_layout(void) {
     uint16_t word = (uint16_t)(p0[1] | (p0[2] << 8));
     CHECK((word & SSTV_META_NOTE_FLAG) != 0);
     CHECK((word & SSTV_META_CODED_FLAG) == 0);
-    CHECK((word & ~(SSTV_META_NOTE_FLAG | SSTV_META_CODED_FLAG)) == (uint16_t)total);
-    CHECK(memcmp(p0 + SSTV_META_NAME_OFFSET, "Hello", 5) == 0);
+    CHECK((word & SSTV_META_UTF8_FLAG) == 0); /* ASCII note */
+    CHECK((word & ~(SSTV_META_NOTE_FLAG | SSTV_META_CODED_FLAG | SSTV_META_UTF8_FLAG)) == (uint16_t)total);
+    int len = p0[SSTV_NOTE_LEN_OFFSET] | (p0[SSTV_NOTE_LEN_OFFSET + 1] << 8);
+    CHECK(len == (int)strlen(text));
+    CHECK(memcmp(p0 + SSTV_NOTE_NAME_OFFSET, "Hello", 5) == 0);
 
     /* Block 1: RAW text frames, index = chunk, first bytes are the text. */
     uint16_t ht = frame_hdr(block(out, 1), 0);
@@ -67,7 +70,6 @@ static void test_note_max(void) {
     for(int i = 0; i < SSTV_NOTE_MAX_CHARS; i++) text[i] = (char)('A' + i % 26);
     text[SSTV_NOTE_MAX_CHARS] = 0;
     int total = sstv_build_note(text, "Max", out, NULL);
-    /* 200 chars -> 8 chunks -> 8 text frames -> data 12 -> total 12+12+4 = 28. */
     CHECK(total == SSTV_ILEAVE + SSTV_NOTE_MAX_FRAMES + SSTV_OUTER_PARITY + SSTV_ILEAVE);
 }
 
@@ -134,10 +136,37 @@ static void test_note_repair(void) {
     CHECK(strcmp(note_got, text) == 0);
 }
 
+static void test_note_variable(void) {
+    static uint8_t out[SSTV_MAX_FRAMES * SSTV_FRAME_BYTES];
+    /* 10 chars -> 1 chunk -> 1 block (4 text frames) -> total 24 */
+    CHECK(sstv_build_note("0123456789", "S", out, NULL) == 8 + SSTV_OUTER_PARITY + SSTV_ILEAVE);
+    /* 130 chars -> 6 chunks -> 8 text frames -> total 28 (more content, more frames) */
+    char t[131];
+    for(int i = 0; i < 130; i++) t[i] = 'x';
+    t[130] = 0;
+    CHECK(sstv_build_note(t, "M", out, NULL) == 12 + SSTV_OUTER_PARITY + SSTV_ILEAVE);
+}
+
+static void test_note_utf8(void) {
+    static uint8_t out[SSTV_MAX_FRAMES * SSTV_FRAME_BYTES];
+    const char* text = "\xd0\x9f\xd1\x80\xd0\xb8\xd0\xb2\xd0\xb5\xd1\x82"; /* "Привет" in UTF-8 */
+    sstv_build_note(text, "hi", out, NULL);
+    uint8_t p0[SSTV_PAYLOAD_BYTES];
+    frame_payload(block(out, 0), 0, p0);
+    uint16_t word = (uint16_t)(p0[1] | (p0[2] << 8));
+    CHECK((word & SSTV_META_UTF8_FLAG) != 0); /* flagged as UTF-8 */
+    int len = p0[SSTV_NOTE_LEN_OFFSET] | (p0[SSTV_NOTE_LEN_OFFSET + 1] << 8);
+    CHECK(len == 12);
+    feed_note(text, "hi", NULL, 0);
+    CHECK(strcmp(note_got, text) == 0); /* bytes round-trip */
+}
+
 int main(void) {
     test_note_layout();
     test_note_max();
     test_note_empty();
+    test_note_variable();
+    test_note_utf8();
     test_note_loopback();
     test_note_repair();
     TEST_MAIN_END();
