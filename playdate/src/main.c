@@ -913,6 +913,19 @@ static void draw_receive(void) {
         }
         pd->graphics->setDrawOffset(0, 0);
     }
+    /* Picture fully in but the pass is not done yet: the outer-code parity is still arriving.
+     * Show a spinner and "Verifying" until END (or the timeout) finishes the pass. */
+    if(started && !finished && y <= 0) {
+        use_font(font_ui);
+        const char* v = "Verifying";
+        int r = 6, sp = 2 * r, pad = 10, gap = 6, tw = text_width(v);
+        int w = pad + sp + gap + tw + pad, h = 24, bx = 10, by = 10;
+        pd->graphics->fillRoundRect(bx, by, w, h, h / 2, kColorBlack);
+        float a0 = (float)(now % 900) / 900.0f * 360.0f;
+        int scx = bx + pad, scy = by + (h - sp) / 2;
+        pd->graphics->drawEllipse(scx, scy, sp, sp, 2, a0, a0 + 270.0f, kColorWhite);
+        draw_text_white(v, bx + pad + sp + gap, by + (h - font_height()) / 2);
+    }
     if(show_panel) draw_panel();
     draw_finished_banner();
     if(confirm_leave) {
