@@ -792,10 +792,12 @@ static void draw_scene(void) {
         }
     } else {
         use_font(font_big);
-        draw_text_centered("Listening", text_cx, 192);
+        int ly = 176;
+        draw_text_centered("Listening", text_cx, ly);
+        int big_h = font_height();
         use_font(font_ui);
         const char* hint = mic_state < 0 ? "microphone access denied" : mic_state == 0 ? "waiting for microphone permission" : "start a transmission on the Flipper";
-        draw_text_centered(hint, text_cx, 220);
+        draw_text_centered(hint, text_cx, ly + big_h + 8);
     }
 }
 
