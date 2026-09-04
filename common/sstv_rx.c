@@ -278,6 +278,18 @@ static int try_block(sstv_rx* rx) {
         handle_frame(rx, hdr[i], p, i, !meta_named || !announced);
         if(meta_named) announced = true;
     }
+    /* Provisional glitch (raw mode): a half-line whose frame failed to decode but whose segment
+     * is known from the block's good frames is drawn now with its best-effort bytes; a later
+     * outer-code repair overwrites it with the correct pixels. Not stored, so the repair runs. */
+    if(type == SSTV_FT_RAW && index >= 0) {
+        for(int i = 0; i < SSTV_ILEAVE; i++) {
+            if(ok[i]) continue;
+            int seg = index + i;
+            if(seg >= 0 && seg < SSTV_NUM_SEGS && rx->pixel_cb)
+                rx->pixel_cb(rx->ctx, (uint16_t)sstv_seg_line(seg), sstv_seg_byte_offset(seg),
+                             SSTV_SEG_BYTES, payload + i * SSTV_PAYLOAD_BYTES);
+        }
+    }
     if(type == SSTV_FT_CODED) coded_block_unpack(rx, index);
     return good;
 }
