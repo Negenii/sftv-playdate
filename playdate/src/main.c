@@ -60,6 +60,7 @@ static int mic_state; /* 0 asking, 1 allowed, -1 denied */
 static bool mic_running; /* callback installed */
 static bool show_panel; /* side panel with statistics, toggled with Right */
 static bool confirm_leave; /* B during an active pass asks before leaving Receive */
+static bool preview_dirty; /* a preview/tiny chunk arrived: refresh once per frame, not per chunk */
 static unsigned led_frame_ms; /* virtual LED: last physical frame time */
 static unsigned led_block_ms; /* last decoded block time */
 static volatile unsigned mic_dropped;
@@ -346,8 +347,7 @@ static void on_preview(void* ctx, int layer, int chunk, int nbytes, const uint8_
         if(!preview_have[chunk]) preview_chunks++;
         preview_have[chunk] = true;
     }
-    preview_refresh_bitmap();
-    for(int line = 0; line < SSTV_HEIGHT; line++) paint_placeholder_line(line);
+    preview_dirty = true;
     last_data_ms = pd->system->getCurrentTimeMilliseconds();
 }
 
@@ -972,6 +972,11 @@ static int update(void* userdata) {
                 rec_len = -1;
             }
         }
+    }
+    if(preview_dirty) { /* coalesce a block's 4 chunks into one refresh so the scene does not hitch */
+        preview_refresh_bitmap();
+        for(int line = 0; line < SSTV_HEIGHT; line++) paint_placeholder_line(line);
+        preview_dirty = false;
     }
 
     unsigned now = pd->system->getCurrentTimeMilliseconds();
