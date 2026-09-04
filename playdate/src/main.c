@@ -1073,8 +1073,9 @@ static int update(void* userdata) {
         if(ui_mode == ModeGrid) draw_grid();
         else draw_full();
         break;
-    case ModeFull:
-        if(pushed) full_ui_ms = now;
+    case ModeFull: {
+        bool ui_visible = now - full_ui_ms < 3000; /* were the hints showing before this press? */
+        if(pushed) full_ui_ms = now;              /* any press re-shows them */
         if(confirm_delete) {
             if(pushed & kButtonA) {
                 if(gallery_index >= 0 && gallery_index < gallery_count)
@@ -1092,13 +1093,16 @@ static int update(void* userdata) {
             if(ui_mode == ModeFull) draw_full(); else draw_grid();
             break;
         }
-        if(pushed & kButtonA) confirm_delete = true;
-        if(pushed & kButtonB) ui_mode = ModeGrid;
+        /* When the hints are hidden the first A/B just reveals them; the action runs only
+         * while they are visible. Left/Right always navigate (and re-show). */
+        if((pushed & kButtonA) && ui_visible) confirm_delete = true;
+        if((pushed & kButtonB) && ui_visible) ui_mode = ModeGrid;
         if((pushed & kButtonRight) && gallery_count > 0) { gallery_index = (gallery_index + 1) % gallery_count; gallery_load_full(gallery_index); }
         if((pushed & kButtonLeft) && gallery_count > 0) { gallery_index = (gallery_index + gallery_count - 1) % gallery_count; gallery_load_full(gallery_index); }
         if(ui_mode == ModeFull) draw_full();
         else draw_grid();
         break;
+    }
     }
     if(ui_mode == ModeReceive) draw_led(); /* the frame dot belongs to Receive, not the menu/gallery */
     return 1;
