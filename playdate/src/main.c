@@ -760,11 +760,28 @@ static void draw_scene(void) {
         display_name(nm, sizeof nm, current_name);
         use_font(font_big);
         fit_text(t, sizeof t, nm, 360);
-        draw_text_centered(t, text_cx, 192);
+        draw_text_centered(t, text_cx, 190);
         use_font(font_ui);
-        int secs = total_frames > 0 ? (int)((unsigned)total_frames * (SSTV_PHYS_US / 1000) / 1000) : 0;
-        snprintf(t, sizeof t, "%s, %d:%02d, preview %d/%d", rx.coded ? "compressed" : "raw", secs / 60, secs % 60, preview_chunks, SSTV_INTRO_FRAMES);
-        draw_text_centered(t, text_cx, 220);
+        if(preview_chunks < SSTV_INTRO_FRAMES && segs_done == 0) {
+            /* Preview is arriving. The bar advances by elapsed time (smooth, per frame) but is
+             * clamped between the decoded chunk count and one 4-frame block ahead, so a lost
+             * block holds it in place until that block decodes or is repaired. */
+            float est = (float)(now - started_ms) / (float)(SSTV_PHYS_US / 1000);
+            float shown = est;
+            if(shown < (float)preview_chunks) shown = (float)preview_chunks;
+            if(shown > (float)(preview_chunks + SSTV_ILEAVE)) shown = (float)(preview_chunks + SSTV_ILEAVE);
+            if(shown > (float)SSTV_INTRO_FRAMES) shown = (float)SSTV_INTRO_FRAMES;
+            float frac = shown / (float)SSTV_INTRO_FRAMES;
+            draw_text_centered("Receiving preview", text_cx, 210);
+            int bw = 220, bx = text_cx - bw / 2, by = 224;
+            pd->graphics->drawRoundRect(bx, by, bw, 10, 5, 1, kColorBlack);
+            int fill = (int)((float)(bw - 4) * frac);
+            if(fill > 0) pd->graphics->fillRoundRect(bx + 2, by + 2, fill, 6, 3, kColorBlack);
+        } else {
+            int secs = total_frames > 0 ? (int)((unsigned)total_frames * (SSTV_PHYS_US / 1000) / 1000) : 0;
+            snprintf(t, sizeof t, "%s, %d:%02d", rx.coded ? "compressed" : "raw", secs / 60, secs % 60);
+            draw_text_centered(t, text_cx, 220);
+        }
     } else {
         use_font(font_big);
         draw_text_centered("Listening", text_cx, 192);
