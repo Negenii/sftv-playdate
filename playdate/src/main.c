@@ -1503,7 +1503,7 @@ int eventHandler(PlaydateAPI* playdate, PDSystemEvent event, uint32_t arg) {
         pd = playdate;
         pd->display->setRefreshRate(50);
         init();
-        sort_item = pd->system->addCheckmarkMenuItem("Newest first", 0, sort_menu_cb, NULL);
+        sort_item = pd->system->addCheckmarkMenuItem("Newest", 0, sort_menu_cb, NULL);
         pd->system->setUpdateCallback(update, NULL);
     } else if(event == kEventTerminate || event == kEventLock || event == kEventLowPower) {
         /* The audio thread keeps calling the mic callback after the game is unloaded
