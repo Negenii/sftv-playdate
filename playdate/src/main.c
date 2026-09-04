@@ -62,6 +62,7 @@ static bool show_panel; /* side panel with statistics, toggled with Right */
 static bool confirm_leave; /* B during an active pass asks before leaving Receive */
 static bool preview_dirty; /* a preview/tiny chunk arrived: refresh once per frame, not per chunk */
 static bool confirm_delete; /* full view: A asks before deleting the image */
+static unsigned full_ui_ms; /* full view: show name+hints for 3 s after entry or any press */
 static unsigned led_frame_ms; /* virtual LED: last physical frame time */
 static unsigned led_block_ms; /* last decoded block time */
 static volatile unsigned mic_dropped;
@@ -951,14 +952,16 @@ static void draw_full(void) {
     pd->graphics->clear(kColorWhite);
     if(gallery_bitmap) pd->graphics->drawBitmap(gallery_bitmap, 0, 0, kBitmapUnflipped);
     char t[64], nm[NAME_CAP];
-    display_name(nm, sizeof nm, gallery_names[gallery_index]);
-    use_font(font_ui);
-    fit_text(t, sizeof t, nm, 200);
-    draw_pill(t, 8, LCD_ROWS - font_height() - 12, true);
-    /* button hints (glyphs need the extended font) */
-    use_font(font_glyph);
-    const char* hint = "Ⓐ delete   Ⓑ back";
-    draw_pill(hint, LCD_COLUMNS - 8 - (text_width(hint) + 12), 8, true);
+    /* name + hints show for 3 s after entering or any press, then hide for a clean full view */
+    if(pd->system->getCurrentTimeMilliseconds() - full_ui_ms < 3000) {
+        display_name(nm, sizeof nm, gallery_names[gallery_index]);
+        use_font(font_ui);
+        fit_text(t, sizeof t, nm, 200);
+        draw_pill(t, 8, LCD_ROWS - font_height() - 12, true);
+        use_font(font_glyph);
+        const char* hint = "Ⓐ delete   Ⓑ back";
+        draw_pill(hint, LCD_COLUMNS - 8 - (text_width(hint) + 12), 8, true);
+    }
     if(confirm_delete) {
         const char* msg = "Delete this image?";
         const char* keys = "Ⓐ delete    Ⓑ keep";
@@ -1065,12 +1068,13 @@ static int update(void* userdata) {
             if(pushed & kButtonDown) gallery_index = (gallery_index + GRID_COLS) % gallery_count;
             if(pushed & kButtonUp) gallery_index = (gallery_index + gallery_count - GRID_COLS) % gallery_count;
             gallery_page = gallery_index / GRID_PER_PAGE * GRID_PER_PAGE;
-            if((pushed & kButtonA) && gallery_load_full(gallery_index)) ui_mode = ModeFull;
+            if((pushed & kButtonA) && gallery_load_full(gallery_index)) { ui_mode = ModeFull; full_ui_ms = now; }
         }
         if(ui_mode == ModeGrid) draw_grid();
         else draw_full();
         break;
     case ModeFull:
+        if(pushed) full_ui_ms = now;
         if(confirm_delete) {
             if(pushed & kButtonA) {
                 if(gallery_index >= 0 && gallery_index < gallery_count)
