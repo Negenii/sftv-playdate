@@ -809,7 +809,7 @@ static void draw_panel(void) {
     y += lh + 6;
     /* counters: label left, number right in the mono font */
     struct { const char* k; int v; } rows[] = {
-        {"preview", preview_chunks}, {"frames ok", rx.frames_ok}, {"frames bad", rx.frames_bad},
+        {"recv", rx.frames_in}, {"preview", preview_chunks}, {"frames ok", rx.frames_ok}, {"frames bad", rx.frames_bad},
         {"rs fixed", rx.rs_corrected}, {"fixed", rx.frames_repaired}, {"flywheel", demod.flywheel_frames}, {"dropped", (int)mic_dropped},
     };
     for(size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
