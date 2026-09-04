@@ -95,6 +95,10 @@ static int gallery_index; /* cursor */
 static int gallery_page; /* first tile shown */
 static LCDBitmap* gallery_bitmap;
 static LCDBitmap* thumbs[MAX_GALLERY]; /* 100x60 thumbnails, loaded lazily */
+static uint8_t gallery_kind[MAX_GALLERY]; /* 0 = image (.pbm), 1 = note (.txt) */
+static bool full_is_note; /* the item open in full view is a note */
+static char full_note_text[SSTV_NOTE_MAX_CHARS + 1];
+static bool note_dirty; /* a note chunk arrived since the last save */
 static LCDBitmap* menu_thumb; /* latest saved image, for the gallery tile */
 #define GRID_COLS 3
 #define GRID_ROWS 2
@@ -148,7 +152,7 @@ static void display_name(char* out, size_t cap, const char* in) {
     strncpy(out, in, cap - 1);
     out[cap - 1] = 0;
     size_t n = strlen(out);
-    if(n > 4 && strcmp(out + n - 4, ".pbm") == 0) out[n - 4] = 0;
+    if(n > 4 && (strcmp(out + n - 4, ".pbm") == 0 || strcmp(out + n - 4, ".txt") == 0)) out[n - 4] = 0;
 }
 
 static void sanitize_name(char* out, size_t cap, const char* in) {
@@ -189,14 +193,51 @@ static void save_image(void) {
     image_dirty = false;
 }
 
+/* Saves the received note as a .txt (first line = the label). Unique untitled_N if unnamed. */
+static void save_note(void) {
+    if(!note_dirty) return;
+    /* trim trailing NULs already handled by the buffer being zeroed; find the length */
+    char base[NAME_CAP];
+    if(name_is_blank(current_name)) next_untitled(base, sizeof base);
+    else display_name(base, sizeof base, current_name);
+    char fname[NAME_CAP + 8];
+    snprintf(fname, sizeof fname, "%s.txt", base);
+    SDFile* f = pd->file->open(fname, kFileWrite);
+    if(!f) return;
+    pd->file->write(f, note_buf, (unsigned)strlen(note_buf));
+    pd->file->close(f);
+    note_dirty = false;
+}
+
+/* Reads a saved note .txt into out (NUL-terminated). */
+static bool read_note(const char* name, char* out, int cap) {
+    SDFile* f = pd->file->open(name, kFileReadData);
+    if(!f) return false;
+    int n = pd->file->read(f, out, cap - 1);
+    pd->file->close(f);
+    if(n < 0) n = 0;
+    out[n] = 0;
+    return true;
+}
+
+/* Persists whatever the current reception produced (a picture or a note). */
+static void save_received(void) {
+    if(rx.note) save_note();
+    else save_image();
+}
+
 /* ---- gallery data ---- */
 
 static void gallery_list_cb(const char* path, void* userdata) {
     (void)userdata;
     size_t n = strlen(path);
-    if(n < 5 || strcmp(path + n - 4, ".pbm") != 0 || gallery_count >= MAX_GALLERY) return;
+    if(n < 5 || gallery_count >= MAX_GALLERY) return;
+    bool pbm = strcmp(path + n - 4, ".pbm") == 0;
+    bool txt = strcmp(path + n - 4, ".txt") == 0;
+    if(!pbm && !txt) return;
     strncpy(gallery_names[gallery_count], path, NAME_CAP - 1);
     gallery_names[gallery_count][NAME_CAP - 1] = 0;
+    gallery_kind[gallery_count] = txt ? 1 : 0;
     gallery_count++;
 }
 
@@ -238,6 +279,16 @@ static LCDBitmap* make_thumb(const uint8_t* px) {
     return t;
 }
 
+/* Renders a note as a mini sticky-note thumbnail (same template, scaled down). */
+static LCDBitmap* make_note_thumb(const char* text) {
+    LCDBitmap* t = pd->graphics->newBitmap(THUMB_W, THUMB_H, kColorWhite);
+    pd->graphics->pushContext(t);
+    draw_sticky_note(pd, font_ui, 0, 0, THUMB_W, THUMB_H, text);
+    pd->graphics->popContext();
+    if(thumb_mask) pd->graphics->setBitmapMask(t, thumb_mask);
+    return t;
+}
+
 static void free_thumbs(void) {
     for(int i = 0; i < MAX_GALLERY; i++) {
         if(thumbs[i]) pd->graphics->freeBitmap(thumbs[i]);
@@ -246,7 +297,7 @@ static void free_thumbs(void) {
 }
 
 static void gallery_scan(void) {
-    save_image();
+    save_received();
     free_thumbs();
     gallery_count = 0;
     pd->file->listfiles(".", gallery_list_cb, NULL, 0);
@@ -254,6 +305,11 @@ static void gallery_scan(void) {
 
 static bool gallery_load_full(int idx) {
     if(idx < 0 || idx >= gallery_count) return false;
+    if(gallery_kind[idx] == 1) {
+        full_is_note = true;
+        return read_note(gallery_names[idx], full_note_text, sizeof full_note_text);
+    }
+    full_is_note = false;
     uint8_t* px = pd->system->realloc(NULL, SSTV_IMAGE_BYTES);
     bool ok = read_pbm(gallery_names[idx], px);
     if(ok) {
@@ -268,7 +324,12 @@ static void gallery_ensure_thumbs(int first, int count) {
     uint8_t* px = pd->system->realloc(NULL, SSTV_IMAGE_BYTES);
     for(int i = first; i < first + count && i < gallery_count; i++) {
         if(thumbs[i]) continue;
-        if(read_pbm(gallery_names[i], px)) thumbs[i] = make_thumb(px);
+        if(gallery_kind[i] == 1) {
+            char txt[SSTV_NOTE_MAX_CHARS + 1];
+            if(read_note(gallery_names[i], txt, sizeof txt)) thumbs[i] = make_note_thumb(txt);
+        } else if(read_pbm(gallery_names[i], px)) {
+            thumbs[i] = make_thumb(px);
+        }
     }
     pd->system->realloc(px, 0);
 }
@@ -289,9 +350,15 @@ static void menu_open(void) {
         menu_thumb = NULL;
     }
     if(gallery_count > 0) {
-        uint8_t* px = pd->system->realloc(NULL, SSTV_IMAGE_BYTES);
-        if(read_pbm(gallery_names[gallery_count - 1], px)) menu_thumb = make_thumb(px);
-        pd->system->realloc(px, 0);
+        int last = gallery_count - 1;
+        if(gallery_kind[last] == 1) {
+            char txt[SSTV_NOTE_MAX_CHARS + 1];
+            if(read_note(gallery_names[last], txt, sizeof txt)) menu_thumb = make_note_thumb(txt);
+        } else {
+            uint8_t* px = pd->system->realloc(NULL, SSTV_IMAGE_BYTES);
+            if(read_pbm(gallery_names[last], px)) menu_thumb = make_thumb(px);
+            pd->system->realloc(px, 0);
+        }
     }
     ui_mode = ModeMenu;
     confirm_leave = false;
@@ -428,7 +495,7 @@ static void finish(unsigned now) {
     finished_ms = now;
     finished_lines = segs_done / 2;
     lines_reached = SSTV_HEIGHT; /* pull the whole sheet in, gaps and all */
-    save_image();
+    save_received();
 }
 
 /* Lines the transmitter has sent by now according to the announced timeline: the START block
@@ -490,7 +557,7 @@ static void on_meta(void* ctx, const char* name, bool is_end, int frames, bool c
         return;
     }
     /* A new transmission starts: keep what the previous one produced, then start fresh. */
-    save_image();
+    save_received();
     clear_image();
     started = true;
     started_ms = now;
@@ -530,6 +597,7 @@ static void on_note(void* ctx, int chunk, int nbytes, const uint8_t* text) {
     (void)ctx;
     int off = chunk * SSTV_NOTE_CHUNK;
     for(int k = 0; k < nbytes && off + k < SSTV_NOTE_MAX_CHARS; k++) note_buf[off + k] = (char)text[k];
+    note_dirty = true;
 }
 
 static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
@@ -1072,7 +1140,10 @@ static void draw_grid(void) {
 
 static void draw_full(void) {
     pd->graphics->clear(kColorWhite);
-    if(gallery_bitmap) pd->graphics->drawBitmap(gallery_bitmap, 0, 0, kBitmapUnflipped);
+    if(full_is_note)
+        draw_sticky_note(pd, font_ui, 24, 20, LCD_COLUMNS - 48, LCD_ROWS - 44, full_note_text);
+    else if(gallery_bitmap)
+        pd->graphics->drawBitmap(gallery_bitmap, 0, 0, kBitmapUnflipped);
     char t[64], nm[NAME_CAP];
     /* name + hints show for 3 s after entering or any press, then hide for a clean full view */
     if(pd->system->getCurrentTimeMilliseconds() - full_ui_ms < 3000) {
@@ -1085,7 +1156,7 @@ static void draw_full(void) {
         draw_pill(hint, LCD_COLUMNS - 8 - (text_width(hint) + 12), 8, true);
     }
     if(confirm_delete) {
-        const char* msg = "Delete this image?";
+        const char* msg = full_is_note ? "Delete this note?" : "Delete this image?";
         const char* keys = "Ⓐ delete    Ⓑ keep";
         use_font(font_ui);
         int w1 = text_width(msg);
@@ -1141,6 +1212,7 @@ static int update(void* userdata) {
         if(st.tone >= 0 || st.state != SSTV_DEMOD_IDLE) hearing_ms = now;
     }
     if(image_dirty && ((segs_done == SSTV_NUM_SEGS) || (now - last_data_ms > LOST_TIMEOUT_MS))) save_image();
+    if(note_dirty && (now - last_data_ms > LOST_TIMEOUT_MS)) save_note();
     /* END never came: the pass is over by the announced timeline plus a margin. */
     if(started && total_frames > 0 && now - started_ms > (unsigned)(total_frames - SSTV_ILEAVE) * (SSTV_PHYS_US / 1000) + 4000) finish(now);
 
@@ -1296,7 +1368,7 @@ int eventHandler(PlaydateAPI* playdate, PDSystemEvent event, uint32_t arg) {
         /* The audio thread keeps calling the mic callback after the game is unloaded
          * unless it is removed here; the next launch then faults inside freed memory. */
         if(pd) {
-            save_image();
+            save_received();
             stop_mic();
         }
     } else if(event == kEventUnlock) {
