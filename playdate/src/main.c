@@ -776,8 +776,9 @@ static void draw_scene(void) {
             if(shown > (float)(preview_chunks + SSTV_ILEAVE)) shown = (float)(preview_chunks + SSTV_ILEAVE);
             if(shown > (float)SSTV_INTRO_FRAMES) shown = (float)SSTV_INTRO_FRAMES;
             float frac = shown / (float)SSTV_INTRO_FRAMES;
-            draw_text_centered("Receiving preview", text_cx, 210);
-            int bw = 220, bx = text_cx - bw / 2, by = 224;
+            int ty = 200;
+            draw_text_centered("Receiving preview", text_cx, ty);
+            int bw = 220, bx = text_cx - bw / 2, by = ty + font_height() + 8;
             pd->graphics->drawRoundRect(bx, by, bw, 10, 5, 1, kColorBlack);
             int fill = (int)((float)(bw - 4) * frac);
             if(fill > 0) pd->graphics->fillRoundRect(bx + 2, by + 2, fill, 6, 3, kColorBlack);
