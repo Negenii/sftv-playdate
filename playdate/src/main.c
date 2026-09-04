@@ -942,16 +942,26 @@ static void draw_panel(void) {
     const char* state = rx_paused ? "PAUSE" : finished ? "DONE" : segs_done == SSTV_NUM_SEGS ? "DONE" : quiet ? "LOST" : segs_done > 0 || started ? "RX" : "IDLE";
     int px = x;
     px += draw_pill(state, px, y, true) + 5;
-    px += draw_pill(rx.coded ? "ZIP" : "RAW", px, y, false) + 5;
+    px += draw_pill(rx.note ? "TXT" : rx.coded ? "ZIP" : "RAW", px, y, false) + 5;
     if(rec_len >= 0) draw_pill(rec_prefix[0] == 't' ? "TEST" : "REC", px, y, true);
     y += font_height() + 12;
-    /* line progress */
+    /* progress: lines for a picture, characters for a note */
     int bar_w = PANEL_W - 16;
     pd->graphics->drawRoundRect(x, y, bar_w, 8, 4, 1, kColorBlack);
-    int fill = (bar_w - 2) * segs_done / SSTV_NUM_SEGS;
+    int got, total_units;
+    if(rx.note) {
+        got = (int)strlen(note_buf);
+        total_units = rx.note_len > 0 ? rx.note_len : (got > 0 ? got : 1);
+    } else {
+        got = segs_done;
+        total_units = SSTV_NUM_SEGS;
+    }
+    int fill = (bar_w - 2) * got / total_units;
+    if(fill > bar_w - 2) fill = bar_w - 2;
     if(fill > 0) pd->graphics->fillRoundRect(x + 1, y + 1, fill, 6, 3, kColorBlack);
     y += 12;
-    snprintf(t, sizeof t, "%d / %d lines", segs_done / 2, SSTV_HEIGHT);
+    if(rx.note) snprintf(t, sizeof t, "%d / %d chars", (int)strlen(note_buf), rx.note_len);
+    else snprintf(t, sizeof t, "%d / %d lines", segs_done / 2, SSTV_HEIGHT);
     draw_text(t, x, y);
     y += lh + 6;
     /* counters: label left, value right; ok/bad and rs/repaired combined into one line each */
@@ -996,7 +1006,10 @@ static void draw_finished_banner(void) {
     char t[80], nm[NAME_CAP];
     display_name(nm, sizeof nm, current_name);
     use_font(font_ui);
-    snprintf(t, sizeof t, "Received \"%s\"   %d/%d lines", nm, finished_lines, SSTV_HEIGHT);
+    if(rx.note)
+        snprintf(t, sizeof t, "Received note \"%s\"  %d chars", nm, rx.note_len);
+    else
+        snprintf(t, sizeof t, "Received \"%s\"   %d/%d lines", nm, finished_lines, SSTV_HEIGHT);
     int w = text_width(t) + 24, h = font_height() + 16;
     int x = (LCD_COLUMNS - w) / 2, y = LCD_ROWS - h - 14;
     pd->graphics->fillRoundRect(x, y, w, h, h / 2, kColorBlack);
