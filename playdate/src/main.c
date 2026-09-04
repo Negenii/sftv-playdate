@@ -1152,7 +1152,7 @@ static void draw_grid(void) {
 static void draw_full(void) {
     pd->graphics->clear(kColorWhite);
     if(full_is_note)
-        draw_sticky_note(pd, font_ui, 24, 20, LCD_COLUMNS - 48, LCD_ROWS - 44, full_note_text);
+        draw_sticky_note(pd, font_ui, 24, 36, LCD_COLUMNS - 48, LCD_ROWS - 72, full_note_text); /* leave room for the top/bottom hint pills */
     else if(gallery_bitmap)
         pd->graphics->drawBitmap(gallery_bitmap, 0, 0, kBitmapUnflipped);
     char t[64], nm[NAME_CAP];
