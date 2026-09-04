@@ -85,6 +85,7 @@ static int preview_chunks; /* of SSTV_INTRO_FRAMES, both layers */
 static uint8_t schedule[SSTV_MAX_CODED_BLOCKS]; /* coded pass: lines per data block */
 static bool schedule_have[SSTV_SCHEDULE_CHUNKS];
 static LCDBitmap* preview_bitmap; /* 80x48 for the console icon in the intro scene */
+static LCDBitmap* ph_bm; /* full-size preview placeholder, shown below the drawing line */
 
 /* Screens. */
 typedef enum { ModeMenu, ModeReceive, ModeGrid, ModeFull } UiMode;
@@ -440,6 +441,18 @@ static void preview_refresh_bitmap(void) {
             else data[y * rb + (x >> 3)] |= (uint8_t)(0x80 >> (x & 7));
         }
     }
+    /* full-size placeholder (checker of the preview) drawn below the drawing line */
+    if(!ph_bm) ph_bm = pd->graphics->newBitmap(SSTV_WIDTH, SSTV_HEIGHT, kColorWhite);
+    int pw, ph2, prb;
+    uint8_t* pdw;
+    pd->graphics->getBitmapData(ph_bm, &pw, &ph2, &prb, NULL, &pdw);
+    for(int yy = 0; yy < SSTV_HEIGHT; yy++) {
+        for(int xx = 0; xx < SSTV_WIDTH; xx++) {
+            int ink = placeholder_bit(xx, yy) && ((xx + yy) & 1) == 0;
+            if(ink) pdw[yy * prb + (xx >> 3)] &= (uint8_t)~(0x80 >> (xx & 7));
+            else pdw[yy * prb + (xx >> 3)] |= (uint8_t)(0x80 >> (xx & 7));
+        }
+    }
 }
 
 static void on_preview(void* ctx, int layer, int chunk, int nbytes, const uint8_t* data) {
@@ -497,6 +510,7 @@ static void clear_image(void) {
     if(preview_bitmap) preview_refresh_bitmap();
     segs_done = 0;
     lines_reached = 0;
+    rx_paused = false; /* a fresh session clears any leftover pause banner */
     sheet_y = LCD_ROWS;
     bar_y = 0;
     image_dirty = false;
@@ -1072,8 +1086,9 @@ static void draw_receive(void) {
         if(nh > 24) draw_sticky_note(pd, font_notes, nx, y, nw, nh, note_buf);
         goto chrome; /* skip the picture-sheet code */
     }
-    int shown = expected_lines(enow);
-    if(lines_reached > shown) shown = lines_reached; /* never hide a line that arrived */
+    /* the drawing line advances by the timeline (smooth), so coded blocks reveal line by line
+     * instead of snapping in a batch; lines_reached is no longer used to pull the sheet up */
+    int shown = finished ? SSTV_HEIGHT : expected_lines(enow);
     /* The drawing frontier (the newest line) leads SHEET_LEAD px above the bottom edge, so you
      * watch lines land there over a semi-transparent preview placeholder in the band below.
      * The image top climbs until it hits the screen top (SHEET_LEAD lines before the end); the
@@ -1091,9 +1106,13 @@ static void draw_receive(void) {
     if(y > 0) draw_scene(); /* listening, or START + preview received; the sheet grows over it */
     else pd->graphics->clear(kColorWhite);
     if(y < LCD_ROWS) {
-        /* the full picture bitmap already carries the checker preview placeholder for lines
-         * that have not arrived, so the band below the frontier shows the preview */
+        /* placeholder (preview) everywhere the paper covers, then the real picture revealed
+         * only down to the drawing line, so decoded coded blocks appear line by line */
+        if(ph_bm) pd->graphics->drawBitmap(ph_bm, 0, y, kBitmapUnflipped);
+        int clip_h = frontier > 0 ? frontier : 0;
+        pd->graphics->setClipRect(0, 0, LCD_COLUMNS, clip_h);
         pd->graphics->drawBitmap(image, 0, y, kBitmapUnflipped);
+        pd->graphics->clearClipRect();
         if(y > 0) pd->graphics->fillRect(0, y, LCD_COLUMNS, 1, kColorBlack); /* paper top edge */
         if(frontier > 0 && frontier < LCD_ROWS) {
             pd->graphics->fillRect(0, frontier - 1, LCD_COLUMNS, 1, kColorBlack); /* thin drawing line */
