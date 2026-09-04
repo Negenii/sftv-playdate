@@ -116,6 +116,28 @@ static int mic_cb(void* context, int16_t* data, int len) {
 
 /* ---- names ---- */
 
+/* True when the incoming meta carried no usable name (empty or all control/space). */
+static bool name_is_blank(const char* s) {
+    for(; *s; s++)
+        if((unsigned char)*s > ' ') return false;
+    return true;
+}
+
+/* First free untitled_N (no extension) so an unnamed pass never overwrites another file. */
+static void next_untitled(char* out, size_t cap) {
+    FileStat st;
+    for(int n = 1; n < 10000; n++) {
+        char probe[NAME_CAP];
+        snprintf(probe, sizeof probe, "untitled_%d.pbm", n);
+        if(pd->file->stat(probe, &st) != 0) { /* not found -> free */
+            snprintf(out, cap, "untitled_%d", n);
+            return;
+        }
+    }
+    strncpy(out, "untitled", cap - 1);
+    out[cap - 1] = 0;
+}
+
 /* Display form: file name without the .pbm extension. */
 static void display_name(char* out, size_t cap, const char* in) {
     strncpy(out, in, cap - 1);
@@ -467,8 +489,12 @@ static void on_meta(void* ctx, const char* name, bool is_end, int frames, bool c
     started = true;
     started_ms = now;
     total_frames = frames;
-    strncpy(current_name, name, NAME_CAP - 1);
-    current_name[NAME_CAP - 1] = 0;
+    if(name_is_blank(name)) {
+        next_untitled(current_name, NAME_CAP); /* couldn't read the name: make a fresh unique one */
+    } else {
+        strncpy(current_name, name, NAME_CAP - 1);
+        current_name[NAME_CAP - 1] = 0;
+    }
     last_data_ms = now;
     /* Whatever screen is up, an incoming picture takes over. */
     ui_mode = ModeReceive;
@@ -870,7 +896,7 @@ static void draw_finished_banner(void) {
     char t[80], nm[NAME_CAP];
     display_name(nm, sizeof nm, current_name);
     use_font(font_ui);
-    snprintf(t, sizeof t, "Received %s   %d/%d lines", nm, finished_lines, SSTV_HEIGHT);
+    snprintf(t, sizeof t, "Received \"%s\"   %d/%d lines", nm, finished_lines, SSTV_HEIGHT);
     int w = text_width(t) + 24, h = font_height() + 16;
     int x = (LCD_COLUMNS - w) / 2, y = LCD_ROWS - h - 14;
     pd->graphics->fillRoundRect(x, y, w, h, h / 2, kColorBlack);
@@ -904,9 +930,9 @@ static void draw_receive(void) {
     if(boff > -BAR_H) { /* still at least partly on screen */
         pd->graphics->setDrawOffset(0, boff);
         if(started) {
-            char nm[NAME_CAP], bar[NAME_CAP + 12];
+            char nm[NAME_CAP], bar[NAME_CAP + 16];
             display_name(nm, sizeof nm, current_name);
-            snprintf(bar, sizeof bar, "Receiving: %s", nm);
+            snprintf(bar, sizeof bar, "Receiving: \"%s\"", nm);
             draw_title_bar(bar, NULL);
         } else {
             draw_title_bar("Listening", NULL);
