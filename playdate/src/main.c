@@ -11,7 +11,7 @@
 #include "mic_ring.h"
 
 #define LOST_TIMEOUT_MS 5000
-#define PANEL_W 140
+#define PANEL_W 200
 #define MAX_GALLERY 64
 #define NAME_CAP 40
 
@@ -829,14 +829,19 @@ static void draw_panel(void) {
         {"recv", rx.frames_in}, {"preview", preview_chunks}, {"frames ok", rx.frames_ok}, {"frames bad", rx.frames_bad},
         {"rs fixed", rx.rs_corrected}, {"fixed", rx.frames_repaired}, {"flywheel", demod.flywheel_frames}, {"dropped", (int)mic_dropped},
     };
-    for(size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+    int ncols = 2, colw = (right - x) / ncols;
+    size_t nrows_c = sizeof rows / sizeof rows[0];
+    for(size_t i = 0; i < nrows_c; i++) {
+        int col = (int)(i % ncols), row = (int)(i / ncols);
+        int cxl = x + col * colw, cxr = cxl + colw - 6;
+        int cy = y + row * lh;
         use_font(font_ui);
-        draw_text(rows[i].k, x, y);
+        draw_text(rows[i].k, cxl, cy);
         use_font(font_num);
         snprintf(t, sizeof t, "%d", rows[i].v);
-        draw_text(t, right - text_width(t), y + 1);
-        y += lh;
+        draw_text(t, cxr - text_width(t), cy + 1);
     }
+    y += (int)((nrows_c + ncols - 1) / ncols) * lh;
     /* tone and level */
     y += 4;
     use_font(font_ui);
