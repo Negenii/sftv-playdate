@@ -1018,7 +1018,11 @@ static void draw_receive(void) {
 static void draw_grid(void) {
     pd->graphics->clear(kColorWhite);
     char t[48], nm[NAME_CAP];
-    snprintf(t, sizeof t, "Gallery   %d image%s", gallery_count, gallery_count == 1 ? "" : "s");
+    int pages = (gallery_count + GRID_PER_PAGE - 1) / GRID_PER_PAGE;
+    if(pages > 1)
+        snprintf(t, sizeof t, "Gallery  %d  -  page %d/%d", gallery_count, gallery_page / GRID_PER_PAGE + 1, pages);
+    else
+        snprintf(t, sizeof t, "Gallery   %d image%s", gallery_count, gallery_count == 1 ? "" : "s");
     draw_title_bar(t, "Ⓐ open   Ⓑ back");
     use_font(font_ui);
     if(gallery_count == 0) {
@@ -1038,10 +1042,6 @@ static void draw_grid(void) {
         display_name(nm, sizeof nm, gallery_names[idx]);
         fit_text(t, sizeof t, nm, cell_w - 12);
         draw_text_centered(t, (k % GRID_COLS) * cell_w + cell_w / 2, cy + THUMB_H + 9);
-    }
-    if(gallery_count > GRID_PER_PAGE) {
-        snprintf(t, sizeof t, "page %d/%d", gallery_page / GRID_PER_PAGE + 1, (gallery_count + GRID_PER_PAGE - 1) / GRID_PER_PAGE);
-        draw_text(t, LCD_COLUMNS - 8 - text_width(t), LCD_ROWS - 16);
     }
 }
 
