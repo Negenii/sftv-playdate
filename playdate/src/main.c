@@ -38,8 +38,70 @@ static int last_block_type = -1; static unsigned last_block_ms; /* drives the sc
 static LCDBitmap* console; /* 140x118 Playdate silhouette, screen interior at (7,7) 88x53 */
 static LCDBitmap* thumb_mask; /* rounded corners for thumbnails */
 
-static sstv_demod demod;
+static sstv_demod demod; /* tuned to active_band */
 static sstv_rx rx;
+/* Band sniffer: two full demodulators were too slow for the Playdate (the run loop stalled),
+ * so one demodulator runs on the active band and a cheap block Goertzel watches both bands.
+ * Switch to HF when 18-21 kHz carries energy while 3-5.5 kHz is quiet (an audible pass also
+ * leaks harmonics up there, but always with loud fundamentals), and back on sustained audible
+ * tones; never in the middle of a pass. */
+/* receive state used by the sniffer, defined further down (tentative definitions) */
+static bool started;
+static bool finished;
+static unsigned last_data_ms;
+static int active_band = SSTV_BAND_AUDIBLE;
+#define PHYS_US_NOW SSTV_BAND_PHYS_US(active_band) /* physical frame length of the band in use */
+static void on_phys(void* ctx, const uint8_t* frame, const float* soft);
+#define on_phys_cb on_phys
+#define SNIFF_BLOCK 256
+#define SNIFF_HOLD 20 /* consecutive blocks (~116 ms) before switching */
+#define SNIFF_HF_ON 8.0f /* HF tone amplitude, LSB (Flipper HF ~25-55 at 4-5 cm, noise ~1) */
+#define SNIFF_AUD_QUIET 20.0f /* audible tones below this count as quiet */
+#define SNIFF_AUD_ON 60.0f /* audible tones above this take the band back */
+static const float sniff_aud_hz[4] = {3000.0f, 3500.0f, 4000.0f, 5500.0f};
+static const float sniff_hf_hz[4] = {18000.0f, 19000.0f, 20000.0f, 21000.0f}; /* HF tones + sync */
+static float sniff_coef[8];
+static int sniff_fill, sniff_hf_run, sniff_aud_run;
+static float sniff_s1[8], sniff_s2[8];
+static void sniff_init(void) {
+    for(int k = 0; k < 8; k++) {
+        float f = k < 4 ? sniff_aud_hz[k] : sniff_hf_hz[k - 4];
+        sniff_coef[k] = 2.0f * cosf(2.0f * 3.14159265f * f / 44100.0f);
+    }
+}
+static void set_band(int band) {
+    if(band == active_band) return;
+    active_band = band;
+    sstv_demod_init(&demod, 44100.0f, on_phys_cb, NULL);
+    sstv_demod_set_band(&demod, band);
+    rx.count = 0;
+}
+static void sniff(const int16_t* x, int n) {
+    for(int i = 0; i < n; i++) {
+        float v = (float)x[i];
+        for(int k = 0; k < 8; k++) {
+            float s0 = v + sniff_coef[k] * sniff_s1[k] - sniff_s2[k];
+            sniff_s2[k] = sniff_s1[k];
+            sniff_s1[k] = s0;
+        }
+        if(++sniff_fill < SNIFF_BLOCK) continue;
+        float aud = 0.0f, hf = 0.0f;
+        for(int k = 0; k < 8; k++) {
+            float p = sniff_s1[k] * sniff_s1[k] + sniff_s2[k] * sniff_s2[k] - sniff_coef[k] * sniff_s1[k] * sniff_s2[k];
+            float a = sqrtf(p > 0.0f ? p : 0.0f) * 2.0f / (float)SNIFF_BLOCK; /* tone amplitude estimate */
+            if(k < 4) { if(a > aud) aud = a; } else if(a > hf) hf = a;
+            sniff_s1[k] = sniff_s2[k] = 0.0f;
+        }
+        sniff_fill = 0;
+        sniff_hf_run = (hf > SNIFF_HF_ON && aud < SNIFF_AUD_QUIET) ? sniff_hf_run + 1 : 0;
+        sniff_aud_run = aud > SNIFF_AUD_ON ? sniff_aud_run + 1 : 0;
+        unsigned now = pd->system->getCurrentTimeMilliseconds();
+        bool busy = started && !finished && now - last_data_ms < 3000;
+        if(busy) continue;
+        if(active_band == SSTV_BAND_AUDIBLE && sniff_hf_run >= SNIFF_HOLD) set_band(SSTV_BAND_HF);
+        else if(active_band == SSTV_BAND_HF && sniff_aud_run >= SNIFF_HOLD) set_band(SSTV_BAND_AUDIBLE);
+    }
+}
 static mic_ring ring;
 
 /* Receive state. Half-line segments (raw mode) or whole lines (coded mode) arrive verified. */
@@ -75,6 +137,8 @@ static unsigned full_ui_ms; /* full view: show name+hints for 3 s after entry or
 static unsigned led_frame_ms; /* virtual LED: last physical frame time */
 static unsigned led_block_ms; /* last decoded block time */
 static volatile unsigned mic_dropped;
+static float dsp_time; /* seconds spent decoding in the current ~1 s window */
+static int dsp_samples, dsp_load; /* samples in the window; last load, % of real time */
 
 /* Previews (PBM packing) arriving right after START, progressive-JPEG style: first the 40x20
  * tiny layer (one block), then the 80x48 layer (five blocks). */
@@ -111,11 +175,13 @@ static LCDBitmap* menu_thumb; /* latest saved image, for the gallery tile */
 #define THUMB_R 8
 
 /* Debug recording: Up starts a REC_SECONDS capture of the raw mic stream (Data/recN.wav, first free N). */
-#define REC_SECONDS 30
+#define REC_SECONDS 60
 #define REC_RATE 44100
 static int16_t* rec_buf;
 static int rec_len; /* samples captured so far, -1 when idle */
 static const char* rec_prefix = "rec"; /* "rec" (Up) or "test" (Down, tone test takes) */
+static char rec_saved[20]; /* name of the last saved recording, for the on-screen notice */
+static unsigned rec_saved_ms;
 
 /* ---- audio thread ---- */
 
@@ -566,6 +632,7 @@ static void clear_image(void) {
     image_dirty = false;
     finished = false;
     started = false;
+    total_frames = 0; /* unknown until a START announces it */
     sstv_demod_reset_counters(&demod);
     sstv_rx_reset_counters(&rx);
 }
@@ -599,7 +666,7 @@ static int expected_lines(unsigned now) {
     int data_frames = pass_data - SSTV_ILEAVE - intro;
     if(data_frames <= 0) return 0;
     /* physical frames elapsed since START ended -> data frames sent (parity blocks stand still) */
-    int phys = SSTV_ILEAVE + (int)((float)(now - started_ms) * 1000.0f / (float)SSTV_PHYS_US);
+    int phys = SSTV_ILEAVE + (int)((float)(now - started_ms) * 1000.0f / (float)PHYS_US_NOW);
     float frames = (float)(sstv_pass_data_before(phys, pass_data, sstv_pass_intro(rx.coded)) - SSTV_ILEAVE - intro);
     if(frames <= 0) return 0;
     if(frames >= (float)data_frames) return SSTV_HEIGHT;
@@ -670,7 +737,7 @@ static void on_control(void* ctx, int subtype, uint32_t arg) {
             int n = (int)arg;
             if(n < SSTV_ILEAVE) n = SSTV_ILEAVE;
             /* set the origin so elapsed maps to physical frame n right now */
-            started_ms = now - (unsigned)((uint64_t)(n - SSTV_ILEAVE) * SSTV_PHYS_US / 1000);
+            started_ms = now - (unsigned)((uint64_t)(n - SSTV_ILEAVE) * PHYS_US_NOW / 1000);
             last_data_ms = now;
         }
     }
@@ -685,7 +752,8 @@ static void on_note(void* ctx, int chunk, int nbytes, const uint8_t* text) {
 
 static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
     (void)ctx;
-    led_frame_ms = pd->system->getCurrentTimeMilliseconds();
+    unsigned now = pd->system->getCurrentTimeMilliseconds();
+    led_frame_ms = now;
     int before = rx.blocks_ok;
     sstv_rx_phys(&rx, frame, soft);
     if(rx.blocks_ok != before) { led_block_ms = led_frame_ms; last_block_type = rx.last_type; last_block_ms = led_frame_ms; }
@@ -746,6 +814,8 @@ static void save_recording(void) {
     pd->file->write(f, h, 44);
     pd->file->write(f, rec_buf, (unsigned)data_bytes);
     pd->file->close(f);
+    strncpy(rec_saved, path, sizeof rec_saved - 1);
+    rec_saved_ms = pd->system->getCurrentTimeMilliseconds();
 }
 
 /* ---- drawing helpers ---- */
@@ -990,7 +1060,7 @@ static void draw_scene(void) {
              * while the preview chunks are still arriving it is clamped between the decoded count
              * and one 4-frame block ahead, so a lost block holds it; the parity tail runs on time. */
             int intro_total = SSTV_INTRO_FRAMES + (rx.coded ? SSTV_SCHEDULE_CHUNKS : 0) + SSTV_OUTER_PARITY;
-            float est = (float)(now - started_ms) / (float)(SSTV_PHYS_US / 1000);
+            float est = (float)(now - started_ms) / (float)(PHYS_US_NOW / 1000);
             if(preview_chunks < SSTV_INTRO_FRAMES) {
                 if(est < (float)preview_chunks) est = (float)preview_chunks;
                 if(est > (float)(preview_chunks + SSTV_ILEAVE)) est = (float)(preview_chunks + SSTV_ILEAVE);
@@ -1035,6 +1105,7 @@ static void draw_panel(void) {
     int px = x;
     px += draw_pill(state, px, y, true) + 5;
     px += draw_pill(rx.note ? "TXT" : rx.coded ? "ZIP" : "RAW", px, y, false) + 5;
+    if(active_band == SSTV_BAND_HF) px += draw_pill("HF", px, y, false) + 5;
     if(rec_len >= 0) draw_pill(rec_prefix[0] == 't' ? "TEST" : "REC", px, y, true);
     y += font_height() + 12;
     /* progress: lines for a picture, characters for a note */
@@ -1057,7 +1128,8 @@ static void draw_panel(void) {
     draw_text(t, x, y);
     y += lh + 6;
     /* counters: label left, value right; ok/bad and rs/repaired combined into one line each */
-    char v0[16], v1[16], v2[16], v3[16], v4[16], v5[16];
+    char v0[16], v1[16], v2[16], v3[16], v4[16], v5[16], v6[16];
+    snprintf(v6, sizeof v6, "%u/%d", (unsigned)mic_dropped, dsp_load);
     snprintf(v0, sizeof v0, "%d", rx.frames_in);
     snprintf(v1, sizeof v1, "%d", preview_chunks);
     snprintf(v2, sizeof v2, "%d/%d", rx.frames_ok, rx.frames_bad);
@@ -1066,7 +1138,7 @@ static void draw_panel(void) {
     snprintf(v5, sizeof v5, "%d", (int)mic_dropped);
     struct { const char* k; const char* v; } rows[] = {
         {"recv", v0}, {"preview", v1}, {"frames ok/bad", v2}, {"rs fixed/fixed", v3},
-        {"flywheel", v4}, {"dropped", v5},
+        {"flywheel", v4}, {"dropped / dsp %", v6},
     };
     for(size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
         use_font(font_ui);
@@ -1108,6 +1180,72 @@ static void draw_finished_banner(void) {
     draw_text_white(t, x + 12, y + 8);
 }
 
+/* Share of the pass sent so far by the announced timeline: START gives the physical frame count
+ * (already after compression) and every frame lasts SSTV_PHYS_US, so the end time is known up
+ * front. started_ms is the end of START (re-anchored on RESUME); `enow` is held while paused.
+ * Returns -1 when the START was missed and the total is unknown. */
+static float pass_progress(unsigned enow) {
+    if(!started || total_frames <= 0) return -1.0f;
+    float phys = (float)SSTV_ILEAVE + (float)(enow - started_ms) * 1000.0f / (float)PHYS_US_NOW;
+    if(phys < 0.0f) phys = 0.0f;
+    if(phys > (float)total_frames) phys = (float)total_frames;
+    return phys / (float)total_frames;
+}
+
+/* White rounded progress bar on black (inside the pill). */
+static void draw_mini_bar(int x, int y, int w, int h, float frac) {
+    pd->graphics->drawRoundRect(x, y, w, h, h / 2, 1, kColorWhite);
+    int fill = (int)((float)(w - 4) * frac + 0.5f);
+    if(fill > 0) pd->graphics->fillRoundRect(x + 2, y + 2, fill, h - 4, (h - 4) / 2, kColorWhite);
+}
+
+/* Receive progress pill in the bottom-right corner: just a bar. Without a START the total is
+ * unknown, so it holds a spinner instead. "Verifying" later takes the same corner. */
+#define PILL_H 20
+static void draw_progress_pill(unsigned now, unsigned enow) {
+    float frac = pass_progress(enow);
+    const int pad = 10, bw = 64, bh = 8;
+    if(frac < 0.0f) {
+        int sp = 12, w = pad + sp + pad;
+        int bx = LCD_COLUMNS - w - 10, by = LCD_ROWS - PILL_H - 10;
+        pd->graphics->fillRoundRect(bx, by, w, PILL_H, PILL_H / 2, kColorBlack);
+        float a0 = (float)(now % 900) / 900.0f * 360.0f;
+        pd->graphics->drawEllipse(bx + pad, by + (PILL_H - sp) / 2, sp, sp, 2, a0, a0 + 270.0f, kColorWhite);
+        return;
+    }
+    int w = pad + bw + pad, bx = LCD_COLUMNS - w - 10, by = LCD_ROWS - PILL_H - 10;
+    pd->graphics->fillRoundRect(bx, by, w, PILL_H, PILL_H / 2, kColorBlack);
+    draw_mini_bar(bx + pad, by + (PILL_H - bh) / 2, bw, bh, frac);
+}
+
+/* Microphone recording status (Up = rec, Down = test take): a pill in the bottom-left corner
+ * with a blinking dot and elapsed / total time while recording, then "Saved <file>" for 4 s. */
+static void draw_rec_status(void) {
+    unsigned now = pd->system->getCurrentTimeMilliseconds();
+    char t[40];
+    if(rec_len >= 0) {
+        int s = rec_len / REC_RATE;
+        snprintf(t, sizeof t, "%s %d:%02d / %d:%02d", rec_prefix[0] == 't' ? "TEST" : "REC", s / 60, s % 60,
+                 REC_SECONDS / 60, REC_SECONDS % 60);
+    } else if(rec_saved[0] && now - rec_saved_ms < 4000) {
+        snprintf(t, sizeof t, "Saved %s", rec_saved);
+    } else {
+        return;
+    }
+    use_font(font_ui);
+    const int h = 20, pad = 10, dot = 8;
+    bool live = rec_len >= 0;
+    int w = pad + (live ? dot + 6 : 0) + text_width(t) + pad, bx = 10, by = LCD_ROWS - h - 10;
+    pd->graphics->fillRoundRect(bx, by, w, h, h / 2, kColorBlack);
+    int tx = bx + pad;
+    if(live) {
+        if((now / 500) % 2 == 0) pd->graphics->fillEllipse(tx, by + (h - dot) / 2, dot, dot, 0.0f, 0.0f, kColorWhite);
+        else pd->graphics->drawEllipse(tx, by + (h - dot) / 2, dot, dot, 1, 0.0f, 0.0f, kColorWhite);
+        tx += dot + 6;
+    }
+    draw_text_white(t, tx, by + (h - font_height()) / 2);
+}
+
 /* The picture is a sheet that crawls in from the bottom edge as lines arrive (the Flipper
  * shows the same sheet leaving through its top edge). It covers the intro scene as it rises. */
 static void draw_receive(void) {
@@ -1122,7 +1260,7 @@ static void draw_receive(void) {
             frac = 1.0f;
         } else if(started) {
             int textframes = rx.data_frames > SSTV_ILEAVE ? rx.data_frames - SSTV_ILEAVE : SSTV_NOTE_MAX_FRAMES;
-            int elapsed = (int)((float)(enow - started_ms) * 1000.0f / (float)SSTV_PHYS_US);
+            int elapsed = (int)((float)(enow - started_ms) * 1000.0f / (float)PHYS_US_NOW);
             frac = textframes > 0 ? (float)elapsed / (float)textframes : 1.0f;
             if(frac < 0.0f) frac = 0.0f;
             if(frac > 1.0f) frac = 1.0f;
@@ -1205,13 +1343,17 @@ chrome:;
         }
         pd->graphics->setDrawOffset(0, 0);
     }
+    bool verifying = started && !finished && !rx_paused && !rx.note && (int)revealed >= SSTV_HEIGHT;
+    /* The progress pill appears once the scene's own preview bar is gone (the picture lines have
+     * started; a note has no preview bar) and stays until "Verifying" takes its corner. */
+    if(started && !finished && !rx_paused && !verifying && (rx.note || segs_done > 0)) draw_progress_pill(now, enow);
     /* Picture fully in but the pass is not done yet: the outer-code parity is still arriving.
      * Show a spinner and "Verifying" until END (or the timeout) finishes the pass. */
-    if(started && !finished && !rx_paused && !rx.note && (int)revealed >= SSTV_HEIGHT) {
+    if(verifying) {
         use_font(font_ui);
         const char* v = "Verifying";
         int r = 6, sp = 2 * r, pad = 10, gap = 6, tw = text_width(v);
-        int w = pad + sp + gap + tw + pad, h = 24, bx = 10, by = 10;
+        int w = pad + sp + gap + tw + pad, h = 24, bx = LCD_COLUMNS - w - 10, by = LCD_ROWS - h - 10;
         pd->graphics->fillRoundRect(bx, by, w, h, h / 2, kColorBlack);
         float a0 = (float)(now % 900) / 900.0f * 360.0f;
         int scx = bx + pad, scy = by + (h - sp) / 2;
@@ -1226,6 +1368,7 @@ chrome:;
         pd->graphics->fillRoundRect(bx, by, w, h, h / 2, kColorBlack);
         draw_text_white(pm, bx + 14, by + (h - font_height()) / 2);
     }
+    draw_rec_status();
     if(show_panel) draw_panel();
     draw_finished_banner();
     if(confirm_leave) {
@@ -1320,7 +1463,15 @@ static int update(void* userdata) {
 
     int16_t buf[1024];
     int n;
-    while((n = mic_ring_read(&ring, buf, 1024)) > 0) {
+    /* At most MAX_PER_UPDATE samples per frame: if decoding ever falls behind real time, the
+     * rest waits in the ring (and overflows into mic_dropped) instead of stalling the loop. */
+    int budget = 8192;
+    pd->system->resetElapsedTime();
+    int dsp_n = 0;
+    while(budget > 0 && (n = mic_ring_read(&ring, buf, budget < 1024 ? budget : 1024)) > 0) {
+        budget -= n;
+        dsp_n += n;
+        sniff(buf, n);
         sstv_demod_feed(&demod, buf, n);
         if(rec_len >= 0 && rec_len < REC_SECONDS * REC_RATE) {
             int room = REC_SECONDS * REC_RATE - rec_len;
@@ -1332,6 +1483,14 @@ static int update(void* userdata) {
                 rec_len = -1;
             }
         }
+    }
+    /* DSP load: time spent decoding vs the audio's own duration, averaged over ~1 s */
+    dsp_time += pd->system->getElapsedTime();
+    dsp_samples += dsp_n;
+    if(dsp_samples >= 44100) {
+        dsp_load = (int)(dsp_time * 44100.0f * 100.0f / (float)dsp_samples + 0.5f);
+        dsp_time = 0.0f;
+        dsp_samples = 0;
     }
     if(preview_dirty) { /* coalesce a block's 4 chunks into one refresh so the scene does not hitch */
         preview_refresh_bitmap();
@@ -1352,7 +1511,7 @@ static int update(void* userdata) {
     if(image_dirty && ((segs_done == SSTV_NUM_SEGS) || (now - last_data_ms > LOST_TIMEOUT_MS))) save_image();
     if(note_dirty && (now - last_data_ms > LOST_TIMEOUT_MS)) save_note();
     /* END never came: the pass is over by the announced timeline plus a margin. */
-    if(started && total_frames > 0 && now - started_ms > (unsigned)(total_frames - SSTV_ILEAVE) * (SSTV_PHYS_US / 1000) + 4000) finish(now);
+    if(started && total_frames > 0 && now - started_ms > (unsigned)(total_frames - SSTV_ILEAVE) * (PHYS_US_NOW / 1000) + 4000) finish(now);
 
     switch(ui_mode) {
     case ModeMenu:
@@ -1382,11 +1541,11 @@ static int update(void* userdata) {
             else menu_open();
         }
         if(pushed & kButtonRight) show_panel = !show_panel;
-        if((pushed & kButtonUp) && rec_len < 0) {
+        if((pushed & kButtonUp) && rec_len < 0 && rec_buf) {
             rec_prefix = "rec";
             rec_len = 0;
         }
-        if((pushed & kButtonDown) && rec_len < 0) { /* temporary: tone test takes */
+        if((pushed & kButtonDown) && rec_len < 0 && rec_buf) { /* temporary: tone test takes */
             rec_prefix = "test";
             rec_len = 0;
         }
@@ -1481,6 +1640,7 @@ static void init(void) {
     sstv_rx_set_control_cb(&rx, on_control);
     sstv_rx_set_note_cb(&rx, on_note);
     sstv_demod_init(&demod, 44100.0f, on_phys, NULL);
+    sniff_init();
     clear_image();
     menu_open();
 
