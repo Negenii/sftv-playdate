@@ -424,3 +424,27 @@ int sstv_build_note(const char* text, const char* name, uint8_t* out, uint8_t* l
     emitter_block(&em, logical, text_frames, text_frames);
     return em.blocks * SSTV_ILEAVE;
 }
+
+/* Lock-frame pattern: fixed LCG bytes (seed 0x5F7A). Random bytes are not an RS codeword;
+ * tests/test_frame.c checks it never decodes, alone or deinterleaved with copies of itself
+ * (which is what a receiver sees from the lock frames). */
+void sstv_lock_frame(uint8_t* out) {
+    uint32_t x = 0x5F7Au;
+    for(int i = 0; i < SSTV_FRAME_BYTES; i++) {
+        x = x * 1103515245u + 12345u;
+        out[i] = (uint8_t)(x >> 16);
+    }
+}
+
+/* True when `frame` is the lock-frame pattern within SSTV_LOCK_MATCH_BITS bit errors (a random
+ * frame differs in ~164 of its 328 bits). */
+bool sstv_is_lock_frame(const uint8_t* frame) {
+    uint8_t lock[SSTV_FRAME_BYTES];
+    sstv_lock_frame(lock);
+    int diff = 0;
+    for(int i = 0; i < SSTV_FRAME_BYTES; i++) {
+        uint8_t x = (uint8_t)(lock[i] ^ frame[i]);
+        while(x) { diff += x & 1; x >>= 1; }
+    }
+    return diff <= SSTV_LOCK_MATCH_BITS;
+}

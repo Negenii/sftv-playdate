@@ -51,7 +51,7 @@ int main(void) {
 
     /* Full image capacity: leader + 240 lines. */
     /* capacity covers the worst case (SSTV_MAX_FRAMES); a blank image uses far less */
-    double image_us = (double)SSTV_LEADER_SYMBOLS * SSTV_SYMBOL_US + (double)SSTV_MAX_FRAMES * SSTV_PHYS_US;
+    double image_us = (double)SSTV_PREAMBLE_US + (double)SSTV_MAX_FRAMES * SSTV_PHYS_US;
     int image_samples = (int)(image_us * 44100.0 / 1e6);
     int cap = sstv_mod_image_capacity(44100.0f);
     CHECK(cap >= image_samples && cap <= image_samples + 200);

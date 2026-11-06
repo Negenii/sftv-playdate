@@ -49,6 +49,17 @@ static inline int sstv_frame_symbol(const uint8_t* frame, int index) {
     return v;
 }
 
+/* Symbol `index` with `bits` bits per symbol (the HF band uses 3); bits past SSTV_FRAME_BITS
+ * (padding of the last symbol) read as 0. */
+static inline int sstv_frame_symbol_bits(const uint8_t* frame, int index, int bits) {
+    int v = 0;
+    for(int b = 0; b < bits; b++) {
+        int bi = index * bits + b;
+        v = (v << 1) | (bi < SSTV_FRAME_BITS ? sstv_frame_bit(frame, bi) : 0);
+    }
+    return v;
+}
+
 /* Byte interleaving of SSTV_ILEAVE logical frames into SSTV_ILEAVE physical frames:
  * physical stream position j*SSTV_ILEAVE + i holds byte j of logical frame i. Both
  * buffers are SSTV_ILEAVE * SSTV_FRAME_BYTES. */
@@ -101,6 +112,14 @@ int sstv_block_unpack(const uint8_t* payload, int valid_bytes, sstv_block_line_c
  * entries) receives, for every physical frame, how many image lines are complete once that
  * frame has been sent (for progress display). Returns the number of physical frames
  * (a multiple of SSTV_ILEAVE); *coded (may be NULL) tells which mode was chosen. */
+/* Preamble (see SSTV_LEADER_SYMBOLS / SSTV_LOCK_FRAMES in sstv_params.h). */
+static inline int sstv_leader_symbol(int i) { /* symbol i of the start ladder */
+    const int per = SSTV_LADDER_TONE_SYMBOLS + SSTV_LADDER_GAP_SYMBOLS;
+    return (i % per) < SSTV_LADDER_TONE_SYMBOLS ? 1 + i / per : 0;
+}
+void sstv_lock_frame(uint8_t* out); /* SSTV_FRAME_BYTES of the lock-frame pattern */
+bool sstv_is_lock_frame(const uint8_t* frame); /* a received lock frame (receivers drop it) */
+
 int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* out, uint8_t* lines_after, bool* coded);
 
 /* Builds every physical frame of a text note: START (note flag) + name, then the ASCII text as

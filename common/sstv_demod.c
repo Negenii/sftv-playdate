@@ -39,6 +39,7 @@ void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_phys_cb cb, void* ct
     memset(d, 0, sizeof *d);
     d->sample_rate = sample_rate;
     d->samples_per_ms = (int)(sample_rate / 1000.0f + 0.5f);
+    d->symbol_us = SSTV_SYMBOL_US;
     d->bit_len = sample_rate * (float)SSTV_SYMBOL_US / 1000000.0f;
     d->bit_len_nominal = d->bit_len;
     d->last_edge = -1.0;
@@ -49,6 +50,10 @@ void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_phys_cb cb, void* ct
     if(d->window < 4) d->window = 4;
 
     static const int tones[SSTV_NUM_TONES] = SSTV_TONES_INIT;
+    d->num_tones = SSTV_NUM_TONES;
+    d->first_det = 1; /* tone 0 is silence */
+    d->bits = SSTV_BITS_PER_SYMBOL;
+    d->spf = SSTV_SYMBOLS_PER_FRAME;
     for(int k = 0; k < SSTV_NUM_TONES; k++) {
         d->det[k].step = (uint32_t)((double)tones[k] / (double)sample_rate * 4294967296.0);
     }
@@ -58,7 +63,7 @@ void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_phys_cb cb, void* ct
         (uint32_t)((double)SSTV_FSYNC_HZ / (double)sample_rate * 4294967296.0);
     d->sync_long.step = d->det[SSTV_DEMOD_SYNC_DET].step;
 
-    d->dominance = 3.0f;
+    d->dominance = SSTV_SYNC_DOMINANCE;
     d->sync_min_run = SSTV_SYNC_MIN_MS * d->samples_per_ms;
     d->edge_adjust = sample_rate * (float)SSTV_EDGE_ADJUST_US / 1000000.0f;
     d->sample_point = SSTV_SAMPLE_POINT;
@@ -70,7 +75,7 @@ void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_phys_cb cb, void* ct
     d->level_norm = 1.0f / (full * full);
     float floor_amp = SSTV_NOISE_FLOOR_LSB * 0.6366f * (float)d->window * 32767.0f;
     d->min_energy = floor_amp * floor_amp;
-    for(int k = 0; k < SSTV_NUM_TONES; k++) d->gain[k] = d->min_energy;
+    for(int k = 0; k < SSTV_MAX_TONES; k++) d->gain[k] = d->min_energy;
     d->sync_gain = d->min_energy;
 
     d->state = SSTV_DEMOD_IDLE;
@@ -97,41 +102,70 @@ static void finish_frame(sstv_demod* d) {
 
 /* Peak trackers follow each tone's channel gain so a tone that the speaker or microphone
  * favours does not win every decision. The ratio between tones is clamped. */
-static inline void track_gains(sstv_demod* d) {
+static inline void track_gains(sstv_demod* d, float decay) {
     float g_min = d->min_energy * 0.01f;
     float gmax = 0.0f;
-    for(int k = 0; k < SSTV_NUM_TONES; k++) {
-        float g = d->gain[k] * d->gain_decay;
+    for(int k = d->first_det; k < d->num_tones; k++) { /* tone 0 is silence when the band has one */
+        float g = d->gain[k] * decay;
         if(d->energy[k] > g) g = d->energy[k];
         if(g < g_min) g = g_min;
         d->gain[k] = g;
         if(g > gmax) gmax = g;
     }
     float floor = gmax / SSTV_GAIN_CLAMP;
-    for(int k = 0; k < SSTV_NUM_TONES; k++) {
+    for(int k = d->first_det; k < d->num_tones; k++) {
         if(d->gain[k] < floor) d->gain[k] = floor;
     }
 }
 
-static const int tone_hz[SSTV_NUM_TONES] = SSTV_TONES_INIT;
-
-static void decide_symbol(sstv_demod* d) {
-    float nrm[SSTV_NUM_TONES];
-    int best = 0;
-    for(int k = 0; k < SSTV_NUM_TONES; k++) {
-        /* Silence competes with a fixed level: it wins when every tone is quiet. */
-        nrm[k] = tone_hz[k] == 0 ? d->silence_level : d->energy[k] / d->gain[k];
-        if(nrm[k] > nrm[best]) best = k;
-        d->dbg_nrm[d->symbol_index][k] = nrm[k];
+/* Lazy data detectors (the 8-FSK HF band): the Playdate can't afford 7 sliding detectors per
+ * sample (the mic ring overflowed and dropped ~13 % of the audio), so the data tones are
+ * correlated directly over the last W samples of the ring, at each decision and every W
+ * samples for the sync check and the gain trackers. Same table and window as the sliding
+ * detectors, so the energies are on the same scale. */
+static void block_energies(sstv_demod* d) {
+    const int W = d->window;
+    int start = (d->ring_pos - W + SSTV_DEMOD_RING) % SSTV_DEMOD_RING;
+    float edata = 0.0f;
+    for(int k = d->first_det; k < d->num_tones; k++) {
+        uint32_t ph = 0, step = d->det[k].step;
+        int64_t i = 0, q = 0;
+        int pos = start;
+        for(int t = 0; t < W; t++) {
+            int32_t x = d->ring[pos];
+            i += (int64_t)x * tcos(ph);
+            q += (int64_t)x * tsin(ph);
+            ph += step;
+            if(++pos == SSTV_DEMOD_RING) pos = 0;
+        }
+        float fi = (float)i, fq = (float)q;
+        d->energy[k] = fi * fi + fq * fq;
+        if(d->energy[k] > edata) edata = d->energy[k];
     }
-    int base = d->symbol_index * SSTV_BITS_PER_SYMBOL;
-    for(int b = 0; b < SSTV_BITS_PER_SYMBOL; b++) {
-        int shift = SSTV_BITS_PER_SYMBOL - 1 - b;
+    if(d->first_det) d->energy[0] = 0.0f;
+    d->edata_lazy = edata;
+}
+
+/* Tone 0 is silence (no detector) in both bands. */
+static void decide_symbol(sstv_demod* d) {
+    if(d->lazy) block_energies(d);
+    float nrm[SSTV_MAX_TONES];
+    int best = 0;
+    for(int k = 0; k < d->num_tones; k++) {
+        /* Silence competes with a fixed level: it wins when every tone is quiet. */
+        nrm[k] = k < d->first_det ? d->silence_level : d->energy[k] / d->gain[k];
+        if(nrm[k] > nrm[best]) best = k;
+        if(d->symbol_index < SSTV_SYMBOLS_PER_FRAME) d->dbg_nrm[d->symbol_index][k] = nrm[k];
+    }
+    int base = d->symbol_index * d->bits;
+    for(int b = 0; b < d->bits; b++) {
+        int shift = d->bits - 1 - b;
+        if(base + b >= SSTV_FRAME_BITS) break; /* padding of the last HF symbol */
         int bit = (best >> shift) & 1;
         if(bit) d->frame[(base + b) >> 3] |= (uint8_t)(0x80 >> ((base + b) & 7));
         /* Soft value: best tone with this bit set vs best tone with it clear. */
         float m1 = 0.0f, m0 = 0.0f;
-        for(int k = 0; k < SSTV_NUM_TONES; k++) {
+        for(int k = 0; k < d->num_tones; k++) {
             if((k >> shift) & 1) {
                 if(nrm[k] > m1) m1 = nrm[k];
             } else {
@@ -148,7 +182,7 @@ static void decide_symbol(sstv_demod* d) {
 /* Starts a frame whose first data sample is at t0. real_edge: a sync burst was seen (re-arms
  * the flywheel). */
 static void start_frame(sstv_demod* d, double t0, bool real_edge) {
-    const double symbols = (double)SSTV_PHYS_US / (double)SSTV_SYMBOL_US;
+    const double symbols = (double)(SSTV_SYNC_US + d->spf * d->symbol_us) / (double)d->symbol_us;
     if(real_edge) {
         d->flywheel_left = SSTV_FLYWHEEL_FRAMES;
     } else {
@@ -168,7 +202,7 @@ static void start_frame(sstv_demod* d, double t0, bool real_edge) {
  * symbol clock is nudged by the remaining error, so both devices' clock offsets and the
  * jitter of the edge estimate are absorbed instead of accumulating. */
 static void on_measured_edge(sstv_demod* d, double t_meas) {
-    const double symbols = (double)SSTV_PHYS_US / (double)SSTV_SYMBOL_US;
+    const double symbols = (double)(SSTV_SYNC_US + d->spf * d->symbol_us) / (double)d->symbol_us;
     if(d->predicted_edge < 0.0 || d->flywheel_left <= 0) {
         /* Not locked: take the edge as is; a second edge gives the first clock estimate. */
         if(d->last_edge >= 0.0) {
@@ -225,16 +259,29 @@ void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n) {
         d->ring_pos = (pos + 1) % SSTV_DEMOD_RING;
 
         float edata = 0.0f;
-        for(int k = 0; k <= SSTV_NUM_TONES; k++) {
-            if(k < SSTV_NUM_TONES && tone_hz[k] == 0) {
-                d->energy[k] = 0.0f; /* silence symbol has no detector */
-                continue;
+        if(d->lazy) {
+            if(++d->lazy_count >= W) { /* refresh the data energies every window */
+                d->lazy_count = 0;
+                block_energies(d);
+                track_gains(d, d->gain_decay_block);
             }
-            det_push(&d->det[k], s, old, W);
-            float fi = (float)d->det[k].i;
-            float fq = (float)d->det[k].q;
-            d->energy[k] = fi * fi + fq * fq;
-            if(k < SSTV_NUM_TONES && d->energy[k] > edata) edata = d->energy[k];
+            edata = d->edata_lazy;
+        } else {
+            if(d->first_det) d->energy[0] = 0.0f; /* silence symbol has no detector */
+            for(int k = d->first_det; k < d->num_tones; k++) {
+                det_push(&d->det[k], s, old, W);
+                float fi = (float)d->det[k].i;
+                float fq = (float)d->det[k].q;
+                d->energy[k] = fi * fi + fq * fq;
+                if(d->energy[k] > edata) edata = d->energy[k];
+            }
+        }
+        {
+            sstv_det* sd = &d->det[SSTV_DEMOD_SYNC_DET];
+            det_push(sd, s, old, W);
+            float fi = (float)sd->i;
+            float fq = (float)sd->q;
+            d->energy[SSTV_DEMOD_SYNC_DET] = fi * fi + fq * fq;
         }
         det_push(&d->sync_long, s, old_long, WL);
         {
@@ -243,7 +290,7 @@ void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n) {
             d->energy_sync_long = (fi * fi + fq * fq) * long_scale;
         }
         float es = d->energy[SSTV_DEMOD_SYNC_DET];
-        track_gains(d);
+        if(!d->lazy) track_gains(d, d->gain_decay);
         {
             float g = d->sync_gain * d->sync_gain_decay;
             if(d->energy_sync_long > g) g = d->energy_sync_long;
@@ -303,7 +350,7 @@ void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n) {
             if((double)d->n >= d->next_decision) {
                 decide_symbol(d);
                 d->next_decision += (double)d->bit_len;
-                if(d->symbol_index >= SSTV_SYMBOLS_PER_FRAME) finish_frame(d);
+                if(d->symbol_index >= d->spf) finish_frame(d);
             }
             break;
         }
@@ -315,7 +362,8 @@ void sstv_demod_status(const sstv_demod* d, sstv_demod_status_t* out) {
     int best = -1;
     float best_e = d->min_energy;
     float max_e = 0.0f;
-    for(int k = 0; k <= SSTV_NUM_TONES; k++) {
+    for(int k = 0; k <= SSTV_DEMOD_SYNC_DET; k++) {
+        if(k >= d->num_tones && k != SSTV_DEMOD_SYNC_DET) continue;
         if(d->energy[k] > best_e) {
             best_e = d->energy[k];
             best = k;
@@ -337,4 +385,42 @@ void sstv_demod_status(const sstv_demod* d, sstv_demod_status_t* out) {
     out->tone = best;
     out->frames = d->frames;
     out->state = d->state;
+}
+
+void sstv_demod_set_band(sstv_demod* d, int band) {
+    static const int audible[SSTV_MAX_TONES] = SSTV_TONES_INIT;
+    static const int hf[SSTV_MAX_TONES] = SSTV_HF_TONES_INIT;
+    const int* tones = band == SSTV_BAND_HF ? hf : audible;
+    d->num_tones = SSTV_BAND_NUM_TONES(band);
+    d->first_det = band == SSTV_BAND_HF ? (SSTV_HF_HAS_SILENCE ? 1 : 0) : 1;
+    d->bits = SSTV_BAND_BITS(band);
+    d->spf = SSTV_BAND_SYMBOLS_PER_FRAME(band);
+    d->lazy = d->num_tones > SSTV_NUM_TONES;
+    d->lazy_count = 0;
+    d->edata_lazy = 0.0f;
+    for(int k = 0; k < SSTV_MAX_TONES; k++) {
+        d->det[k].step = (uint32_t)((double)tones[k] / (double)d->sample_rate * 4294967296.0);
+    }
+    int fsync = band == SSTV_BAND_HF ? SSTV_HF_FSYNC_HZ : SSTV_FSYNC_HZ;
+    d->det[SSTV_DEMOD_SYNC_DET].step = (uint32_t)((double)fsync / (double)d->sample_rate * 4294967296.0);
+    d->sync_long.step = d->det[SSTV_DEMOD_SYNC_DET].step;
+    /* window first: the energy scale, the floor and the sync windows all follow it (no samples
+     * have been fed yet, so the sliding detectors start clean) */
+    int win_us = band == SSTV_BAND_HF ? SSTV_HF_WINDOW_US : SSTV_WINDOW_US;
+    d->window = (int)(d->sample_rate * (float)win_us / 1000000.0f + 0.5f);
+    if(d->window > SSTV_DEMOD_MAX_WINDOW) d->window = SSTV_DEMOD_MAX_WINDOW;
+    if(d->window < 4) d->window = 4;
+    float full = 32767.0f * 0.6366f * (float)d->window * 32767.0f;
+    d->level_norm = 1.0f / (full * full);
+    d->gain_decay_block = 1.0f;
+    for(int t = 0; t < d->window; t++) d->gain_decay_block *= d->gain_decay; /* decay over one refresh */
+    float floor_lsb = band == SSTV_BAND_HF ? SSTV_HF_NOISE_FLOOR_LSB : SSTV_NOISE_FLOOR_LSB;
+    float floor_amp = floor_lsb * 0.6366f * (float)d->window * 32767.0f;
+    d->min_energy = floor_amp * floor_amp;
+    for(int k = 0; k < SSTV_MAX_TONES; k++) d->gain[k] = d->min_energy;
+    d->sync_gain = d->min_energy;
+    d->band = band;
+    d->symbol_us = SSTV_BAND_SYMBOL_US(band);
+    d->bit_len = d->sample_rate * (float)d->symbol_us / 1000000.0f;
+    d->bit_len_nominal = d->bit_len;
 }

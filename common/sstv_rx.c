@@ -339,6 +339,10 @@ static int try_block(sstv_rx* rx) {
 
 void sstv_rx_phys(sstv_rx* rx, const uint8_t* frame, const float* soft) {
     rx->frames_in++;
+    if(sstv_is_lock_frame(frame)) { /* preamble: not data; start the window clean after it */
+        rx->count = 0;
+        return;
+    }
     if(rx->count == SSTV_ILEAVE) {
         memmove(rx->phys[0], rx->phys[1], sizeof(rx->phys) - sizeof(rx->phys[0]));
         memmove(rx->conf[0], rx->conf[1], sizeof(rx->conf) - sizeof(rx->conf[0]));

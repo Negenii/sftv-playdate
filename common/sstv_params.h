@@ -137,6 +137,43 @@
 #define SSTV_FSYNC_HZ 5500 /* frame sync: 500 Hz grid, no 2x/3x relation, 1.3 ms decay (5000 Hz rang for 5 ms and blurred the sync edge) */
 #endif
 
+/* Near-ultrasound band (same protocol and timing, inaudible to adults). Measured 2026-11-06 with
+ * the Flipper HF sweep at a Playdate mic, 4-5 cm (recordings/2026-11-06-hf/pd_test9.wav): vs the
+ * 3 kHz reference, 18.0 kHz -31 dB / SNR 37, 18.5 -28 / 42, 19.0 -33 / 33, 21.0 -35 / 42 dB;
+ * 14 and 15.5 kHz are notches (SNR 7-11). The room has almost no noise up there, so the SNR
+ * matches the audible band's ~40 dB. The user hears the sweep up to ~13 kHz. All 50 % duty. */
+#define SSTV_BAND_AUDIBLE 0
+#define SSTV_BAND_HF 1
+/* HF symbols are 3 ms (4/3 the audible band's rate). Every symbol must hold a whole number of
+ * tone cycles on the Flipper timer, so the tones sit on 18/19/21 kHz (54/57/63 cycles; 18.5 kHz
+ * would be 55.5) and the sync, 16 ms long as in the audible band, on 20.5 kHz (328 cycles). The
+ * 2 ms detector window leaves ~1 ms after each transition for the tail to die.
+ * 2 ms symbols (1 ms window, sync 20 kHz) were tried on hardware 2026-11-06 and failed: best
+ * tuning decoded 28/240 lines (recordings/2026-11-06-hf/pd_hf2ms_test10.wav); decisions got
+ * better the earlier in the symbol they were taken (transition tails fill the end of a 2 ms
+ * symbol) and 38 % of the 20 kHz syncs were missed. 3 ms decoded without errors. */
+#define SSTV_HF_DUTY_PCT 50
+#define SSTV_HF_SYMBOL_US 3000
+#define SSTV_HF_WINDOW_US 2000
+/* 8-FSK (revision 10): 7 tones + silence = 3 bits per symbol, a frame's 328 bits in 110 symbols
+ * (2 pad bits), 346 ms per frame instead of 508 (x1.47). 500 Hz grid (orthogonal over the 2 ms
+ * window), 17.5 kHz skipped (SNR 24 in the sweep), sync on 21 kHz (the strongest, SNR 42). Not
+ * every tone fits a whole number of cycles into 3 ms (18.5 kHz = 55.5): the Flipper alternates
+ * the cycle count so the average symbol is exactly 3 ms (+-27 us jitter). */
+#define SSTV_MAX_TONES 8
+#define SSTV_HF_NUM_TONES 8
+#define SSTV_HF_BITS_PER_SYMBOL 3
+/* No silence symbol in the HF band: on hardware (recordings/2026-11-06-hf/pd_8fsk_lazy_test12.wav)
+ * 11k verified symbols had zero tone-for-tone confusions; ~all errors were tone <-> silence
+ * (18 kHz read as silence 3.4 %), the same echo/fade problem as the audible band. Inaudible
+ * anyway, so the 8th value is a tone (17.5 kHz) instead of silence. */
+#define SSTV_HF_TONES_INIT {17000, 17500, 18000, 18500, 19000, 19500, 20000, 20500}
+#define SSTV_HF_HAS_SILENCE 0
+#define SSTV_HF_FSYNC_HZ 21000
+/* HF fundamentals arrive at ~25-55 LSB at the Playdate (3 kHz ~1400), noise ~1 LSB: the audible
+ * band's 40 LSB floor would hide them. */
+#define SSTV_HF_NOISE_FLOOR_LSB 5.0f
+
 /* Timing, microseconds. Every duration is a whole number of cycles of its tone. */
 #ifndef SSTV_SYMBOL_US
 #define SSTV_SYMBOL_US 4000
@@ -144,9 +181,20 @@
 #ifndef SSTV_SYNC_US
 #define SSTV_SYNC_US 16000
 #endif
-#ifndef SSTV_LEADER_US
-#define SSTV_LEADER_US 2000000 /* leader: symbols cycling 0,1,2,3 (gain calibration); 2 s so the receiver settles before the first frame (START) */
-#endif
+/* Start preamble (revision 9): a tone ladder, then lock frames, then the pass.
+ * Ladder: each data tone 1..3 held SSTV_LADDER_TONE_SYMBOLS, then SSTV_LADDER_GAP_SYMBOLS of
+ * silence, so the receiver's per-tone gains settle on each tone alone (0.9 s).
+ * Lock frames: SSTV_LOCK_FRAMES ordinary physical frames (sync + 164 symbols) carrying a fixed
+ * pseudo-random pattern that never passes the RS check (sstv_lock_frame). The receiver locks
+ * its symbol clock and measures the sync-vs-data margin on them, so the pass's first frame
+ * (START, with the file name) arrives already in rhythm (2 s). Old receivers drop them as bad. */
+#define SSTV_LADDER_TONE_SYMBOLS 50 /* 200 ms per tone */
+#define SSTV_LADDER_GAP_SYMBOLS 25 /* 100 ms silence after each */
+#define SSTV_LOCK_FRAMES 3
+/* Receivers recognise a lock frame by its pattern (<= this many of 328 bits wrong) and keep it
+ * out of the deinterleave window: mixed with the first START frames, its bytes could be
+ * "repaired" by erasure decoding into a false block that misaligns the window and loses START. */
+#define SSTV_LOCK_MATCH_BITS 60
 
 /* Receiver tuning. */
 #define SSTV_WINDOW_US 2000 /* detector window: tone resolution 500 Hz */
@@ -165,10 +213,26 @@
 #define SSTV_SYNC_MIN_REL 0.15f /* sync burst must reach this fraction of the tracked sync peak */
 #define SSTV_GAIN_CLAMP 100.0f /* max tracked gain ratio between tones (20 dB) */
 #define SSTV_SYNC_MIN_MS 6 /* net dominant run (of the long sync detector) to accept a sync */
+/* The long sync energy must exceed every data detector by this factor to count as a sync.
+ * Was 3: on a Mac-mic recording (5.5 kHz arriving ~18 dB under the data tones, room echo
+ * leaking into the start of each burst) 3x decoded 122/240 lines, 2x 207, 1.5x 227, 1.2x 240;
+ * the Playdate distance recordings decode identically at every value. An adaptive version
+ * (half the ratio measured on accepted bursts) settled near 3 and decoded 194: the accepted
+ * part of a burst is the clean part, so it can't see the echo that breaks the start. */
+#define SSTV_SYNC_DOMINANCE 1.2f
 
 /* Derived. */
 #define SSTV_SYMBOLS_PER_FRAME (SSTV_FRAME_BITS / SSTV_BITS_PER_SYMBOL) /* 164 */
-#define SSTV_LEADER_SYMBOLS (SSTV_LEADER_US / SSTV_SYMBOL_US)
+#define SSTV_LEADER_SYMBOLS ((SSTV_NUM_TONES - 1) * (SSTV_LADDER_TONE_SYMBOLS + SSTV_LADDER_GAP_SYMBOLS)) /* 225 */
+#define SSTV_PREAMBLE_US (SSTV_LEADER_SYMBOLS * SSTV_SYMBOL_US + SSTV_LOCK_FRAMES * SSTV_PHYS_US) /* 2.916 s */
+/* Per-band timing (the audible band is SSTV_SYMBOL_US / SSTV_PHYS_US). */
+#define SSTV_BAND_SYMBOL_US(band) ((band) == SSTV_BAND_HF ? SSTV_HF_SYMBOL_US : SSTV_SYMBOL_US)
+#define SSTV_BAND_NUM_TONES(band) ((band) == SSTV_BAND_HF ? SSTV_HF_NUM_TONES : SSTV_NUM_TONES)
+#define SSTV_BAND_BITS(band) ((band) == SSTV_BAND_HF ? SSTV_HF_BITS_PER_SYMBOL : SSTV_BITS_PER_SYMBOL)
+#define SSTV_BAND_SYMBOLS_PER_FRAME(band) ((SSTV_FRAME_BITS + SSTV_BAND_BITS(band) - 1) / SSTV_BAND_BITS(band)) /* 164 / 110 */
+#define SSTV_BAND_PHYS_US(band) (SSTV_SYNC_US + SSTV_BAND_SYMBOLS_PER_FRAME(band) * SSTV_BAND_SYMBOL_US(band)) /* 672000 / 346000 */
+#define SSTV_BAND_LEADER_SYMBOLS(band) ((SSTV_BAND_NUM_TONES(band) - 1) * (SSTV_LADDER_TONE_SYMBOLS + SSTV_LADDER_GAP_SYMBOLS)) /* 225 / 525 */
+#define SSTV_BAND_PREAMBLE_US(band) (SSTV_BAND_LEADER_SYMBOLS(band) * SSTV_BAND_SYMBOL_US(band) + SSTV_LOCK_FRAMES * SSTV_BAND_PHYS_US(band))
 #define SSTV_RESUME_LEADER_US 400000 /* short re-calibration leader after a pause (the long start leader is 2 s) */
 #define SSTV_RESUME_LEADER_SYMBOLS (SSTV_RESUME_LEADER_US / SSTV_SYMBOL_US) /* 100 symbols */
 #define SSTV_PHYS_US (SSTV_SYNC_US + SSTV_SYMBOLS_PER_FRAME * SSTV_SYMBOL_US) /* 672000 per physical frame */

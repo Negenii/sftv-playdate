@@ -11,7 +11,7 @@ extern "C" {
 #define SSTV_DEMOD_RING (SSTV_DEMOD_MAX_WINDOW * SSTV_SYNC_WINDOW_MULT)
 #define SSTV_DEMOD_TABLE_BITS 10
 #define SSTV_DEMOD_TABLE_SIZE (1 << SSTV_DEMOD_TABLE_BITS)
-#define SSTV_DEMOD_SYNC_DET SSTV_NUM_TONES /* index of the sync detector */
+#define SSTV_DEMOD_SYNC_DET SSTV_MAX_TONES /* index of the sync detector */
 
 /* One demodulated physical frame: SSTV_FRAME_BYTES raw bytes and SSTV_FRAME_BITS soft
  * decisions in [-1, 1] (positive = 1, magnitude = confidence). Feed it to sstv_rx. */
@@ -42,13 +42,21 @@ typedef struct {
     int flywheel_frames; /* frames started by prediction (stats) */
     float min_energy; /* noise floor on detector energy */
     float dominance; /* sync energy must exceed data energies by this factor */
+    int band; /* SSTV_BAND_AUDIBLE or SSTV_BAND_HF */
+    int symbol_us; /* symbol length of the band */
+    int num_tones, bits, spf; /* tones (incl. silence), bits per symbol, symbols per frame */
+    int first_det; /* first data tone with a detector: 1 when tone 0 is silence, else 0 */
+    int lazy; /* data tones computed per window instead of per sample (8-FSK, see block_energies) */
+    int lazy_count;
+    float edata_lazy; /* strongest data energy at the last refresh */
+    float gain_decay_block; /* gain_decay ^ window */
     int sync_min_run; /* net dominant samples to accept a sync */
     float level_norm; /* energy -> 0..1 level */
     float edge_adjust; /* samples added to the estimated sync->data edge (tuning) */
     float sample_point; /* fraction of the symbol at which the decision window ends */
     float gain_decay; /* per-sample decay of the tone peak trackers */
 
-    sstv_det det[SSTV_NUM_TONES + 1]; /* data tones, then sync, all with the short window */
+    sstv_det det[SSTV_MAX_TONES + 1]; /* data tones, then sync (at SSTV_DEMOD_SYNC_DET), short window */
     sstv_det sync_long; /* sync with a SSTV_SYNC_WINDOW_MULT x longer window */
     int16_t ring[SSTV_DEMOD_RING];
     int ring_pos;
@@ -60,11 +68,11 @@ typedef struct {
     int symbol_index;
     uint8_t frame[SSTV_FRAME_BYTES];
 
-    float energy[SSTV_NUM_TONES + 1];
+    float energy[SSTV_MAX_TONES + 1];
     float energy_sync_long; /* scaled to the short window's energy units */
     float margin[SSTV_FRAME_BITS]; /* per-bit soft decision of the last line */
-    float dbg_nrm[SSTV_SYMBOLS_PER_FRAME][SSTV_NUM_TONES]; /* normalised energies at decision (debug) */
-    float gain[SSTV_NUM_TONES]; /* tracked peak energy per tone (channel gain) */
+    float dbg_nrm[SSTV_SYMBOLS_PER_FRAME][SSTV_MAX_TONES]; /* normalised energies at decision (debug) */
+    float gain[SSTV_MAX_TONES]; /* tracked peak energy per tone (channel gain) */
     float silence_level; /* SSTV_SILENCE_LEVEL, adjustable for experiments */
     float sync_gain; /* tracked peak energy of the sync detector */
     float sync_gain_decay;
@@ -76,12 +84,14 @@ typedef struct {
 
 typedef struct {
     float level; /* 0..1, strongest detector, amplitude scale */
-    int tone; /* -1 none, 0..SSTV_NUM_TONES-1 data tone, SSTV_NUM_TONES sync */
+    int tone; /* -1 none, 0..num_tones-1 data tone, SSTV_DEMOD_SYNC_DET sync */
     int frames;
     sstv_demod_state state;
 } sstv_demod_status_t;
 
 void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_phys_cb cb, void* ctx);
+/* Retunes the detectors to SSTV_BAND_AUDIBLE (default) or SSTV_BAND_HF; call right after init. */
+void sstv_demod_set_band(sstv_demod* d, int band);
 void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n);
 void sstv_demod_status(const sstv_demod* d, sstv_demod_status_t* out);
 void sstv_demod_reset_counters(sstv_demod* d);

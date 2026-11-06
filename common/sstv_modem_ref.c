@@ -20,6 +20,11 @@ void sstv_mod_init(sstv_mod* m, float sample_rate, int16_t amplitude) {
         m->channel_gain[k] = (m->duty[k] > 0.0f && f > 0.05f) ? 1.0f / f : 1.0f;
     }
     m->fsync = (float)SSTV_FSYNC_HZ;
+    m->symbol_us = SSTV_SYMBOL_US;
+    m->band = SSTV_BAND_AUDIBLE;
+    m->num_tones = SSTV_NUM_TONES;
+    m->bits = SSTV_BITS_PER_SYMBOL;
+    m->spf = SSTV_SYMBOLS_PER_FRAME;
     m->sync_duty = (float)SSTV_SYNC_DUTY_PCT / 100.0f;
     m->phase = 0.0;
     m->time_us = 0.0;
@@ -64,9 +69,27 @@ int sstv_mod_frame(sstv_mod* m, const uint8_t* frame, int16_t* out, int cap) {
     int n = sstv_mod_tone_duty(m, m->fsync, m->sync_duty, SSTV_SYNC_US, out, cap);
     if(n < 0) return -1;
     total += n;
-    for(int i = 0; i < SSTV_SYMBOLS_PER_FRAME; i++) {
-        int v = sstv_frame_symbol(frame, i);
-        n = sstv_mod_tone_gain(m, m->tones[v], m->duty[v], m->channel_gain[v], SSTV_SYMBOL_US, out + total, cap - total);
+    for(int i = 0; i < m->spf; i++) {
+        int v = sstv_frame_symbol_bits(frame, i, m->bits);
+        n = sstv_mod_tone_gain(m, m->tones[v], m->duty[v], m->channel_gain[v], m->symbol_us, out + total, cap - total);
+        if(n < 0) return -1;
+        total += n;
+    }
+    return total;
+}
+
+int sstv_mod_preamble(sstv_mod* m, int16_t* out, int cap) {
+    int total = 0;
+    for(int i = 0; i < SSTV_BAND_LEADER_SYMBOLS(m->band); i++) {
+        int k = sstv_leader_symbol(i);
+        int n = sstv_mod_tone_gain(m, m->tones[k], m->duty[k], m->channel_gain[k], m->symbol_us, out + total, cap - total);
+        if(n < 0) return -1;
+        total += n;
+    }
+    uint8_t lock[SSTV_FRAME_BYTES];
+    sstv_lock_frame(lock);
+    for(int f = 0; f < SSTV_LOCK_FRAMES; f++) {
+        int n = sstv_mod_frame(m, lock, out + total, cap - total);
         if(n < 0) return -1;
         total += n;
     }
@@ -74,13 +97,8 @@ int sstv_mod_frame(sstv_mod* m, const uint8_t* frame, int16_t* out, int cap) {
 }
 
 int sstv_mod_image(sstv_mod* m, const uint8_t* image_bits, int16_t* out, int cap) {
-    int total = 0;
-    for(int i = 0; i < SSTV_LEADER_SYMBOLS; i++) {
-        int k = i % SSTV_NUM_TONES;
-        int n = sstv_mod_tone_gain(m, m->tones[k], m->duty[k], m->channel_gain[k], SSTV_SYMBOL_US, out + total, cap - total);
-        if(n < 0) return -1;
-        total += n;
-    }
+    int total = sstv_mod_preamble(m, out, cap);
+    if(total < 0) return -1;
     static uint8_t phys[SSTV_MAX_FRAMES * SSTV_FRAME_BYTES];
     int frames = sstv_build_physical(image_bits, "image", phys, NULL, NULL);
     for(int p = 0; p < frames; p++) {
@@ -92,6 +110,25 @@ int sstv_mod_image(sstv_mod* m, const uint8_t* image_bits, int16_t* out, int cap
 }
 
 int sstv_mod_image_capacity(float sample_rate) {
-    double us = (double)SSTV_LEADER_SYMBOLS * SSTV_SYMBOL_US + (double)SSTV_MAX_FRAMES * SSTV_PHYS_US;
+    double us = (double)SSTV_PREAMBLE_US + (double)SSTV_MAX_FRAMES * SSTV_PHYS_US; /* the slower (audible) band */
     return (int)(us * (double)sample_rate / 1e6) + 64;
+}
+
+void sstv_mod_set_band(sstv_mod* m, int band) {
+    if(band != SSTV_BAND_HF) {
+        sstv_mod_init(m, m->sample_rate, m->amplitude);
+        return;
+    }
+    static const int hf[SSTV_MAX_TONES] = SSTV_HF_TONES_INIT;
+    for(int k = 0; k < SSTV_MAX_TONES; k++) {
+        m->tones[k] = (float)hf[k];
+        m->duty[k] = (float)SSTV_HF_DUTY_PCT / 100.0f;
+        m->channel_gain[k] = 1.0f;
+    }
+    m->fsync = (float)SSTV_HF_FSYNC_HZ;
+    m->symbol_us = SSTV_HF_SYMBOL_US;
+    m->band = SSTV_BAND_HF;
+    m->num_tones = SSTV_HF_NUM_TONES;
+    m->bits = SSTV_HF_BITS_PER_SYMBOL;
+    m->spf = SSTV_BAND_SYMBOLS_PER_FRAME(SSTV_BAND_HF);
 }

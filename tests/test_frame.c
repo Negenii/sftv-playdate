@@ -261,6 +261,27 @@ int main(void) {
     CHECK_EQ_INT(sstv_pass_data_before(sstv_pass_total(508, intro), 508, intro), 508);
     CHECK(SSTV_MAX_FRAMES >= sstv_pass_total(SSTV_MAX_DATA_FRAMES, sstv_pass_intro(1)));
 
+    /* Lock frames (start preamble) must never decode: alone, soft, or deinterleaved from the
+     * SSTV_ILEAVE identical copies a receiver gets. */
+    {
+        uint8_t lock[SSTV_FRAME_BYTES], phys4[SSTV_ILEAVE * SSTV_FRAME_BYTES], logical[SSTV_ILEAVE * SSTV_FRAME_BYTES];
+        uint8_t pl[SSTV_PAYLOAD_BYTES];
+        uint16_t h;
+        int corr;
+        sstv_lock_frame(lock);
+        CHECK(!sstv_frame_unpack(lock, &h, pl));
+        CHECK(!sstv_frame_unpack_soft(lock, NULL, &h, pl, &corr));
+        for(int i = 0; i < SSTV_ILEAVE; i++) memcpy(phys4 + i * SSTV_FRAME_BYTES, lock, SSTV_FRAME_BYTES);
+        sstv_deinterleave(phys4, logical);
+        for(int i = 0; i < SSTV_ILEAVE; i++) CHECK(!sstv_frame_unpack(logical + i * SSTV_FRAME_BYTES, &h, pl));
+        /* ladder: tone 1, 2, 3 blocks with silence gaps */
+        CHECK_EQ_INT(sstv_leader_symbol(0), 1);
+        CHECK_EQ_INT(sstv_leader_symbol(SSTV_LADDER_TONE_SYMBOLS), 0);
+        CHECK_EQ_INT(sstv_leader_symbol(SSTV_LADDER_TONE_SYMBOLS + SSTV_LADDER_GAP_SYMBOLS), 2);
+        CHECK_EQ_INT(sstv_leader_symbol(SSTV_LEADER_SYMBOLS - 1), 0);
+        CHECK_EQ_INT(sstv_leader_symbol(SSTV_LEADER_SYMBOLS - SSTV_LADDER_GAP_SYMBOLS - 1), 3);
+    }
+
     free(lines_after);
     free(image);
     free(phys);
