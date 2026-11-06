@@ -38,70 +38,11 @@ static int last_block_type = -1; static unsigned last_block_ms; /* drives the sc
 static LCDBitmap* console; /* 140x118 Playdate silhouette, screen interior at (7,7) 88x53 */
 static LCDBitmap* thumb_mask; /* rounded corners for thumbnails */
 
-static sstv_demod demod; /* tuned to active_band */
+static sstv_demod demod; /* tuned to the HF band */
 static sstv_rx rx;
-/* Band sniffer: two full demodulators were too slow for the Playdate (the run loop stalled),
- * so one demodulator runs on the active band and a cheap block Goertzel watches both bands.
- * Switch to HF when 18-21 kHz carries energy while 3-5.5 kHz is quiet (an audible pass also
- * leaks harmonics up there, but always with loud fundamentals), and back on sustained audible
- * tones; never in the middle of a pass. */
-/* receive state used by the sniffer, defined further down (tentative definitions) */
-static bool started;
-static bool finished;
-static unsigned last_data_ms;
-static int active_band = SSTV_BAND_AUDIBLE;
+/* Near-ultrasound only (the audible band is archived: git tag audible-mode-archive). */
+static const int active_band = SSTV_BAND_HF;
 #define PHYS_US_NOW SSTV_BAND_PHYS_US(active_band) /* physical frame length of the band in use */
-static void on_phys(void* ctx, const uint8_t* frame, const float* soft);
-#define on_phys_cb on_phys
-#define SNIFF_BLOCK 256
-#define SNIFF_HOLD 20 /* consecutive blocks (~116 ms) before switching */
-#define SNIFF_HF_ON 8.0f /* HF tone amplitude, LSB (Flipper HF ~25-55 at 4-5 cm, noise ~1) */
-#define SNIFF_AUD_QUIET 20.0f /* audible tones below this count as quiet */
-#define SNIFF_AUD_ON 60.0f /* audible tones above this take the band back */
-static const float sniff_aud_hz[4] = {3000.0f, 3500.0f, 4000.0f, 5500.0f};
-static const float sniff_hf_hz[4] = {18000.0f, 19000.0f, 20000.0f, 21000.0f}; /* HF tones + sync */
-static float sniff_coef[8];
-static int sniff_fill, sniff_hf_run, sniff_aud_run;
-static float sniff_s1[8], sniff_s2[8];
-static void sniff_init(void) {
-    for(int k = 0; k < 8; k++) {
-        float f = k < 4 ? sniff_aud_hz[k] : sniff_hf_hz[k - 4];
-        sniff_coef[k] = 2.0f * cosf(2.0f * 3.14159265f * f / 44100.0f);
-    }
-}
-static void set_band(int band) {
-    if(band == active_band) return;
-    active_band = band;
-    sstv_demod_init(&demod, 44100.0f, on_phys_cb, NULL);
-    sstv_demod_set_band(&demod, band);
-    rx.count = 0;
-}
-static void sniff(const int16_t* x, int n) {
-    for(int i = 0; i < n; i++) {
-        float v = (float)x[i];
-        for(int k = 0; k < 8; k++) {
-            float s0 = v + sniff_coef[k] * sniff_s1[k] - sniff_s2[k];
-            sniff_s2[k] = sniff_s1[k];
-            sniff_s1[k] = s0;
-        }
-        if(++sniff_fill < SNIFF_BLOCK) continue;
-        float aud = 0.0f, hf = 0.0f;
-        for(int k = 0; k < 8; k++) {
-            float p = sniff_s1[k] * sniff_s1[k] + sniff_s2[k] * sniff_s2[k] - sniff_coef[k] * sniff_s1[k] * sniff_s2[k];
-            float a = sqrtf(p > 0.0f ? p : 0.0f) * 2.0f / (float)SNIFF_BLOCK; /* tone amplitude estimate */
-            if(k < 4) { if(a > aud) aud = a; } else if(a > hf) hf = a;
-            sniff_s1[k] = sniff_s2[k] = 0.0f;
-        }
-        sniff_fill = 0;
-        sniff_hf_run = (hf > SNIFF_HF_ON && aud < SNIFF_AUD_QUIET) ? sniff_hf_run + 1 : 0;
-        sniff_aud_run = aud > SNIFF_AUD_ON ? sniff_aud_run + 1 : 0;
-        unsigned now = pd->system->getCurrentTimeMilliseconds();
-        bool busy = started && !finished && now - last_data_ms < 3000;
-        if(busy) continue;
-        if(active_band == SSTV_BAND_AUDIBLE && sniff_hf_run >= SNIFF_HOLD) set_band(SSTV_BAND_HF);
-        else if(active_band == SSTV_BAND_HF && sniff_aud_run >= SNIFF_HOLD) set_band(SSTV_BAND_AUDIBLE);
-    }
-}
 static mic_ring ring;
 
 /* Receive state. Half-line segments (raw mode) or whole lines (coded mode) arrive verified. */
@@ -1105,7 +1046,6 @@ static void draw_panel(void) {
     int px = x;
     px += draw_pill(state, px, y, true) + 5;
     px += draw_pill(rx.note ? "TXT" : rx.coded ? "ZIP" : "RAW", px, y, false) + 5;
-    if(active_band == SSTV_BAND_HF) px += draw_pill("HF", px, y, false) + 5;
     if(rec_len >= 0) draw_pill(rec_prefix[0] == 't' ? "TEST" : "REC", px, y, true);
     y += font_height() + 12;
     /* progress: lines for a picture, characters for a note */
@@ -1471,7 +1411,6 @@ static int update(void* userdata) {
     while(budget > 0 && (n = mic_ring_read(&ring, buf, budget < 1024 ? budget : 1024)) > 0) {
         budget -= n;
         dsp_n += n;
-        sniff(buf, n);
         sstv_demod_feed(&demod, buf, n);
         if(rec_len >= 0 && rec_len < REC_SECONDS * REC_RATE) {
             int room = REC_SECONDS * REC_RATE - rec_len;
@@ -1640,7 +1579,7 @@ static void init(void) {
     sstv_rx_set_control_cb(&rx, on_control);
     sstv_rx_set_note_cb(&rx, on_note);
     sstv_demod_init(&demod, 44100.0f, on_phys, NULL);
-    sniff_init();
+    sstv_demod_set_band(&demod, SSTV_BAND_HF);
     clear_image();
     menu_open();
 
