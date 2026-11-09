@@ -168,8 +168,8 @@ if __name__ == "__main__":
     for i in range(loop):
         scene(t=i / loop, mouth=i % 4 < 2).save(f"{OUT}/card-highlighted/{intro + i + 1}.png")
     with open(f"{OUT}/card-highlighted/animation.txt", "w") as f:
-        f.write("introFrames = " + ", ".join(f"{i + 1} x2" for i in range(intro)) + "\n")
-        f.write("frames = " + ", ".join(f"{intro + i + 1} x2" for i in range(loop)) + "\n")
+        f.write("introFrames = " + ", ".join(f"{i + 1}x2" for i in range(intro)) + "\n")
+        f.write("frames = " + ", ".join(f"{intro + i + 1}x2" for i in range(loop)) + "\n")
     pressed = Image.new("L", card.size, WHITE)
     pressed.paste(scene(mouth=True), (0, 1))
     pressed.save(f"{OUT}/card-pressed.png")
