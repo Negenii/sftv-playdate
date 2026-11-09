@@ -43,7 +43,7 @@ static LCDBitmap* console; /* 140x118 Playdate silhouette, screen interior at (7
 static LCDBitmap* thumb_mask; /* rounded corners for thumbnails */
 static LCDBitmap* qr_github; /* 150x150: https://github.com/Negenii (the Flipper's code, 3 px per dot) */
 static LCDBitmap* qr_coffee; /* 145x145: https://buymeacoffee.com/low.effort (tools/make_coffee_assets.py) */
-static LCDBitmap* cup; /* 20x28 Buy Me a Coffee cup for the button (tools/make_coffee_assets.py) */
+static LCDBitmap* bmc_button; /* 200x56 Buy Me a Coffee button in 1 bit (tools/make_coffee_assets.py) */
 static int about_page; /* 0 the app, 1 support (the target while sliding) */
 static float about_from; /* slide start, in pages */
 static unsigned about_slide_ms; /* when the slide started */
@@ -1479,8 +1479,7 @@ static void draw_menu(void) {
 /* About (system menu), two pages flipped with left/right (they slide, eased):
  * 1. name, version and build on the left, authorship at the bottom, the QR code to GitHub on
  *    the right under its caption (the same card as the Flipper's About);
- * 2. support: a Buy me a coffee button (a picture: the Playdate has no browser) and the QR code
- *    to the page. */
+ * 2. support: the Buy Me a Coffee button and the QR code to the page. */
 #define ABOUT_PAGES 2
 static void draw_about_support(void) {
     const int qr = 145, qx = LCD_COLUMNS - 20 - 150 + (150 - qr) / 2, qy = 66;
@@ -1489,22 +1488,12 @@ static void draw_about_support(void) {
     use_font(font_ui);
     draw_text("Support making", 20, 92);
     draw_text("fun little things.", 20, 110);
-    /* the button, level with the bottom of the code */
-    const int bw = 190, bh = 40, bx = 20, by = qy + qr - bh;
-    pd->graphics->fillRoundRect(bx, by, bw, bh, bh / 2, kColorBlack);
-    const char* label = "Buy me a coffee";
-    int cw = 0, ch = 0, gap = 0, lw = text_width(label);
-    if(cup) {
-        pd->graphics->getBitmapData(cup, &cw, &ch, NULL, NULL, NULL);
-        gap = 8;
+    /* their button (a picture: the Playdate has no browser), level with the bottom of the code */
+    if(bmc_button) {
+        int bw, bh;
+        pd->graphics->getBitmapData(bmc_button, &bw, &bh, NULL, NULL, NULL);
+        pd->graphics->drawBitmap(bmc_button, 20, qy + qr - bh, kBitmapUnflipped);
     }
-    int cx = bx + (bw - cw - gap - lw) / 2;
-    if(cup) {
-        pd->graphics->setDrawMode(kDrawModeFillWhite);
-        pd->graphics->drawBitmap(cup, cx, by + (bh - ch) / 2, kBitmapUnflipped);
-        pd->graphics->setDrawMode(kDrawModeCopy);
-    }
-    draw_text_white(label, cx + cw + gap, by + (bh - font_height()) / 2);
     draw_text_centered("buymeacoffee.com", qx + qr / 2, qy - font_height() - 6);
     if(qr_coffee) pd->graphics->drawBitmap(qr_coffee, qx, qy, kBitmapUnflipped);
 }
@@ -1524,7 +1513,7 @@ static void draw_about_app(void) {
     if(qr_github) pd->graphics->drawBitmap(qr_github, qx, qy, kBitmapUnflipped);
 }
 
-#define ABOUT_SLIDE_MS 350
+#define ABOUT_SLIDE_MS 300
 /* Page position now, in pages: slides from about_from to about_page, cubic ease-in-out. */
 static float about_pos(unsigned now) {
     float t = (float)(now - about_slide_ms) / (float)ABOUT_SLIDE_MS;
@@ -2427,7 +2416,7 @@ static void init(void) {
     console = pd->graphics->loadBitmap("images/console", &err);
     qr_github = pd->graphics->loadBitmap("images/qr_github", &err);
     qr_coffee = pd->graphics->loadBitmap("images/qr_coffee", &err);
-    cup = pd->graphics->loadBitmap("images/cup", &err);
+    bmc_button = pd->graphics->loadBitmap("images/bmc_button", &err);
 
     thumb_mask = pd->graphics->newBitmap(THUMB_W, THUMB_H, kColorBlack);
     pd->graphics->pushContext(thumb_mask);
