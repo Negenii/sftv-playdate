@@ -762,6 +762,7 @@ static void gallery_scan(int filter) {
 /* system menu: gallery filter; in the gallery the list refreshes at once (back to the grid) */
 static void filter_menu_cb(void* ud) {
     (void)ud;
+    if(!filter_item) return;
     gallery_filter = pd->system->getMenuItemValue(filter_item);
     if(ui_mode == ModeGrid || ui_mode == ModeFull || (ui_mode == ModeAbout && (about_back == ModeGrid || about_back == ModeFull))) {
         gallery_scan(gallery_filter);
@@ -2201,8 +2202,27 @@ static void draw_full(void) {
 
 /* ---- main loop ---- */
 
+/* System-menu items for the screen: "filter" only in the gallery (and in About opened from it),
+ * "about" everywhere. Rebuilt when that changes; the filter keeps its value. */
+static void sync_menu_items(void) {
+    static int shown = -1; /* -1 none yet, 0 about only, 1 filter + about */
+    bool in_gallery = ui_mode == ModeGrid || ui_mode == ModeFull ||
+                      (ui_mode == ModeAbout && (about_back == ModeGrid || about_back == ModeFull));
+    if(shown == (int)in_gallery) return;
+    shown = in_gallery;
+    pd->system->removeAllMenuItems();
+    filter_item = NULL;
+    if(in_gallery) {
+        static const char* show[4] = {"all", "images", "anims", "notes"};
+        filter_item = pd->system->addOptionsMenuItem("filter", show, 4, filter_menu_cb, NULL);
+        pd->system->setMenuItemValue(filter_item, gallery_filter);
+    }
+    pd->system->addMenuItem("About", about_menu_cb, NULL);
+}
+
 static int update(void* userdata) {
     (void)userdata;
+    sync_menu_items();
 
     PDButtons pushed;
     pd->system->getButtonState(NULL, &pushed, NULL);
@@ -2472,9 +2492,6 @@ int eventHandler(PlaydateAPI* playdate, PDSystemEvent event, uint32_t arg) {
         pd = playdate;
         pd->display->setRefreshRate(50);
         init();
-        static const char* show[4] = {"all", "images", "anims", "notes"};
-        filter_item = pd->system->addOptionsMenuItem("filter", show, 4, filter_menu_cb, NULL);
-        pd->system->addMenuItem("About", about_menu_cb, NULL);
         pd->system->setUpdateCallback(update, NULL);
     } else if(event == kEventTerminate || event == kEventLock || event == kEventLowPower) {
         /* The audio thread keeps calling the mic callback after the game is unloaded
