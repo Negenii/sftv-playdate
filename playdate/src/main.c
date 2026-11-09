@@ -89,6 +89,14 @@ static unsigned started_ms; /* when the START block ended: the pass timeline sta
 static bool rx_paused; /* transmitter paused: freeze the timeline until RESUME */
 static unsigned pause_anchor; /* the timeline clock is held here while paused */
 static char note_buf[SSTV_NOTE_MAX_BYTES + 1]; /* assembled note text (note passes, up to 64 KB) */
+/* Which note chunks arrived and how many bytes: a lost chunk leaves zeros in note_buf, so the
+ * text must not be read as a C string (it used to end at the first gap, and a note whose first
+ * chunk was lost was saved empty). note_text() renders it with the gaps marked. */
+#define NOTE_CHUNKS ((SSTV_NOTE_MAX_BYTES + SSTV_NOTE_CHUNK - 1) / SSTV_NOTE_CHUNK)
+static uint8_t note_have[NOTE_CHUNKS];
+static int note_got; /* bytes received */
+static char note_show[SSTV_NOTE_MAX_BYTES + 1024];
+static bool note_show_stale = true;
 static int note_scroll; /* receive view scroll (px), crank-driven */
 static bool note_follow = true; /* keep the newest text in view until the crank is used */
 static int full_scroll; /* gallery note scroll (px) */
@@ -372,9 +380,48 @@ static void save_image(void) {
     image_dirty = false;
 }
 
-/* Saves the received note as a .txt (first line = the label). Unique untitled_N if unnamed. */
+/* The note as it can be shown and saved: the received chunks in order, each run of lost chunks
+ * as " [...] ", and UTF-8 sequences torn at a gap's edges dropped (a chunk is 25 bytes, so a
+ * Cyrillic letter can straddle two). */
+static const char* note_text(void) {
+    if(!note_show_stale) return note_show;
+    note_show_stale = false;
+    int total = rx.note_len > 0 ? rx.note_len : 0;
+    if(total <= 0) /* no START: up to the last chunk that arrived */
+        for(int c = 0; c < NOTE_CHUNKS; c++)
+            if(note_have[c]) total = (c + 1) * SSTV_NOTE_CHUNK;
+    if(total > SSTV_NOTE_MAX_BYTES) total = SSTV_NOTE_MAX_BYTES;
+    int n = 0, cap = (int)sizeof note_show - 8, chunks = (total + SSTV_NOTE_CHUNK - 1) / SSTV_NOTE_CHUNK;
+    for(int c = 0; c < chunks && n < cap; c++) {
+        if(!note_have[c]) {
+            if(c == 0 || note_have[c - 1]) { memcpy(note_show + n, " [...] ", 7); n += 7; }
+            continue;
+        }
+        int a = c * SSTV_NOTE_CHUNK, b = a + SSTV_NOTE_CHUNK;
+        if(b > total) b = total;
+        if(c > 0 && !note_have[c - 1])
+            while(a < b && ((uint8_t)note_buf[a] & 0xC0) == 0x80) a++; /* tail of a letter whose head was lost */
+        if(c + 1 < chunks && !note_have[c + 1]) { /* head of a letter whose tail was lost */
+            for(int k = b - 1; k >= a && k >= b - 3; k--) {
+                uint8_t u = (uint8_t)note_buf[k];
+                if((u & 0xC0) == 0x80) continue;
+                int need = u >= 0xF0 ? 4 : u >= 0xE0 ? 3 : u >= 0xC0 ? 2 : 1;
+                if(b - k < need) b = k;
+                break;
+            }
+        }
+        for(int k = a; k < b && n < cap; k++)
+            if(note_buf[k]) note_show[n++] = note_buf[k];
+    }
+    note_show[n] = 0;
+    return note_show;
+}
+
+/* Saves the received note as a .txt (first line = the label). Unique untitled_N if unnamed.
+ * Lost parts are marked " [...] "; nothing is saved when no part arrived. */
 static void save_note(void) {
     if(!note_dirty) return;
+    if(note_got == 0) { note_dirty = false; return; }
     /* trim trailing NULs already handled by the buffer being zeroed; find the length */
     char base[NAME_CAP];
     if(name_is_blank(current_name)) next_note_name(base, sizeof base);
@@ -383,7 +430,8 @@ static void save_note(void) {
     snprintf(fname, sizeof fname, "%s.txt", base);
     SDFile* f = pd->file->open(fname, kFileWrite);
     if(!f) return;
-    pd->file->write(f, note_buf, (unsigned)strlen(note_buf));
+    const char* text = note_text();
+    pd->file->write(f, text, (unsigned)strlen(text));
     pd->file->close(f);
     note_dirty = false;
 }
@@ -973,6 +1021,9 @@ static void on_pixels(void* ctx, uint16_t line, int x_byte, int nbytes, const ui
 static void clear_image(void) {
     anim_reset();
     memset(note_buf, 0, sizeof note_buf); /* rx.note itself is owned by the START/END flag */
+    memset(note_have, 0, sizeof note_have);
+    note_got = 0;
+    note_show_stale = true;
     note_scroll = 0;
     note_follow = true;
     memset(image_data, 0xFF, (size_t)image_rowbytes * SSTV_HEIGHT);
@@ -1072,7 +1123,7 @@ static void on_meta(void* ctx, const char* name, bool is_end, int frames, bool c
         log_missing("END");
         finish(now); /* the transmitter is done: save and announce */
         chime_ok = rx.anim ? (anim_hdr_len > 0 && anim_frames_ok() == anim_info.n)
-                 : rx.note ? (rx.note_len > 0 && (int)strlen(note_buf) >= rx.note_len) : segs_done == SSTV_NUM_SEGS;
+                 : rx.note ? (rx.note_len > 0 && note_got >= rx.note_len) : segs_done == SSTV_NUM_SEGS;
         chime_at = now + CHIME_DELAY_MS;
         if(chime_at == 0) chime_at = 1;
         return;
@@ -1127,7 +1178,15 @@ static void on_note(void* ctx, int chunk, int nbytes, const uint8_t* text) {
         return;
     }
     int off = chunk * SSTV_NOTE_CHUNK;
+    if(chunk < 0 || chunk >= NOTE_CHUNKS) return;
     for(int k = 0; k < nbytes && off + k < SSTV_NOTE_MAX_BYTES; k++) note_buf[off + k] = (char)text[k];
+    if(!note_have[chunk]) {
+        note_have[chunk] = 1;
+        int len = rx.note_len > 0 ? rx.note_len : SSTV_NOTE_MAX_BYTES;
+        int got = len - off < nbytes ? len - off : nbytes;
+        if(got > 0) note_got += got;
+    }
+    note_show_stale = true;
     note_dirty = true;
 }
 
@@ -1645,7 +1704,7 @@ static void draw_panel(void) {
         got = anim_hdr_len > 0 ? anim_dec.frames_done : 0;
         total_units = anim_hdr_len > 0 ? anim_info.n : 1;
     } else if(rx.note) {
-        got = (int)strlen(note_buf);
+        got = note_got;
         total_units = rx.note_len > 0 ? rx.note_len : (got > 0 ? got : 1);
     } else {
         got = segs_done;
@@ -1656,7 +1715,7 @@ static void draw_panel(void) {
     if(fill > 0) pd->graphics->fillRoundRect(x + 1, y + 1, fill, 6, 3, kColorBlack);
     y += 11;
     if(rx.anim) snprintf(t, sizeof t, "%d / %d frames", got, anim_hdr_len > 0 ? anim_info.n : 0);
-    else if(rx.note) snprintf(t, sizeof t, "%d / %d chars", (int)strlen(note_buf), rx.note_len);
+    else if(rx.note) snprintf(t, sizeof t, "%d / %d chars", note_got, rx.note_len);
     else snprintf(t, sizeof t, "%d / %d lines", segs_done / 2, SSTV_HEIGHT);
     draw_text(t, x, y);
     y += lh + 4;
@@ -1712,7 +1771,7 @@ static void draw_finished_banner(void) {
     if(rx.anim)
         snprintf(t, sizeof t, "Received \"%s\"   %d/%d frames", nm, anim_frames_ok(), anim_hdr_len > 0 ? anim_info.n : 0);
     else if(rx.note)
-        snprintf(t, sizeof t, "Received note \"%s\"  %d chars", nm, rx.note_len);
+        snprintf(t, sizeof t, "Received note \"%s\"  %d/%d chars", nm, note_got, rx.note_len);
     else
         snprintf(t, sizeof t, "Received \"%s\"   %d/%d lines", nm, finished_lines, SSTV_HEIGHT);
     int w = text_width(t) + 24, h = font_height() + 16;
@@ -2008,8 +2067,8 @@ static void draw_receive(void) {
         int nx = 22, nw = LCD_COLUMNS - 44, nh = LCD_ROWS - y - 12;
         if(nh > 24) {
             /* follow the newest text while receiving, until the crank takes over */
-            if(note_follow) note_scroll = sticky_note_max_scroll(pd, font_notes, nw, nh, note_buf);
-            draw_sticky_note_scrolled(pd, font_notes, nx, y, nw, nh, note_buf, &note_scroll);
+            if(note_follow) note_scroll = sticky_note_max_scroll(pd, font_notes, nw, nh, note_text());
+            draw_sticky_note_scrolled(pd, font_notes, nx, y, nw, nh, note_text(), &note_scroll);
         }
         goto chrome; /* skip the picture-sheet code */
     }
