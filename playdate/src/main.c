@@ -93,6 +93,7 @@ static int note_scroll; /* receive view scroll (px), crank-driven */
 static bool note_follow = true; /* keep the newest text in view until the crank is used */
 static int full_scroll; /* gallery note scroll (px) */
 static int total_frames; /* physical frames in the pass, announced in START */
+static bool pass_coded; /* the picture pass is coded (announced in START) */
 static bool image_dirty; /* something received since the last save */
 static bool finished; /* END meta received */
 static unsigned finished_ms;
@@ -166,6 +167,14 @@ static int anim_play_pos;
 static sstv_anim_info full_anim;
 static uint8_t* full_anim_frames;
 static bool full_is_anim;
+/* Gallery animation under the crank, like a barrel organ: CRANK_DEG_PER_FRAME of turn is one
+ * frame, either way, so the speed is the crank's; autoplay waits CRANK_HOLD_MS after the crank
+ * stops, then goes on from that frame. */
+#define CRANK_DEG_PER_FRAME 30.0f
+#define CRANK_HOLD_MS 1200u
+static float crank_acc; /* degrees turned since the turn began */
+static int crank_base; /* the frame (order position) the turn began on */
+static unsigned crank_ms;
 #define GRID_COLS 3
 #define GRID_ROWS 2
 #define GRID_PER_PAGE (GRID_COLS * GRID_ROWS)
@@ -779,6 +788,8 @@ static bool gallery_load_full(int idx) {
         full_is_note = false;
         full_is_anim = read_sfa(gallery_names[idx], &full_anim, &full_anim_frames);
         anim_play_pos = 0;
+        crank_acc = 0.0f;
+        crank_ms = 0;
         anim_play_ms = pd->system->getCurrentTimeMilliseconds();
         return full_is_anim;
     }
@@ -1073,6 +1084,7 @@ static void on_meta(void* ctx, const char* name, bool is_end, int frames, bool c
     started = true;
     started_ms = now;
     total_frames = frames;
+    pass_coded = coded;
     if(name_is_blank(name)) {
         if(rx.anim) next_named("anim_", "sfa", current_name, NAME_CAP);
         else if(rx.note) next_note_name(current_name, NAME_CAP); /* notes are numbered note_N (always Latin) */
@@ -1712,6 +1724,32 @@ static void draw_finished_banner(void) {
  * (already after compression) and every frame lasts SSTV_PHYS_US, so the end time is known up
  * front. started_ms is the end of START (re-anchored on RESUME); `enow` is held while paused.
  * Returns -1 when the START was missed and the total is unknown. */
+/* The picture line that was on the air one interleave block ago (a block decodes only once it
+ * is complete, so by then it has), from the pass timeline: data position -> raw segment (half a
+ * line) or coded block (its lines from the schedule, spread over its frames). The drawing line
+ * follows it, so it moves as steadily as the frames go out instead of running through a decoded
+ * block and waiting for the next; over parity frames it stands. -1: unknown (no START yet, or
+ * a coded pass whose schedule was lost). */
+static float picture_air_line(unsigned enow) {
+    if(!started || rx.data_frames <= 0 || rx.note || rx.anim) return -1.0f;
+    int df = rx.data_frames, intro = sstv_pass_intro(pass_coded);
+    float phys = (float)(enow - started_ms) * 1000.0f / (float)PHYS_US_NOW; /* one block behind the air */
+    if(phys < 0.0f) phys = 0.0f;
+    int f0 = (int)phys;
+    float fr = phys - (float)f0;
+    int d0 = sstv_pass_data_before(f0, df, intro), d1 = sstv_pass_data_before(f0 + 1, df, intro);
+    float d = (float)d0 + (float)(d1 - d0) * fr - (float)SSTV_ILEAVE - (float)(pass_coded ? SSTV_INTRO_FRAMES_CODED : SSTV_INTRO_FRAMES);
+    if(d <= 0.0f) return 0.0f;
+    if(!pass_coded) return d / (float)SSTV_SEGS_PER_LINE;
+    for(int c = 0; c < SSTV_SCHEDULE_CHUNKS; c++)
+        if(!schedule_have[c]) return -1.0f;
+    float blocks = d / (float)SSTV_ILEAVE;
+    int b = (int)blocks, line = 0;
+    for(int k = 0; k < b && k < SSTV_MAX_CODED_BLOCKS; k++) line += schedule[k];
+    if(line >= SSTV_HEIGHT || b >= SSTV_MAX_CODED_BLOCKS) return (float)SSTV_HEIGHT;
+    return (float)line + (float)schedule[b] * (blocks - (float)b);
+}
+
 static float pass_progress(unsigned enow) {
     if(!started || total_frames <= 0) return -1.0f;
     float phys = (float)SSTV_ILEAVE + (float)(enow - started_ms) * 1000.0f / (float)PHYS_US_NOW;
@@ -1974,13 +2012,20 @@ static void draw_receive(void) {
         }
         goto chrome; /* skip the picture-sheet code */
     }
-    /* The drawing line follows the decoded lines, not the clock: revealed eases toward
-     * lines_reached and never overtakes it. A coded block decodes as a batch (lines_reached
-     * jumps), then its lines are painted in one by one as revealed catches up, and the line
-     * waits at the last decoded row until the next block arrives (no preview running ahead). */
-    if(!rx_paused && revealed < (float)lines_reached) {
-        revealed += 0.8f; /* lines per frame */
-        if(revealed > (float)lines_reached) revealed = (float)lines_reached;
+    /* The drawing line follows the air (picture_air_line), as on animations: lines arrive in
+     * blocks (2 raw lines, or a coded block of many), so a line tied to decoding ran through a
+     * block and waited. It never passes the decoded lines (lines_reached: a lost block holds it
+     * until the repair) and eases toward its target. Without the timeline (no START, or the
+     * schedule of a coded pass lost) it follows the decoded lines at a fixed pace, as before. */
+    {
+        float air = picture_air_line(enow);
+        float tgt = (float)lines_reached;
+        if(air >= 0.0f && air < tgt) tgt = air;
+        if(!rx_paused && revealed < tgt) {
+            float dl = tgt - revealed, step = air >= 0.0f ? dl * 0.2f : 0.8f;
+            if(step < 0.25f) step = 0.25f;
+            revealed = dl < step ? tgt : revealed + step;
+        }
     }
     int shown = finished ? SSTV_HEIGHT : (int)(revealed + 0.5f);
     /* The drawing frontier (the newest line) leads SHEET_LEAD px above the bottom edge, so you
@@ -2135,6 +2180,7 @@ static void draw_full(void) {
     if(full_is_anim) {
         unsigned now = pd->system->getCurrentTimeMilliseconds();
         unsigned step = 1000u / (unsigned)(full_anim.fps > 0 ? full_anim.fps : 2);
+        if(crank_ms && now - crank_ms < CRANK_HOLD_MS) anim_play_ms = now; /* the crank has it */
         while(now - anim_play_ms >= step) {
             anim_play_ms += step;
             anim_play_pos = (anim_play_pos + 1) % full_anim.order_len;
@@ -2369,9 +2415,22 @@ static int update(void* userdata) {
         }
         /* When the hints are hidden the first A/B just reveals them; the action runs only
          * while they are visible. Left/Right always navigate (and re-show). */
-        { /* crank scrolls a note */
+        { /* crank scrolls a note, or plays an animation forwards and backwards */
             float dc = pd->system->getCrankChange();
             if(full_is_note && (dc > 0.5f || dc < -0.5f)) full_scroll += (int)(dc * 0.6f);
+            if(full_is_anim && full_anim.order_len > 0 && (dc > 0.3f || dc < -0.3f)) {
+                int n = full_anim.order_len;
+                if(!crank_ms || now - crank_ms >= CRANK_HOLD_MS) { /* a fresh turn */
+                    crank_acc = 0.0f;
+                    crank_base = anim_play_pos;
+                }
+                crank_acc += dc;
+                crank_ms = now ? now : 1;
+                /* position = start + whole frames turned (rounded), so turning back the same
+                 * angle lands on the same frame */
+                int steps = (int)floorf(crank_acc / CRANK_DEG_PER_FRAME + 0.5f);
+                anim_play_pos = ((crank_base + steps) % n + n) % n;
+            }
         }
         if((pushed & kButtonA) && ui_visible) confirm_delete = true;
         if((pushed & kButtonB) && ui_visible) ui_mode = ModeGrid;
