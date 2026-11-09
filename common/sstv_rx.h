@@ -42,13 +42,16 @@ typedef struct {
     /* Outer code (revision 7): every decoded logical frame is kept by data position; a group
      * is repaired from its parity frames when at most SSTV_OUTER_PARITY frames of the group
      * (data + parity) are missing. Positions come from headers, never from frame counting. */
-    uint8_t data[SSTV_MAX_DATA_FRAMES][SSTV_PAYLOAD_BYTES];
-    uint8_t have[SSTV_MAX_DATA_FRAMES];
-    uint8_t parity[SSTV_OUTER_GROUPS_MAX][SSTV_OUTER_PARITY][SSTV_PAYLOAD_BYTES];
-    uint8_t have_parity[SSTV_OUTER_GROUPS_MAX][SSTV_OUTER_PARITY];
-    uint8_t group_done[SSTV_OUTER_GROUPS_MAX]; /* complete or repaired: no further attempts */
+    uint8_t data[SSTV_RX_MAX_DATA_FRAMES][SSTV_PAYLOAD_BYTES]; /* up to a 64 KB note (~68 KB) */
+    uint8_t have[SSTV_RX_MAX_DATA_FRAMES];
+    uint8_t parity[SSTV_RX_GROUPS_MAX][SSTV_OUTER_PARITY][SSTV_PAYLOAD_BYTES];
+    uint8_t have_parity[SSTV_RX_GROUPS_MAX][SSTV_OUTER_PARITY];
+    uint8_t group_done[SSTV_RX_GROUPS_MAX]; /* complete or repaired: no further attempts */
     int data_frames; /* data positions in the pass (from the announced total), 0 = unknown */
-    bool pass_open; /* START seen, END not yet: a repeated START block does not reset */
+    bool pass_open; /* START seen, END not yet */
+    uint8_t last_start[SSTV_PAYLOAD_BYTES]; /* the last announced START payload */
+    bool last_start_valid;
+    bool merged; /* this pass continues an identical earlier one (animation resend) */
     int frames_repaired;
     int groups_repaired;
     int repairs_failed; /* parity in hand but too many frames missing */
@@ -59,6 +62,7 @@ typedef struct {
     sstv_note_cb note_cb; /* NULL unless registered */
     bool note; /* current pass carries a text note (from the START/END note flag) */
     bool note_utf8; /* note charset: true = UTF-8, false = ASCII */
+    bool anim; /* note-layout pass carrying an animation stream (sstv_anim.h); `note` is set too */
     int note_len; /* announced note content length in bytes (HTTP-style) */
     void* ctx;
 } sstv_rx;
@@ -67,6 +71,10 @@ void sstv_rx_init(sstv_rx* rx, sstv_pixel_cb pixel_cb, sstv_meta_cb meta_cb, sst
 void sstv_rx_set_control_cb(sstv_rx* rx, sstv_control_cb cb);
 void sstv_rx_set_note_cb(sstv_rx* rx, sstv_note_cb cb);
 void sstv_rx_reset_counters(sstv_rx* rx);
+/* Forgets the last START, so the next pass opens fresh even when it is a resend of the same
+ * animation: call it once an animation arrived complete, or when the user deleted or cleared it
+ * (a merge would otherwise "receive" it in seconds from the frames still in memory). */
+void sstv_rx_forget(sstv_rx* rx);
 
 /* Forgets the previous pass's frames (called on START; sstv_rx_init calls it too). */
 void sstv_rx_start_pass(sstv_rx* rx);

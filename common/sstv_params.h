@@ -40,7 +40,17 @@
 #define SSTV_META_CODED_FLAG 0x8000
 #define SSTV_META_NOTE_FLAG 0x4000 /* START/END total word: this pass carries a text note (never coded, so bit 15 stays 0) */
 #define SSTV_META_UTF8_FLAG 0x2000 /* note charset: set = UTF-8 bytes, clear = plain ASCII */
-#define SSTV_NOTE_MAX_CHARS 1000 /* stays one outer-code group: 40 text + 4 START <= SSTV_OUTER_GROUP */
+/* Animation (revision 12): NOTE and CODED together (a note is never coded). The pass is laid out
+ * like a note: START [total | flags][content length][name], the byte stream of sstv_anim.h in RAW
+ * frames of SSTV_NOTE_CHUNK bytes, outer-code groups, END. */
+#define SSTV_META_ANIM_FLAGS (SSTV_META_NOTE_FLAG | SSTV_META_CODED_FLAG)
+/* Notes (revision 11): up to SSTV_NOTE_MAX_BYTES on the wire, laid out like a picture: group 0 is
+ * START + the first text frames up to SSTV_OUTER_GROUP, then groups of SSTV_OUTER_GROUP. A note of
+ * up to 104 text frames (2600 bytes) keeps the old single-group layout exactly.
+ * SSTV_NOTE_MAX_CHARS is what the C builder (the Flipper) sends: it fits the picture buffer
+ * (SSTV_MAX_FRAMES). Receivers take the full SSTV_NOTE_MAX_BYTES. */
+#define SSTV_NOTE_MAX_BYTES 65535 /* the 16-bit content length */
+#define SSTV_NOTE_MAX_CHARS 12000 /* 480 text frames -> 548 physical, within SSTV_MAX_FRAMES */
 #define SSTV_NOTE_CHUNK SSTV_SEG_BYTES /* 25 ASCII bytes per RAW text frame */
 #define SSTV_NOTE_MAX_FRAMES ((((SSTV_NOTE_MAX_CHARS + SSTV_NOTE_CHUNK - 1) / SSTV_NOTE_CHUNK) + SSTV_ILEAVE - 1) / SSTV_ILEAVE * SSTV_ILEAVE) /* 40 */
 /* Note START/END meta: [subtype][total lo][total hi][len lo][len hi][name...]. The content
@@ -72,11 +82,15 @@
 #define SSTV_INTRO_FRAMES (SSTV_TINY_CHUNKS + SSTV_PREVIEW_CHUNKS) /* preview frames between START and data (raw) */
 #define SSTV_INTRO_FRAMES_CODED (SSTV_INTRO_FRAMES + SSTV_SCHEDULE_CHUNKS) /* coded passes add the schedule block */
 #define SSTV_DATA_BYTES (2 + SSTV_PAYLOAD_BYTES + 1) /* 29 */
+/* Revision 14: 16 parity bytes (was 12). A browser recording (2026-11-07) failed at ~1.5 % bit
+ * errors, where a 41-byte frame averages ~4.5 bad bytes against the 6 that 12 parity correct;
+ * 16 correct 8 (and the outer code, which shares the RS code, now rebuilds 16 lost frames per
+ * group). Costs ~12 % on the air. */
 #ifndef SSTV_PARITY_BYTES
-#define SSTV_PARITY_BYTES 12
+#define SSTV_PARITY_BYTES 16
 #endif
-#define SSTV_FRAME_BYTES (SSTV_DATA_BYTES + SSTV_PARITY_BYTES) /* 41 */
-#define SSTV_FRAME_BITS (SSTV_FRAME_BYTES * 8) /* 328 */
+#define SSTV_FRAME_BYTES (SSTV_DATA_BYTES + SSTV_PARITY_BYTES) /* 45 */
+#define SSTV_FRAME_BITS (SSTV_FRAME_BYTES * 8) /* 360 */
 #ifndef SSTV_ILEAVE
 #define SSTV_ILEAVE 4
 #endif
@@ -96,6 +110,11 @@
 #define SSTV_MAX_DATA_FRAMES (SSTV_ILEAVE + SSTV_INTRO_FRAMES_CODED + SSTV_NUM_SEGS) /* 512 */
 #define SSTV_OUTER_GROUPS_MAX (1 + (SSTV_MAX_DATA_FRAMES + SSTV_OUTER_GROUP - 1) / SSTV_OUTER_GROUP) /* intro group + data groups */
 #define SSTV_MAX_FRAMES (SSTV_MAX_DATA_FRAMES + SSTV_OUTER_GROUPS_MAX * SSTV_OUTER_PARITY + SSTV_ILEAVE)
+/* Receiver capacity: the longest pass is a 64 KB note. */
+#define SSTV_NOTE_MAX_TEXT_FRAMES ((((SSTV_NOTE_MAX_BYTES + SSTV_NOTE_CHUNK - 1) / SSTV_NOTE_CHUNK) + SSTV_ILEAVE - 1) / SSTV_ILEAVE * SSTV_ILEAVE) /* 2624 */
+#define SSTV_RX_MAX_DATA_FRAMES (SSTV_ILEAVE + SSTV_NOTE_MAX_TEXT_FRAMES) /* 2628 */
+#define SSTV_RX_GROUPS_MAX (1 + (SSTV_RX_MAX_DATA_FRAMES + SSTV_OUTER_GROUP - 1) / SSTV_OUTER_GROUP) /* 26 */
+#define SSTV_NOTE_INTRO(data_frames) ((data_frames) < SSTV_OUTER_GROUP ? (data_frames) : SSTV_OUTER_GROUP) /* group 0 of a note */
 #define SSTV_CODED_MIN_GAIN 0.85f /* use coding only when frames <= 85% of raw */
 
 /* Modulation: 4-FSK, 2 bits per 4 ms symbol, square-wave tones.
@@ -169,7 +188,20 @@
  * anyway, so the 8th value is a tone (17.5 kHz) instead of silence. */
 #define SSTV_HF_TONES_INIT {17000, 17500, 18000, 18500, 19000, 19500, 20000, 20500}
 #define SSTV_HF_HAS_SILENCE 0
-#define SSTV_HF_FSYNC_HZ 21000
+#define SSTV_HF_FSYNC_HZ 21000 /* revision 12 and before; the HF band now syncs on a pattern */
+/* Pattern sync (revision 13): the HF frame starts with SSTV_HF_SYNC_SYMBOLS ordinary data-tone
+ * symbols in a fixed order instead of a 21 kHz burst. A laptop microphone heard 21 kHz 18 dB under
+ * the data tones and never locked (recording 2026-11-07): a sync made of the data tones is heard
+ * by anything that hears the data. Every tone once, neighbours >= 1.5 kHz apart; the receiver
+ * correlates each tone's share of the energy (each tone normalised by its own tracked peak, so an
+ * uneven microphone response does not matter) against the pattern. 24 ms, frames 354 ms. */
+#define SSTV_HF_SYNC_SYMBOLS 8
+#define SSTV_HF_SYNC_PATTERN_INIT {0, 4, 7, 3, 6, 2, 5, 1}
+/* Correlation needed to accept the pattern: mean share of the expected tone over the 8 symbols.
+ * Random data scores ~0.15 on average. */
+#ifndef SSTV_SYNC_SCORE_MIN
+#define SSTV_SYNC_SCORE_MIN 0.45f
+#endif
 /* HF fundamentals arrive at ~25-55 LSB at the Playdate (3 kHz ~1400), noise ~1 LSB: the audible
  * band's 40 LSB floor would hide them. */
 #define SSTV_HF_NOISE_FLOOR_LSB 5.0f
@@ -194,7 +226,7 @@
 /* Receivers recognise a lock frame by its pattern (<= this many of 328 bits wrong) and keep it
  * out of the deinterleave window: mixed with the first START frames, its bytes could be
  * "repaired" by erasure decoding into a false block that misaligns the window and loses START. */
-#define SSTV_LOCK_MATCH_BITS 60
+#define SSTV_LOCK_MATCH_BITS 66 /* ~18 % of SSTV_FRAME_BITS */
 
 /* Receiver tuning. */
 #define SSTV_WINDOW_US 2000 /* detector window: tone resolution 500 Hz */
@@ -229,8 +261,9 @@
 #define SSTV_BAND_SYMBOL_US(band) ((band) == SSTV_BAND_HF ? SSTV_HF_SYMBOL_US : SSTV_SYMBOL_US)
 #define SSTV_BAND_NUM_TONES(band) ((band) == SSTV_BAND_HF ? SSTV_HF_NUM_TONES : SSTV_NUM_TONES)
 #define SSTV_BAND_BITS(band) ((band) == SSTV_BAND_HF ? SSTV_HF_BITS_PER_SYMBOL : SSTV_BITS_PER_SYMBOL)
-#define SSTV_BAND_SYMBOLS_PER_FRAME(band) ((SSTV_FRAME_BITS + SSTV_BAND_BITS(band) - 1) / SSTV_BAND_BITS(band)) /* 164 / 110 */
-#define SSTV_BAND_PHYS_US(band) (SSTV_SYNC_US + SSTV_BAND_SYMBOLS_PER_FRAME(band) * SSTV_BAND_SYMBOL_US(band)) /* 672000 / 346000 */
+#define SSTV_BAND_SYMBOLS_PER_FRAME(band) ((SSTV_FRAME_BITS + SSTV_BAND_BITS(band) - 1) / SSTV_BAND_BITS(band)) /* 180 / 120 */
+#define SSTV_BAND_SYNC_US(band) ((band) == SSTV_BAND_HF ? SSTV_HF_SYNC_SYMBOLS * SSTV_HF_SYMBOL_US : SSTV_SYNC_US) /* 16 / 24 ms */
+#define SSTV_BAND_PHYS_US(band) (SSTV_BAND_SYNC_US(band) + SSTV_BAND_SYMBOLS_PER_FRAME(band) * SSTV_BAND_SYMBOL_US(band)) /* 672000 / 354000 */
 #define SSTV_BAND_LEADER_SYMBOLS(band) ((SSTV_BAND_NUM_TONES(band) - 1) * (SSTV_LADDER_TONE_SYMBOLS + SSTV_LADDER_GAP_SYMBOLS)) /* 225 / 525 */
 #define SSTV_BAND_PREAMBLE_US(band) (SSTV_BAND_LEADER_SYMBOLS(band) * SSTV_BAND_SYMBOL_US(band) + SSTV_LOCK_FRAMES * SSTV_BAND_PHYS_US(band))
 #define SSTV_RESUME_LEADER_US 400000 /* short re-calibration leader after a pause (the long start leader is 2 s) */

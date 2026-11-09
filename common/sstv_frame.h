@@ -119,6 +119,7 @@ static inline int sstv_leader_symbol(int i) { /* symbol i of the start ladder */
 }
 void sstv_lock_frame(uint8_t* out); /* SSTV_FRAME_BYTES of the lock-frame pattern */
 bool sstv_is_lock_frame(const uint8_t* frame); /* a received lock frame (receivers drop it) */
+int sstv_lock_distance(const uint8_t* frame); /* bits (of SSTV_FRAME_BITS) that differ from the lock frame */
 
 int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* out, uint8_t* lines_after, bool* coded);
 
@@ -129,6 +130,28 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
  * frame, how many text chunks are complete once that frame is out. Returns the physical frame
  * count (a multiple of SSTV_ILEAVE). */
 int sstv_build_note(const char* text, const char* name, uint8_t* out, uint8_t* lines_after);
+
+/* An animation stream (sstv_anim.h, up to SSTV_NOTE_MAX_BYTES) in the note layout with the
+ * animation flags. out holds sstv_blob_frames(len) * SSTV_FRAME_BYTES, lines_after (may be NULL)
+ * as many bytes. Returns the physical frame count. */
+int sstv_build_anim(const uint8_t* data, int len, const char* name, uint8_t* out, uint8_t* lines_after);
+/* Physical frames of a note-layout pass carrying `len` bytes. */
+int sstv_blob_frames(int len);
+
+/* The same pass built one physical block (SSTV_ILEAVE interleaved frames) at a time, for a
+ * transmitter without room for the whole pass: only the outer-code parity is computed up front
+ * (sstv_blob_parity_bytes(len), ~312 bytes per 108 frames). Block b of the pass equals block b
+ * of sstv_build_anim / sstv_build_note output. `data` must stay valid while blocks are built. */
+typedef struct {
+    const uint8_t* data;
+    int len;
+    uint8_t meta[SSTV_PAYLOAD_BYTES]; /* START payload (END = the same with the END subtype) */
+    int data_frames, intro, groups, total; /* total = physical frames */
+    uint8_t* parity; /* groups * SSTV_OUTER_PARITY * SSTV_PAYLOAD_BYTES */
+} sstv_blob;
+int sstv_blob_parity_bytes(int len);
+void sstv_blob_init(sstv_blob* b, const uint8_t* data, int len, bool anim, const char* name, uint8_t* parity_mem);
+void sstv_blob_block(const sstv_blob* b, int block, uint8_t* phys);
 
 #ifdef __cplusplus
 }

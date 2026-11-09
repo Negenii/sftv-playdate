@@ -99,26 +99,30 @@ int main(void) {
     CHECK(!coded);
     printf("raw pass: %d frames\n", frames);
     run_case("raw clean", image, phys, frames, NULL, 0, NULL, 0, SSTV_HEIGHT, 0);
-    /* two garbled physical frames in one block kill its 4 logical frames; three such blocks in
-       group 0 = 12 lost frames: all repaired */
-    int g12[] = {40, 41, 60, 61, 80, 81};
-    run_case("raw 12 lost in group 0", image, phys, frames, g12, 6, NULL, 0, SSTV_HEIGHT, 12);
-    /* a fourth block lost in the same group: 16 > 12, the group stays short (8 lines), later
+    /* Physical layout: group 0 = the 28 intro frames + SSTV_OUTER_PARITY parity, then groups of
+     * 108 picture frames + parity. G1 = first physical frame of the first picture group; a
+     * frame index in picture group k (k >= 1) is G1 + (k - 1) * (108 + parity) + offset. */
+    const int P = SSTV_OUTER_PARITY, G1 = 28 + P, GS = 108 + P;
+    /* two garbled physical frames in one block kill its 4 logical frames; four such blocks in one
+       group = 16 lost frames: all repaired */
+    int g16[] = {G1, G1 + 1, G1 + 20, G1 + 21, G1 + 40, G1 + 41, G1 + 60, G1 + 61};
+    run_case("raw 16 lost in a group", image, phys, frames, g16, 8, NULL, 0, SSTV_HEIGHT, 16);
+    /* a fifth block lost in the same group: 20 > 16, the group stays short (10 lines), later
        groups fine */
-    int g16[] = {40, 41, 60, 61, 80, 81, 100, 101};
-    run_case("raw 16 lost in group 0", image, phys, frames, g16, 8, NULL, 0, SSTV_HEIGHT - 8, 0);
+    int g20[] = {G1, G1 + 1, G1 + 20, G1 + 21, G1 + 40, G1 + 41, G1 + 60, G1 + 61, G1 + 80, G1 + 81};
+    run_case("raw 20 lost in a group", image, phys, frames, g20, 10, NULL, 0, SSTV_HEIGHT - 10, 0);
     /* losses spread over groups, including a parity block (physical 108..119 are group 0's
        parity) and the tiny preview block (4..7) */
-    int spread[] = {4, 5, 110, 111, 130, 131, 250, 251, 400, 401};
+    int spread[] = {4, 5, G1 + 70, G1 + 71, G1 + 90, G1 + 91, G1 + GS + 90, G1 + GS + 91, G1 + 3 * GS + 0, G1 + 3 * GS + 1};
     run_case("raw spread losses", image, phys, frames, spread, 10, NULL, 0, SSTV_HEIGHT, 12);
     /* physical frames that never arrive (sync lost): one per group */
-    int skip[] = {50, 200, 330, 450};
+    int skip[] = {G1 + 10, G1 + GS + 40, G1 + 2 * GS + 50, G1 + 3 * GS + 50};
     run_case("raw skipped frames", image, phys, frames, NULL, 0, skip, 4, SSTV_HEIGHT, 8);
     /* the START block itself lost: the pass still opens on the repaired... no: without START
        the receiver cannot announce; it decodes the rest and END announces the name */
     /* START lost together with data blocks in the first and the last (short) group: the
        first group repairs on its parity (full group assumed), the last one on END */
-    int gstart[] = {0, 1, 40, 41, 500, 501};
+    int gstart[] = {0, 1, G1, G1 + 1, G1 + 3 * GS + 100, G1 + 3 * GS + 101};
     {
         capture* c = calloc(1, sizeof *c);
         sstv_rx rx;
@@ -140,14 +144,15 @@ int main(void) {
     printf("coded pass: %d frames\n", frames);
     run_case("coded clean", image, phys, frames, NULL, 0, NULL, 0, SSTV_HEIGHT, 0);
     /* one garbled frame of a coded block: the inner RS with erasures fixes it */
-    int c1[] = {45};
+    const int C1 = 32 + SSTV_OUTER_PARITY; /* coded: intro 32 frames + parity, then group 1 */
+    int c1[] = {C1 + 1};
     run_case("coded one garbled frame", image, phys, frames, c1, 1, NULL, 0, SSTV_HEIGHT, 0);
     /* a whole coded block lost (two garbled frames): its lines come back after the parity */
-    int c2[] = {44, 45};
+    int c2[] = {C1, C1 + 1};
     run_case("coded block lost", image, phys, frames, c2, 2, NULL, 0, SSTV_HEIGHT, 4);
     /* the schedule block (intro group, physical 28-31) and the first picture block (group 1,
-       physical 44-47) both lost: repaired by their own group parity */
-    int c3[] = {28, 29, 44, 45};
+       physical C1..C1+3) both lost: repaired by their own group parity */
+    int c3[] = {28, 29, C1, C1 + 1};
     run_case("coded schedule + block lost", image, phys, frames, c3, 4, NULL, 0, SSTV_HEIGHT, 8);
     /* the user's case: a tiny block (physical 4-7) and a preview block (physical 12-15) lost;
        the intro group's parity (sent right after the intro) rebuilds them, so tiny 4/4 and

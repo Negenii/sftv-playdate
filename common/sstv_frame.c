@@ -18,9 +18,9 @@ static bool check(const uint8_t* buf, uint16_t* hdr, uint8_t* payload) {
     memcpy(payload, buf + 2, SSTV_PAYLOAD_BYTES);
     if(crc8_compute(buf, SSTV_DATA_BYTES - 1) != buf[SSTV_DATA_BYTES - 1]) return false;
     int type = sstv_hdr_type(*hdr), index = sstv_hdr_index(*hdr);
-    if(type == SSTV_FT_RAW) return index < SSTV_NUM_SEGS;
+    if(type == SSTV_FT_RAW) return index < SSTV_NOTE_MAX_TEXT_FRAMES; /* half-lines, or note text */
     if(type == SSTV_FT_CODED) return index < SSTV_MAX_BLOCKS;
-    if(type == SSTV_FT_PARITY) return index < SSTV_OUTER_GROUPS_MAX * SSTV_OUTER_PARITY;
+    if(type == SSTV_FT_PARITY) return index < SSTV_RX_GROUPS_MAX * SSTV_OUTER_PARITY;
     return type == SSTV_FT_META;
 }
 
@@ -363,29 +363,35 @@ int sstv_build_physical(const uint8_t* image_bits, const char* name, uint8_t* ou
     return em.blocks * SSTV_ILEAVE;
 }
 
-int sstv_build_note(const char* text, const char* name, uint8_t* out, uint8_t* lines_after) {
+static int blob_text_frames(int len) {
+    int chunks = (len + SSTV_NOTE_CHUNK - 1) / SSTV_NOTE_CHUNK;
+    int text_frames = ((chunks + SSTV_ILEAVE - 1) / SSTV_ILEAVE) * SSTV_ILEAVE;
+    return text_frames == 0 ? SSTV_ILEAVE : text_frames;
+}
+
+int sstv_blob_frames(int len) {
+    int data_frames = SSTV_ILEAVE + blob_text_frames(len);
+    return sstv_pass_total(data_frames, SSTV_NOTE_INTRO(data_frames));
+}
+
+/* Note-layout pass: START with `flags` and the content length, `len` bytes in RAW frames. */
+static int build_blob(const uint8_t* text, int len, uint16_t flags, const char* name, uint8_t* out, uint8_t* lines_after) {
     uint8_t logical[SSTV_ILEAVE * SSTV_FRAME_BYTES];
     uint8_t payload[SSTV_PAYLOAD_BYTES];
-
-    int len = 0;
-    while(text && text[len] && len < SSTV_NOTE_MAX_CHARS) len++;
     int chunks = (len + SSTV_NOTE_CHUNK - 1) / SSTV_NOTE_CHUNK; /* real text frames */
     int text_frames = ((chunks + SSTV_ILEAVE - 1) / SSTV_ILEAVE) * SSTV_ILEAVE; /* pad to a block */
     if(text_frames == 0) text_frames = SSTV_ILEAVE; /* always at least one (empty) text block */
 
-    int data_frames = SSTV_ILEAVE + text_frames; /* START + text = the whole of group 0 */
-    uint16_t total = (uint16_t)(data_frames + SSTV_OUTER_PARITY + SSTV_ILEAVE); /* + parity + END */
+    int data_frames = SSTV_ILEAVE + text_frames; /* START + text */
+    /* group 0 = START + text up to SSTV_OUTER_GROUP (a short note is one group, as before),
+     * then groups of SSTV_OUTER_GROUP; the emitter closes each full group on its own */
+    uint16_t total = (uint16_t)sstv_pass_total(data_frames, SSTV_NOTE_INTRO(data_frames));
 
     pass_emitter em;
     emitter_init(&em, out, lines_after);
 
-    /* Detect UTF-8 (any byte with the high bit set). */
-    bool utf8 = false;
-    for(int i = 0; i < len; i++)
-        if((uint8_t)text[i] & 0x80) { utf8 = true; break; }
-
     /* Start meta block: [START][total | flags][content length][name] in every logical frame. */
-    uint16_t word = total | SSTV_META_NOTE_FLAG | (utf8 ? SSTV_META_UTF8_FLAG : 0);
+    uint16_t word = total | flags;
     uint8_t meta[SSTV_PAYLOAD_BYTES];
     memset(meta, 0, SSTV_PAYLOAD_BYTES);
     meta[0] = SSTV_META_START;
@@ -408,21 +414,137 @@ int sstv_build_note(const char* text, const char* name, uint8_t* out, uint8_t* l
             int c = block + i;
             memset(payload, 0, SSTV_PAYLOAD_BYTES);
             int off = c * SSTV_NOTE_CHUNK;
-            for(int k = 0; k < SSTV_NOTE_CHUNK && off + k < len; k++) payload[k] = (uint8_t)text[off + k];
+            for(int k = 0; k < SSTV_NOTE_CHUNK && off + k < len; k++) payload[k] = text[off + k];
             sstv_frame_pack(sstv_hdr(SSTV_FT_RAW, c), payload, logical + i * SSTV_FRAME_BYTES);
         }
-        int done_before = block;              /* chunks complete before this block */
-        int done_after = block + SSTV_ILEAVE; /* and after it */
+        int done_before = block < 255 ? block : 255; /* chunks complete before this block (8-bit) */
+        int done_after = block + SSTV_ILEAVE < 255 ? block + SSTV_ILEAVE : 255; /* and after it */
         emitter_data_block(&em, logical, done_before, done_after);
     }
 
-    /* Close the single group (its 12 parity frames), then END. */
-    emitter_close_group(&em, text_frames);
+    /* Close the last group (its 12 parity frames), then END. */
+    int lines_end = text_frames < 255 ? text_frames : 255;
+    emitter_close_group(&em, lines_end);
     meta[0] = SSTV_META_END;
     for(int i = 0; i < SSTV_ILEAVE; i++)
         sstv_frame_pack(sstv_hdr(SSTV_FT_META, 1), meta, logical + i * SSTV_FRAME_BYTES);
-    emitter_block(&em, logical, text_frames, text_frames);
+    emitter_block(&em, logical, lines_end, lines_end);
     return em.blocks * SSTV_ILEAVE;
+}
+
+/* ---- block-at-a-time note-layout passes ---- */
+
+static void blob_payload(const sstv_blob* b, int pos, uint8_t* payload) {
+    if(pos < SSTV_ILEAVE) {
+        memcpy(payload, b->meta, SSTV_PAYLOAD_BYTES);
+        return;
+    }
+    memset(payload, 0, SSTV_PAYLOAD_BYTES);
+    int off = (pos - SSTV_ILEAVE) * SSTV_NOTE_CHUNK;
+    for(int k = 0; k < SSTV_NOTE_CHUNK && off + k < b->len; k++) payload[k] = b->data[off + k];
+}
+
+static uint16_t blob_hdr(int pos) {
+    return pos < SSTV_ILEAVE ? sstv_hdr(SSTV_FT_META, 0) : sstv_hdr(SSTV_FT_RAW, pos - SSTV_ILEAVE);
+}
+
+int sstv_blob_parity_bytes(int len) {
+    int data_frames = SSTV_ILEAVE + blob_text_frames(len);
+    return sstv_pass_groups(data_frames, SSTV_NOTE_INTRO(data_frames)) * SSTV_OUTER_PARITY * SSTV_PAYLOAD_BYTES;
+}
+
+void sstv_blob_init(sstv_blob* b, const uint8_t* data, int len, bool anim, const char* name, uint8_t* parity_mem) {
+    if(len > SSTV_NOTE_MAX_BYTES) len = SSTV_NOTE_MAX_BYTES;
+    b->data = data;
+    b->len = len;
+    b->data_frames = SSTV_ILEAVE + blob_text_frames(len);
+    b->intro = SSTV_NOTE_INTRO(b->data_frames);
+    b->groups = sstv_pass_groups(b->data_frames, b->intro);
+    b->total = sstv_pass_total(b->data_frames, b->intro);
+    b->parity = parity_mem;
+    uint16_t flags = SSTV_META_NOTE_FLAG;
+    if(anim) {
+        flags = SSTV_META_ANIM_FLAGS;
+    } else {
+        for(int i = 0; i < len; i++)
+            if(data[i] & 0x80) { flags |= SSTV_META_UTF8_FLAG; break; }
+    }
+    uint16_t word = (uint16_t)(b->total | flags);
+    memset(b->meta, 0, SSTV_PAYLOAD_BYTES);
+    b->meta[0] = SSTV_META_START;
+    b->meta[1] = (uint8_t)(word & 0xFF);
+    b->meta[2] = (uint8_t)(word >> 8);
+    b->meta[SSTV_NOTE_LEN_OFFSET] = (uint8_t)(len & 0xFF);
+    b->meta[SSTV_NOTE_LEN_OFFSET + 1] = (uint8_t)((unsigned)len >> 8);
+    if(name) {
+        size_t n = strlen(name);
+        if(n > SSTV_NOTE_NAME_MAX) n = SSTV_NOTE_NAME_MAX;
+        memcpy(b->meta + SSTV_NOTE_NAME_OFFSET, name, n);
+    }
+    /* outer parity, one group at a time, payload column by column */
+    uint8_t payload[SSTV_PAYLOAD_BYTES];
+    for(int g = 0; g < b->groups; g++) {
+        int base = sstv_pass_group_base(b->intro, g), n = sstv_pass_group_size(b->data_frames, b->intro, g);
+        uint8_t* out = b->parity + (size_t)g * SSTV_OUTER_PARITY * SSTV_PAYLOAD_BYTES;
+        for(int k = 0; k < SSTV_PAYLOAD_BYTES; k++) {
+            rs_encoder_t e;
+            rs_encoder_init(&e);
+            for(int p = 0; p < n; p++) {
+                blob_payload(b, base + p, payload);
+                rs_encoder_feed(&e, payload[k]);
+            }
+            uint8_t par[SSTV_OUTER_PARITY];
+            rs_encoder_finish(&e, par);
+            for(int j = 0; j < SSTV_OUTER_PARITY; j++) out[j * SSTV_PAYLOAD_BYTES + k] = par[j];
+        }
+    }
+}
+
+void sstv_blob_block(const sstv_blob* b, int block, uint8_t* phys) {
+    uint8_t logical[SSTV_ILEAVE * SSTV_FRAME_BYTES];
+    uint8_t payload[SSTV_PAYLOAD_BYTES];
+    int at = 0; /* first block of group g */
+    for(int g = 0; g < b->groups; g++) {
+        int nb = sstv_pass_group_size(b->data_frames, b->intro, g) / SSTV_ILEAVE;
+        int pb = SSTV_OUTER_PARITY / SSTV_ILEAVE;
+        if(block < at + nb) {
+            int pos0 = sstv_pass_group_base(b->intro, g) + (block - at) * SSTV_ILEAVE;
+            for(int i = 0; i < SSTV_ILEAVE; i++) {
+                blob_payload(b, pos0 + i, payload);
+                sstv_frame_pack(blob_hdr(pos0 + i), payload, logical + i * SSTV_FRAME_BYTES);
+            }
+            sstv_interleave(logical, phys);
+            return;
+        }
+        if(block < at + nb + pb) {
+            int j0 = (block - at - nb) * SSTV_ILEAVE;
+            const uint8_t* par = b->parity + (size_t)g * SSTV_OUTER_PARITY * SSTV_PAYLOAD_BYTES;
+            for(int i = 0; i < SSTV_ILEAVE; i++)
+                sstv_frame_pack(sstv_hdr(SSTV_FT_PARITY, g * SSTV_OUTER_PARITY + j0 + i), par + (j0 + i) * SSTV_PAYLOAD_BYTES,
+                                logical + i * SSTV_FRAME_BYTES);
+            sstv_interleave(logical, phys);
+            return;
+        }
+        at += nb + pb;
+    }
+    memcpy(payload, b->meta, SSTV_PAYLOAD_BYTES); /* END */
+    payload[0] = SSTV_META_END;
+    for(int i = 0; i < SSTV_ILEAVE; i++) sstv_frame_pack(sstv_hdr(SSTV_FT_META, 1), payload, logical + i * SSTV_FRAME_BYTES);
+    sstv_interleave(logical, phys);
+}
+
+int sstv_build_note(const char* text, const char* name, uint8_t* out, uint8_t* lines_after) {
+    int len = 0;
+    while(text && text[len] && len < SSTV_NOTE_MAX_CHARS) len++;
+    bool utf8 = false; /* any byte with the high bit set */
+    for(int i = 0; i < len; i++)
+        if((uint8_t)text[i] & 0x80) { utf8 = true; break; }
+    return build_blob((const uint8_t*)text, len, (uint16_t)(SSTV_META_NOTE_FLAG | (utf8 ? SSTV_META_UTF8_FLAG : 0)), name, out, lines_after);
+}
+
+int sstv_build_anim(const uint8_t* data, int len, const char* name, uint8_t* out, uint8_t* lines_after) {
+    if(len > SSTV_NOTE_MAX_BYTES) len = SSTV_NOTE_MAX_BYTES;
+    return build_blob(data, len, SSTV_META_ANIM_FLAGS, name, out, lines_after);
 }
 
 /* Lock-frame pattern: fixed LCG bytes (seed 0x5F7A). Random bytes are not an RS codeword;
@@ -438,7 +560,7 @@ void sstv_lock_frame(uint8_t* out) {
 
 /* True when `frame` is the lock-frame pattern within SSTV_LOCK_MATCH_BITS bit errors (a random
  * frame differs in ~164 of its 328 bits). */
-bool sstv_is_lock_frame(const uint8_t* frame) {
+int sstv_lock_distance(const uint8_t* frame) {
     uint8_t lock[SSTV_FRAME_BYTES];
     sstv_lock_frame(lock);
     int diff = 0;
@@ -446,5 +568,9 @@ bool sstv_is_lock_frame(const uint8_t* frame) {
         uint8_t x = (uint8_t)(lock[i] ^ frame[i]);
         while(x) { diff += x & 1; x >>= 1; }
     }
-    return diff <= SSTV_LOCK_MATCH_BITS;
+    return diff;
+}
+
+bool sstv_is_lock_frame(const uint8_t* frame) {
+    return sstv_lock_distance(frame) <= SSTV_LOCK_MATCH_BITS;
 }

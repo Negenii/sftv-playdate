@@ -65,10 +65,20 @@ int sstv_mod_tone_gain(
 }
 
 int sstv_mod_frame(sstv_mod* m, const uint8_t* frame, int16_t* out, int cap) {
-    int total = 0;
-    int n = sstv_mod_tone_duty(m, m->fsync, m->sync_duty, SSTV_SYNC_US, out, cap);
-    if(n < 0) return -1;
-    total += n;
+    int total = 0, n;
+    if(m->band == SSTV_BAND_HF) { /* pattern sync (revision 13) */
+        static const int pat[SSTV_HF_SYNC_SYMBOLS] = SSTV_HF_SYNC_PATTERN_INIT;
+        for(int i = 0; i < SSTV_HF_SYNC_SYMBOLS; i++) {
+            int v = pat[i];
+            n = sstv_mod_tone_gain(m, m->tones[v], m->duty[v], m->channel_gain[v], m->symbol_us, out + total, cap - total);
+            if(n < 0) return -1;
+            total += n;
+        }
+    } else {
+        n = sstv_mod_tone_duty(m, m->fsync, m->sync_duty, SSTV_SYNC_US, out, cap);
+        if(n < 0) return -1;
+        total += n;
+    }
     for(int i = 0; i < m->spf; i++) {
         int v = sstv_frame_symbol_bits(frame, i, m->bits);
         n = sstv_mod_tone_gain(m, m->tones[v], m->duty[v], m->channel_gain[v], m->symbol_us, out + total, cap - total);

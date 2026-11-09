@@ -70,7 +70,12 @@ static void test_note_max(void) {
     for(int i = 0; i < SSTV_NOTE_MAX_CHARS; i++) text[i] = (char)('A' + i % 26);
     text[SSTV_NOTE_MAX_CHARS] = 0;
     int total = sstv_build_note(text, "Max", out, NULL);
-    CHECK(total == SSTV_ILEAVE + SSTV_NOTE_MAX_FRAMES + SSTV_OUTER_PARITY + SSTV_ILEAVE);
+    int d = SSTV_ILEAVE + SSTV_NOTE_MAX_FRAMES;
+    CHECK_EQ_INT(total, sstv_pass_total(d, SSTV_NOTE_INTRO(d))); /* multi-group layout */
+    CHECK(total <= SSTV_MAX_FRAMES); /* fits the Flipper's picture buffer */
+    /* a 1000-char note keeps the single-group layout: 4 + 40 + SSTV_OUTER_PARITY + 4 */
+    text[1000] = 0;
+    CHECK_EQ_INT(sstv_build_note(text, "K", out, NULL), 48 + SSTV_OUTER_PARITY);
 }
 
 static void test_note_empty(void) {
@@ -82,7 +87,7 @@ static void test_note_empty(void) {
 
 
 /* ---- receiver loopback (frame level, like test_outer) ---- */
-static char note_got[SSTV_NOTE_MAX_CHARS + 64];
+static char note_got[SSTV_NOTE_MAX_BYTES + 64];
 static int note_starts, note_ends;
 
 static void n_pixels(void* c, uint16_t l, int xb, int nb, const uint8_t* p) { (void)c;(void)l;(void)xb;(void)nb;(void)p; }
@@ -136,6 +141,22 @@ static void test_note_repair(void) {
     CHECK(strcmp(note_got, text) == 0);
 }
 
+/* A note longer than one outer group: every group repairs its own losses. */
+static void test_note_multigroup(void) {
+    static char text[SSTV_NOTE_MAX_CHARS + 1];
+    for(int i = 0; i < SSTV_NOTE_MAX_CHARS; i++) text[i] = (char)('a' + (i * 7) % 26);
+    text[SSTV_NOTE_MAX_CHARS] = 0;
+    feed_note(text, "Long", NULL, 0);
+    CHECK(strcmp(note_got, text) == 0);
+    /* lose a whole block in group 0 and one in group 2 (data frames 4..7 of each) */
+    int d = SSTV_ILEAVE + SSTV_NOTE_MAX_FRAMES, intro = SSTV_NOTE_INTRO(d);
+    int g2 = sstv_pass_group_base(intro, 2), at = 0; /* physical frame of data position g2 */
+    for(int p = 0; p < 4000 && sstv_pass_data_before(p, d, intro) < g2; p++) at = p + 1;
+    int skip[8] = {8, 9, 10, 11, at + 4, at + 5, at + 6, at + 7};
+    feed_note(text, "Long", skip, 8);
+    CHECK(strcmp(note_got, text) == 0);
+}
+
 static void test_note_variable(void) {
     static uint8_t out[SSTV_MAX_FRAMES * SSTV_FRAME_BYTES];
     /* 10 chars -> 1 chunk -> 1 block (4 text frames) -> total 24 */
@@ -169,5 +190,6 @@ int main(void) {
     test_note_utf8();
     test_note_loopback();
     test_note_repair();
+    test_note_multigroup();
     TEST_MAIN_END();
 }

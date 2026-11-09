@@ -12,6 +12,7 @@ extern "C" {
 #define SSTV_DEMOD_TABLE_BITS 10
 #define SSTV_DEMOD_TABLE_SIZE (1 << SSTV_DEMOD_TABLE_BITS)
 #define SSTV_DEMOD_SYNC_DET SSTV_MAX_TONES /* index of the sync detector */
+#define SSTV_DEMOD_HIST 64 /* pattern-sync history, in hops (>= 8 symbols) */
 
 /* One demodulated physical frame: SSTV_FRAME_BYTES raw bytes and SSTV_FRAME_BITS soft
  * decisions in [-1, 1] (positive = 1, magnitude = confidence). Feed it to sstv_rx. */
@@ -78,6 +79,17 @@ typedef struct {
     float sync_gain_decay;
     float sync_peak; /* peak short-window sync energy within the current burst */
     int frames; /* physical frames delivered */
+    /* pattern sync (HF band, revision 13): every `hop` samples the tones' shares of the energy go
+     * into share_hist, and the pattern's correlation over the last 8 symbols is checked */
+    int pattern;
+    int sync_us; /* sync part of a frame (16 ms burst / 24 ms pattern) */
+    int hop, hop_count;
+    float hop_decay; /* gain decay over one hop */
+    float share_hist[SSTV_DEMOD_HIST][SSTV_MAX_TONES];
+    int hist_pos;
+    float score, score_prev, score_prev2; /* pattern correlation at the last three hops */
+    float sync_score; /* correlation of the last accepted pattern */
+    int patterns_seen;
     sstv_phys_cb cb;
     void* ctx;
 } sstv_demod;

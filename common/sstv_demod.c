@@ -40,6 +40,7 @@ void sstv_demod_init(sstv_demod* d, float sample_rate, sstv_phys_cb cb, void* ct
     d->sample_rate = sample_rate;
     d->samples_per_ms = (int)(sample_rate / 1000.0f + 0.5f);
     d->symbol_us = SSTV_SYMBOL_US;
+    d->sync_us = SSTV_SYNC_US;
     d->bit_len = sample_rate * (float)SSTV_SYMBOL_US / 1000000.0f;
     d->bit_len_nominal = d->bit_len;
     d->last_edge = -1.0;
@@ -182,7 +183,7 @@ static void decide_symbol(sstv_demod* d) {
 /* Starts a frame whose first data sample is at t0. real_edge: a sync burst was seen (re-arms
  * the flywheel). */
 static void start_frame(sstv_demod* d, double t0, bool real_edge) {
-    const double symbols = (double)(SSTV_SYNC_US + d->spf * d->symbol_us) / (double)d->symbol_us;
+    const double symbols = (double)(d->sync_us + d->spf * d->symbol_us) / (double)d->symbol_us;
     if(real_edge) {
         d->flywheel_left = SSTV_FLYWHEEL_FRAMES;
     } else {
@@ -202,7 +203,7 @@ static void start_frame(sstv_demod* d, double t0, bool real_edge) {
  * symbol clock is nudged by the remaining error, so both devices' clock offsets and the
  * jitter of the edge estimate are absorbed instead of accumulating. */
 static void on_measured_edge(sstv_demod* d, double t_meas) {
-    const double symbols = (double)(SSTV_SYNC_US + d->spf * d->symbol_us) / (double)d->symbol_us;
+    const double symbols = (double)(d->sync_us + d->spf * d->symbol_us) / (double)d->symbol_us;
     if(d->predicted_edge < 0.0 || d->flywheel_left <= 0) {
         /* Not locked: take the edge as is; a second edge gives the first clock estimate. */
         if(d->last_edge >= 0.0) {
@@ -221,11 +222,12 @@ static void on_measured_edge(sstv_demod* d, double t_meas) {
     double err = t_meas - d->predicted_edge;
     if(err > 1.5 * (double)d->bit_len || err < -1.5 * (double)d->bit_len) {
         /* Far from where a sync can be: noise shaped like the sync tone. Keep the prediction
-         * but treat the burst as seen. */
-        start_frame(d, d->predicted_edge, true);
+         * but treat the burst as seen. (A pattern match far off is data that happened to look
+         * like the pattern: ignore it; the flywheel covers a sync that does not come.) */
+        if(!d->pattern) start_frame(d, d->predicted_edge, true);
         return;
     }
-    if(d->sync_peak < 0.5f * d->sync_gain) {
+    if(!d->pattern && d->sync_peak < 0.5f * d->sync_gain) {
         /* A weak burst (buried in noise) gives an unreliable edge: keep the prediction. */
         start_frame(d, d->predicted_edge, true);
         return;
@@ -245,7 +247,78 @@ static void maybe_flywheel(sstv_demod* d) {
     if((double)d->n > d->predicted_edge + tolerance) start_frame(d, d->predicted_edge, false);
 }
 
+/* Pattern sync: one hop. The tones' shares of the energy (each normalised by its own tracked
+ * peak, so a microphone that hears some tones 20 dB under others still sees each one near 1 when
+ * it plays) go into the history; the correlation with the pattern is the mean share of the
+ * expected tone at each pattern symbol's decision point. A local maximum over
+ * SSTV_SYNC_SCORE_MIN, refined with a parabola through its neighbours, is the frame's start.
+ * The window (W) fully inside a symbol (L) scores a plateau L - W wide, whose middle is the
+ * window end at symbol start + (L + W) / 2 - 1, so the data starts (L - W) / 2 + 1 after it. */
+static void pattern_hop(sstv_demod* d) {
+    static const int pat[SSTV_HF_SYNC_SYMBOLS] = SSTV_HF_SYNC_PATTERN_INIT;
+    block_energies(d);
+    track_gains(d, d->hop_decay);
+    float nrm[SSTV_MAX_TONES], sum = 0.0f;
+    bool heard = false;
+    for(int k = 0; k < d->num_tones; k++) {
+        nrm[k] = d->energy[k] / d->gain[k];
+        sum += nrm[k];
+        if(d->energy[k] > d->min_energy) heard = true;
+    }
+    float* row = d->share_hist[d->hist_pos];
+    for(int k = 0; k < SSTV_MAX_TONES; k++) row[k] = (heard && sum > 0.0f && k < d->num_tones) ? nrm[k] / sum : 0.0f;
+    float sc = 0.0f;
+    for(int k = 0; k < SSTV_HF_SYNC_SYMBOLS; k++) {
+        int back = (int)((double)(SSTV_HF_SYNC_SYMBOLS - 1 - k) * (double)d->bit_len / (double)d->hop + 0.5);
+        if(back >= SSTV_DEMOD_HIST) {
+            sc = 0.0f;
+            break;
+        }
+        sc += d->share_hist[(d->hist_pos - back + SSTV_DEMOD_HIST) % SSTV_DEMOD_HIST][pat[k]];
+    }
+    sc /= (float)SSTV_HF_SYNC_SYMBOLS;
+    d->hist_pos = (d->hist_pos + 1) % SSTV_DEMOD_HIST;
+    d->score_prev2 = d->score_prev;
+    d->score_prev = d->score;
+    d->score = sc;
+    if(d->state == SSTV_DEMOD_DATA) return; /* inside a frame: its symbols are clocked */
+    if(d->score_prev >= SSTV_SYNC_SCORE_MIN && d->score_prev >= d->score_prev2 && d->score_prev > d->score) {
+        double y0 = (double)d->score_prev2, y1 = (double)d->score_prev, y2 = (double)d->score;
+        double den = y0 - 2.0 * y1 + y2, delta = den < 0.0 ? 0.5 * (y0 - y2) / den : 0.0;
+        if(delta > 1.0) delta = 1.0;
+        if(delta < -1.0) delta = -1.0;
+        double t_center = (double)d->n - (double)d->hop + delta * (double)d->hop; /* window end at the peak */
+        double t0 = t_center + 0.5 * ((double)d->bit_len - (double)d->window) + 1.0 + (double)d->edge_adjust;
+        d->sync_score = d->score_prev;
+        d->patterns_seen++;
+        on_measured_edge(d, t0);
+    }
+}
+
 void sstv_demod_feed(sstv_demod* d, const int16_t* samples, int n) {
+    if(d->pattern) {
+        const int W = d->window;
+        (void)W;
+        for(int idx = 0; idx < n; idx++) {
+            d->ring[d->ring_pos] = samples[idx];
+            d->ring_pos = (d->ring_pos + 1) % SSTV_DEMOD_RING;
+            if(++d->hop_count >= d->hop) {
+                d->hop_count = 0;
+                pattern_hop(d);
+            }
+            if(d->state == SSTV_DEMOD_DATA) {
+                if((double)d->n >= d->next_decision) {
+                    decide_symbol(d);
+                    d->next_decision += (double)d->bit_len;
+                    if(d->symbol_index >= d->spf) finish_frame(d);
+                }
+            } else {
+                maybe_flywheel(d);
+            }
+            d->n++;
+        }
+        return;
+    }
     const int W = d->window;
     const int WL = W * SSTV_SYNC_WINDOW_MULT;
     /* A coherent tone's energy scales with window^2: bring the long window to short units. */
@@ -421,6 +494,13 @@ void sstv_demod_set_band(sstv_demod* d, int band) {
     d->sync_gain = d->min_energy;
     d->band = band;
     d->symbol_us = SSTV_BAND_SYMBOL_US(band);
+    d->sync_us = SSTV_BAND_SYNC_US(band);
+    d->pattern = band == SSTV_BAND_HF;
+    d->hop = d->window / 2 > 1 ? d->window / 2 : 1;
+    d->hop_count = 0;
+    d->hop_decay = 1.0f;
+    for(int t = 0; t < d->hop; t++) d->hop_decay *= d->gain_decay;
+    d->edge_adjust = 0.0f; /* the pattern's edge is measured on the data tones themselves */
     d->bit_len = d->sample_rate * (float)d->symbol_us / 1000000.0f;
     d->bit_len_nominal = d->bit_len;
 }

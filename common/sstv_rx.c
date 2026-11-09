@@ -23,9 +23,14 @@ void sstv_rx_init(sstv_rx* rx, sstv_pixel_cb pixel_cb, sstv_meta_cb meta_cb, sst
     rx->note_cb = NULL;
     rx->note = false;
     rx->note_utf8 = false;
+    rx->anim = false;
     rx->note_len = 0;
     rx->ctx = ctx;
     sstv_rx_start_pass(rx);
+}
+
+void sstv_rx_forget(sstv_rx* rx) {
+    rx->last_start_valid = false;
 }
 
 void sstv_rx_reset_counters(sstv_rx* rx) {
@@ -68,19 +73,21 @@ static void coded_line(void* ctx, uint16_t line, const uint8_t* pixels) {
  * total fits no layout (e.g. a revision 6 transmitter). */
 static int data_frames_from_total(int total, int coded, int note) {
     if(note) {
-        int d = total - SSTV_OUTER_PARITY - SSTV_ILEAVE; /* single group: intro = data_frames */
-        return d > 0 ? d : 0;
+        for(int d = 1; d <= SSTV_RX_MAX_DATA_FRAMES; d++) {
+            if(sstv_pass_total(d, SSTV_NOTE_INTRO(d)) == total) return d;
+        }
+        return 0;
     }
     int intro = sstv_pass_intro(coded);
-    for(int d = 1; d <= SSTV_MAX_DATA_FRAMES; d++) {
+    for(int d = 1; d <= SSTV_RX_MAX_DATA_FRAMES; d++) {
         if(sstv_pass_total(d, intro) == total) return d;
     }
     return 0;
 }
 
-/* Group-0 size / intro for the current pass (a note is one group = all its data frames). */
+/* Group-0 size / intro for the current pass (a note: START + text up to one full group). */
 static int rx_intro(const sstv_rx* rx) {
-    return rx->note ? rx->data_frames : sstv_pass_intro(rx->coded);
+    return rx->note ? SSTV_NOTE_INTRO(rx->data_frames) : sstv_pass_intro(rx->coded);
 }
 
 /* Header of the frame at a data position (raw or coded pass). */
@@ -100,7 +107,7 @@ static uint16_t header_for_position(const sstv_rx* rx, int pos) {
  * first missing one. */
 static void coded_block_unpack(sstv_rx* rx, int index) {
     int base = (index + 1) * SSTV_ILEAVE;
-    if(base < 0 || base + SSTV_ILEAVE > SSTV_MAX_DATA_FRAMES) return;
+    if(base < 0 || base + SSTV_ILEAVE > SSTV_RX_MAX_DATA_FRAMES) return;
     int valid = 0;
     while(valid < SSTV_ILEAVE && rx->have[base + valid]) valid++;
     if(valid == 0) return;
@@ -108,12 +115,12 @@ static void coded_block_unpack(sstv_rx* rx, int index) {
 }
 
 static void store(sstv_rx* rx, int pos, const uint8_t* payload) {
-    if(pos < 0 || pos >= SSTV_MAX_DATA_FRAMES) return;
+    if(pos < 0 || pos >= SSTV_RX_MAX_DATA_FRAMES) return;
     memcpy(rx->data[pos], payload, SSTV_PAYLOAD_BYTES);
     rx->have[pos] = 1;
     /* a late data frame may complete a group whose parity already arrived */
     int g = sstv_pass_group_of(pos, rx_intro(rx));
-    if(g < SSTV_OUTER_GROUPS_MAX && !rx->group_done[g]) {
+    if(g < SSTV_RX_GROUPS_MAX && !rx->group_done[g]) {
         for(int j = 0; j < SSTV_OUTER_PARITY; j++) {
             if(rx->have_parity[g][j]) {
                 try_repair(rx, g);
@@ -131,7 +138,7 @@ static void handle_frame(sstv_rx* rx, uint16_t hdr, const uint8_t* payload, int 
     int type = sstv_hdr_type(hdr), index = sstv_hdr_index(hdr);
     if(type == SSTV_FT_PARITY) {
         int g = index / SSTV_OUTER_PARITY, j = index % SSTV_OUTER_PARITY;
-        if(g >= SSTV_OUTER_GROUPS_MAX) return;
+        if(g >= SSTV_RX_GROUPS_MAX) return;
         memcpy(rx->parity[g][j], payload, SSTV_PAYLOAD_BYTES);
         rx->have_parity[g][j] = 1;
         try_repair(rx, g);
@@ -155,15 +162,23 @@ static void handle_frame(sstv_rx* rx, uint16_t hdr, const uint8_t* payload, int 
             bool utf8 = (word & SSTV_META_UTF8_FLAG) != 0;
             int total = word & ~(SSTV_META_CODED_FLAG | SSTV_META_NOTE_FLAG | SSTV_META_UTF8_FLAG);
             rx->note = note;
+            rx->anim = note && coded;
+            if(rx->anim) coded = false; /* the coded bit only marks the animation */
             if(note) {
                 rx->note_utf8 = utf8;
                 rx->note_len = payload[SSTV_NOTE_LEN_OFFSET] | (payload[SSTV_NOTE_LEN_OFFSET + 1] << 8);
             }
             if(sub == SSTV_META_START && announce) {
-                if(!rx->pass_open) {
-                    sstv_rx_start_pass(rx);
-                    rx->pass_open = true;
-                }
+                /* A START opens a fresh pass, except a resend of the same animation (identical
+                 * START: name, length, frame count): its frames go on top of what earlier
+                 * attempts left, so attempts that each lost different blocks add up. Animations
+                 * only, because their segment CRCs catch a false-accepted frame from a noisy
+                 * attempt (one garbled a segment before the CRCs existed). */
+                rx->merged = rx->anim && rx->last_start_valid && memcmp(rx->last_start, payload, SSTV_PAYLOAD_BYTES) == 0;
+                if(!rx->merged) sstv_rx_start_pass(rx);
+                memcpy(rx->last_start, payload, SSTV_PAYLOAD_BYTES);
+                rx->last_start_valid = true;
+                rx->pass_open = true;
                 rx->coded = coded;
             }
             if(sub == SSTV_META_END) rx->pass_open = false;
@@ -171,7 +186,7 @@ static void handle_frame(sstv_rx* rx, uint16_t hdr, const uint8_t* payload, int 
             if(sub == SSTV_META_END) {
                 /* last chance: groups whose size was unknown (START lost) or whose parity
                    arrived before their last data frame */
-                for(int g = 0; g < SSTV_OUTER_GROUPS_MAX; g++) try_repair(rx, g);
+                for(int g = 0; g < SSTV_RX_GROUPS_MAX; g++) try_repair(rx, g);
             }
             if(announce && rx->meta_cb) {
                 char name[SSTV_PAYLOAD_BYTES];
@@ -212,7 +227,7 @@ static void handle_frame(sstv_rx* rx, uint16_t hdr, const uint8_t* payload, int 
  * SSTV_OUTER_PARITY frames (data + parity) are missing. Recovered frames get their header
  * from their position and go through handle_frame; touched coded blocks are unpacked again. */
 static void try_repair(sstv_rx* rx, int g) {
-    if(g >= SSTV_OUTER_GROUPS_MAX || rx->group_done[g]) return;
+    if(g >= SSTV_RX_GROUPS_MAX || rx->group_done[g]) return;
     /* Without START the pass length is unknown: assume a full group. A short last group then
      * looks like it has too many missing frames, so nothing happens until END announces the
      * length and the final sweep runs. */

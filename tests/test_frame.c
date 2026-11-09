@@ -49,8 +49,8 @@ int main(void) {
     float conf[SSTV_FRAME_BYTES];
     for(int i = 0; i < SSTV_FRAME_BYTES; i++) conf[i] = 1.0f;
     for(int i = 0; i < SSTV_PARITY_BYTES; i++) {
-        bad[1 + i * 3] ^= (uint8_t)(0x5A + i);
-        conf[1 + i * 3] = 0.05f;
+        bad[1 + i * 2] ^= (uint8_t)(0x5A + i);
+        conf[1 + i * 2] = 0.05f;
     }
     CHECK(!sstv_frame_unpack_soft(bad, NULL, &blk, out, &corrected));
     CHECK(sstv_frame_unpack_soft(bad, conf, &blk, out, &corrected));

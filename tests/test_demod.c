@@ -163,7 +163,7 @@ static void test_single_block(void) {
     fill_random(image, SSTV_IMAGE_BYTES);
     uint8_t* phys = malloc(SSTV_MAX_FRAMES * SSTV_FRAME_BYTES);
     drop_preview(phys, sstv_build_physical(image, "t", phys, NULL, NULL));
-    int cap = silence_samples(sr, 200) + 2 * SSTV_ILEAVE * 30000;
+    int cap = silence_samples(sr, 200) + 2 * SSTV_ILEAVE * 40000;
     int16_t* s = calloc((size_t)cap, sizeof(int16_t));
     sstv_mod m;
     sstv_mod_init(&m, sr, AMP);
@@ -308,7 +308,7 @@ static void test_lost_sync(void) {
     fill_random(image, SSTV_IMAGE_BYTES);
     uint8_t* phys = malloc(SSTV_MAX_FRAMES * SSTV_FRAME_BYTES);
     drop_preview(phys, sstv_build_physical(image, "t", phys, NULL, NULL));
-    int cap = 3 * SSTV_ILEAVE * 30000 + 20000;
+    int cap = 3 * SSTV_ILEAVE * 40000 + 20000;
     int16_t* s = calloc((size_t)cap, sizeof(int16_t));
     sstv_mod m;
     sstv_mod_init(&m, sr, AMP);

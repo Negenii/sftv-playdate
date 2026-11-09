@@ -107,19 +107,20 @@ int main(void) {
         rs_encoder_finish(&e, p2);
         CHECK(memcmp(p1, p2, RS_PARITY) == 0);
     }
-    /* a shortened codeword (n = 20) with RS_PARITY erasures decodes */
+    /* a shortened codeword (8 data bytes) with RS_PARITY erasures decodes */
     {
-        uint8_t blk[20], ref[20];
+        enum { SN = 8 + RS_PARITY };
+        uint8_t blk[SN], ref[SN];
         for(int i = 0; i < 8; i++) blk[i] = (uint8_t)rnd();
         rs_encode(blk, 8, blk + 8);
-        memcpy(ref, blk, 20);
+        memcpy(ref, blk, SN);
         int pos[RS_PARITY];
         for(int i = 0; i < RS_PARITY; i++) {
             pos[i] = i + 3;
             blk[i + 3] = 0;
         }
-        CHECK(rs_decode_erasures(blk, 20, pos, RS_PARITY) >= 0);
-        CHECK(memcmp(blk, ref, 20) == 0);
+        CHECK(rs_decode_erasures(blk, SN, pos, RS_PARITY) >= 0);
+        CHECK(memcmp(blk, ref, SN) == 0);
     }
     TEST_MAIN_END();
 }
