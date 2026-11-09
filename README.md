@@ -1,21 +1,45 @@
 # SFTV RX: Slow Flipper TV for Playdate
 
-SFTV RX receives pictures, notes and Flipper animations that a Flipper Zero running
-[SFTV TX](https://github.com/Negenii/sftv-flipper) plays as near-ultrasound (17–21 kHz). It
-listens with the Playdate's microphone and draws the picture line by line while it is still
-on the air.
+<p align="center"><img src="docs/sftv.png" alt="A Flipper Zero sending a picture to a Playdate, sped up" width="100%"></p>
 
-## Using it
+SFTV RX receives pictures, notes and animations that the transmitter
+([SFTV TX](https://github.com/Negenii/sftv-flipper) on a Flipper Zero) sends as near-ultrasound
+(17–21 kHz). RX needs microphone access to work.
 
-- Receive asks for the microphone the first time, then listens. Put the Flipper 5–15 cm
-  from the Playdate's microphone (bottom edge). An incoming transmission takes over the screen
-  from anywhere in the app. A clears the screen, B goes back, Right shows a diagnostic panel.
-- Gallery keeps everything received, newest first. The system menu's *filter* shows only
-  images, animations or notes. A opens an item, Left/Right step through them. In an
-  animation the crank takes over playback: one turn a second is 30 fps, either way.
-- Every picture is also saved as PNG and every animation as GIF in
-  `Data/com.negenii.sftvrx/` (connect the Playdate in disk mode to copy them).
-- *about* and *support* are in the system menu.
+## Installing
+
+Download `SFTV_RX.pdx` (or build it, see below) and put it on the Playdate one of two ways.
+
+Over the air: upload the `.pdx`, or a zip of it, at
+[play.date/account/sideload](https://play.date/account/sideload/). It shows up in the
+Playdate's Game Library (Settings → Games on older system versions); refresh the list and
+download it.
+
+Over USB: connect the Playdate and choose Settings → System → Reboot to Data Disk. Copy the
+`SFTV_RX.pdx` folder into `Games` on the PLAYDATE disk (the folder itself, not a zip), then
+eject the disk.
+
+To update, install the new version the same way. What you've received stays: it lives apart
+from the app, in `Data/com.negenii.sftvrx/`.
+
+## Getting started
+
+1. Start listening in RX and allow the microphone.
+2. On the transmitter ([SFTV TX](https://github.com/Negenii/sftv-flipper) on a Flipper Zero),
+   pick a picture, an animation or a note and send it.
+3. Keep the transmitter close to the receiver, 3–10 cm.
+
+The picture appears line by line while the transmitter plays it. It comes in slowly: that's
+why it's a slow TV. Whatever arrives is saved to the Gallery.
+
+## Gallery
+
+The newest item comes first; *filter* in the system menu narrows the list to images,
+animations or notes. Animations play on their own, and the crank takes over when you turn it:
+one turn a second is 30 fps, forwards or backwards.
+
+Each picture is also saved as a PNG and each animation as a GIF in `Data/com.negenii.sftvrx/`,
+so you can copy them to a computer with the Playdate in disk mode.
 
 ## Building
 
@@ -36,8 +60,7 @@ Layout: `playdate/` the app, `common/` the protocol in portable C (shared with S
 8-FSK, 17.0–20.5 kHz, 3 ms symbols, synced by a tone pattern. 45-byte frames with
 Reed-Solomon parity, interleaved in blocks of four, plus an outer Reed-Solomon code across
 groups of 108 frames, so a lost frame comes back without a resend. The details are in `docs/`
-and `common/sstv_params.h`; transmitter and receiver must run the same protocol revision (the
-major version, 3.x here).
+and `common/sstv_params.h`.
 
 ## Credits and licenses
 
@@ -51,5 +74,10 @@ major version, 3.x here).
 - The notes font (`Notes-14`) is generated from HaxrCorp 4089 by sahwar
   (`tools/haxrcorp4089.ttf`), CC BY-SA 3.0; the generated font is under the same license.
 - The Buy Me a Coffee button is their brand asset, used to link to the support page.
+- `docs/sftv.png` is a recording of one transmission, sped up: SFTV TX sending on the left,
+  SFTV RX receiving on the right. The Flipper body is qFlipper's device art (GPL-3.0); the
+  Playdate is drawn for this project from simple shapes.
 
-If you like it, you can [buy me a coffee](https://buymeacoffee.com/low.effort).
+If you like it, you can buy me a coffee:
+
+<a href="https://buymeacoffee.com/low.effort"><img src="tools/assets/bmc-button.png" alt="Buy Me a Coffee" width="220"></a>
