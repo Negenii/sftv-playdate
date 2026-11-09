@@ -19,7 +19,7 @@
 #define PANEL_W 200
 #define BAR_H 30 /* gallery top bar height (Playdate-style, room for the button glyphs) */
 #define SHEET_LEAD 50 /* the drawing frontier leads this many px above the bottom edge */
-#define MAX_GALLERY 64
+#define MAX_GALLERY 1024 /* the list was capped before it was sorted, so past 64 files new ones went missing */
 #define NAME_CAP 40
 
 static PlaydateAPI* pd;
@@ -80,6 +80,7 @@ static void play_start_chime(unsigned now);
 static bool chime_ok;
 static int calib_streak;
 static char current_name[NAME_CAP] = "untitled";
+static bool name_known; /* current_name came from the transmitter (START or END), not made up */
 static bool started; /* START meta received, transmission in progress */
 static unsigned hearing_ms; /* last time the demodulator heard a tone (before a pass begins) */
 static void begin_pass(unsigned now); /* start the pass on the first decoded frame; defined near on_meta */
@@ -800,8 +801,8 @@ static void gallery_scan(int filter) {
     gallery_count = 0;
     pd->file->listfiles(".", gallery_list_cb, &filter, 0);
     if(gallery_count > 1) {
-        int idx[MAX_GALLERY];
-        unsigned long long key[MAX_GALLERY];
+        static int idx[MAX_GALLERY];               /* static: 12 KB is too much for the stack */
+        static unsigned long long key[MAX_GALLERY];
         for(int i = 0; i < gallery_count; i++) {
             idx[i] = i;
             FileStat st;
@@ -1034,6 +1035,7 @@ static void on_pixels(void* ctx, uint16_t line, int x_byte, int nbytes, const ui
 
 static void clear_image(void) {
     anim_reset();
+    name_known = false;
     image_dirty = false; /* a cleared screen has nothing to save (stray lines that came before a
                           * note's START were saved as a picture under the note's name) */
     memset(note_buf, 0, sizeof note_buf); /* rx.note itself is owned by the START/END flag */
@@ -1136,6 +1138,12 @@ static void on_meta(void* ctx, const char* name, bool is_end, int frames, bool c
     rxlog("%s name=\"%s\" total=%d note=%d anim=%d coded=%d len=%d data_frames=%d merged=%d", is_end ? "END" : "START", name, frames, rx.note,
           rx.anim, coded, rx.note_len, rx.data_frames, rx.merged);
     if(is_end) {
+        /* START lost: the name still arrives with END, use it for the file instead of untitled */
+        if(!name_known && !name_is_blank(name)) {
+            strncpy(current_name, name, NAME_CAP - 1);
+            current_name[NAME_CAP - 1] = 0;
+            name_known = true;
+        }
         log_missing("END");
         finish(now); /* the transmitter is done: save and announce */
         chime_ok = rx.anim ? (anim_hdr_len > 0 && anim_frames_ok() == anim_info.n)
@@ -1160,6 +1168,7 @@ static void on_meta(void* ctx, const char* name, bool is_end, int frames, bool c
     } else {
         strncpy(current_name, name, NAME_CAP - 1);
         current_name[NAME_CAP - 1] = 0;
+        name_known = true;
     }
     last_data_ms = now;
     /* Whatever screen is up, an incoming picture takes over. */
