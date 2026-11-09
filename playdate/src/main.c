@@ -1487,7 +1487,7 @@ static void draw_about_support(void) {
     use_font(font_big);
     draw_text("Like it?", 20, 52);
     use_font(font_ui);
-    draw_text("Support making", 20, 92);
+    draw_text("Support me making", 20, 92);
     draw_text("fun little things.", 20, 110);
     /* their button (a picture: the Playdate has no browser), level with the bottom of the code */
     if(bmc_button) {

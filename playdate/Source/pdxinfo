@@ -3,4 +3,4 @@ author=negenii
 description=Flipper TV: receive pictures over sound from a Flipper Zero
 bundleID=com.negenii.sftvrx
 version=3.1
-buildNumber=170
+buildNumber=171
