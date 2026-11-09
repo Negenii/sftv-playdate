@@ -12,7 +12,10 @@ q.make(fit=False)
 m = q.get_matrix()
 n = len(m)
 assert n == 29, n
+import os
 for scale, path in ((5, "playdate/Source/images/qr_coffee.png"), (2, "flipper/images/qr_coffee.png")):
+    if not os.path.isdir(os.path.dirname(path)):
+        continue  # the Flipper half lives in sftv-flipper
     im = Image.new("1", (n * scale, n * scale), 1)
     d = ImageDraw.Draw(im)
     for y in range(n):
