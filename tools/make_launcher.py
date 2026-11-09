@@ -90,6 +90,7 @@ def title(im, x, y):
 
 
 CON_SX, CON_SY, CON_SW, CON_SH = 7, 7, 88, 53  # console screen interior
+DROPS = 7  # drops on the spout arc
 
 
 def scene(t=0.0, reveal=1.0, mouth=False, W=350, H=155):
@@ -114,9 +115,8 @@ def scene(t=0.0, reveal=1.0, mouth=False, W=350, H=155):
     d = ImageDraw.Draw(im)
     x0, y0 = dx + 70, dy + 2                      # the blowhole (as in the app's scene)
     x1, y1 = cx + CON_SX + 4, cy + CON_SY + 8     # the screen's top-left corner
-    drops = 7
-    for k in range(drops):
-        u = (t + k / drops) % 1.0
+    for k in range(DROPS):
+        u = (t + k / DROPS) % 1.0
         x = x0 + (x1 - x0) * u
         y = y0 + (y1 - y0) * u - 14 * math.sin(math.pi * u)  # low: the title is above
         r = 1.5 + 2 * math.sin(math.pi * u)
@@ -160,18 +160,20 @@ if __name__ == "__main__":
     os.makedirs(OUT + "/launchImages", exist_ok=True)
     card = scene()
     card.save(f"{OUT}/card.png")
-    # highlighted: intro = the picture draws itself top down while the spout runs; loop = spout
-    # and the dolphin's mouth
-    intro, loop = 10, 7
+    # highlighted: intro = the picture draws itself top down; loop = the drops flowing from the
+    # dolphin into the console. One loop moves every drop by one drop spacing (1/DROPS of the
+    # arc) in small steps, so the stream looks continuous (a whole spacing per frame looked still).
+    intro, loop = 10, 12
+    step = 1.0 / (DROPS * loop)
     for i in range(intro):
-        scene(t=i / loop, reveal=(i + 1) / (intro + 1), mouth=i % 4 < 2).save(f"{OUT}/card-highlighted/{i + 1}.png")
+        scene(t=i * step, reveal=(i + 1) / (intro + 1)).save(f"{OUT}/card-highlighted/{i + 1}.png")
     for i in range(loop):
-        scene(t=i / loop, mouth=i % 4 < 2).save(f"{OUT}/card-highlighted/{intro + i + 1}.png")
+        scene(t=(intro + i) * step).save(f"{OUT}/card-highlighted/{intro + i + 1}.png")
     with open(f"{OUT}/card-highlighted/animation.txt", "w") as f:
         f.write("introFrames = " + ", ".join(f"{i + 1}x2" for i in range(intro)) + "\n")
-        f.write("frames = " + ", ".join(f"{intro + i + 1}x2" for i in range(loop)) + "\n")
+        f.write("frames = " + ", ".join(str(intro + i + 1) for i in range(loop)) + "\n")
     pressed = Image.new("L", card.size, WHITE)
-    pressed.paste(scene(mouth=True), (0, 1))
+    pressed.paste(scene(t=intro * step), (0, 1))
     pressed.save(f"{OUT}/card-pressed.png")
     icon(False).save(f"{OUT}/icon.png")
     icon(True).save(f"{OUT}/icon-pressed.png")
