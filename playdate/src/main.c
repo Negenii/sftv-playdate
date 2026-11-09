@@ -1240,7 +1240,7 @@ static void ask_mic(void) {
     enum accessReply r = pd->sound->requestMicAccess(
         /* the system shows "<name> would like to use the microphone: <this>" with room for about
          * three lines, and its font has no comma */
-        "to hear pictures and notes a Flipper Zero plays as sound.",
+        "to receive incoming transmissions.",
         mic_access_cb, NULL);
     if(r == kAccessAllow) mic_state = 1;
     else if(r == kAccessDeny) mic_state = -1;
