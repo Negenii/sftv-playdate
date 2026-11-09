@@ -19,7 +19,6 @@
 #define PANEL_W 200
 #define BAR_H 30 /* gallery top bar height (Playdate-style, room for the button glyphs) */
 #define SHEET_LEAD 50 /* the drawing frontier leads this many px above the bottom edge */
-#define MAX_GALLERY 1024 /* the list was capped before it was sorted, so past 64 files new ones went missing */
 #define NAME_CAP 40
 
 static PlaydateAPI* pd;
@@ -137,13 +136,16 @@ typedef enum { ModeMenu, ModeReceive, ModeGrid, ModeFull, ModeAbout } UiMode;
 static UiMode ui_mode = ModeMenu;
 static UiMode about_back; /* the screen About returns to */
 static int menu_index; /* 0 receive, 1 gallery */
-static char gallery_names[MAX_GALLERY][NAME_CAP];
-static int gallery_count;
+/* The gallery list grows with the files (no cap: the flash runs out long before the RAM does,
+ * an entry is ~50 bytes); gallery_cap is the allocated length of the three arrays. */
+static char (*gallery_names)[NAME_CAP];
+static int gallery_count, gallery_cap;
 static int gallery_index; /* cursor */
 static int gallery_page; /* first tile shown */
 static LCDBitmap* gallery_bitmap;
-static LCDBitmap* thumbs[MAX_GALLERY]; /* 100x60 thumbnails, loaded lazily */
-static uint8_t gallery_kind[MAX_GALLERY]; /* 0 = image (.pbm), 1 = note (.txt), 2 = animation (.sfa) */
+static LCDBitmap** thumbs; /* 100x60 thumbnails, loaded lazily, only around the page on screen */
+static uint8_t* gallery_kind; /* 0 = image (.pbm), 1 = note (.txt), 2 = animation (.sfa) */
+static unsigned long long* gallery_key; /* modification time, for the newest-first order */
 static bool full_is_note; /* the item open in full view is a note */
 static char full_note_text[SSTV_NOTE_MAX_BYTES + 1];
 static char thumb_txt[513]; /* a thumbnail only needs the start of a note */
@@ -363,6 +365,37 @@ static void png_row(void* ctx, int y, uint8_t* out) {
     for(int i = 0; i < SSTV_LINE_BYTES; i++) out[i] = (uint8_t)~out[i]; /* PNG gray: 1 = white */
 }
 
+/* The flash ran out: a save came out short (or the check on entering Receive failed). Receive
+ * then stops listening and says so until something is deleted; nothing old is removed for room. */
+static bool storage_full;
+static void stop_mic(void);
+
+static void wr(SDFile* f, const void* d, unsigned n) {
+    if(pd->file->write(f, d, n) != (int)n) storage_full = true;
+}
+
+/* A save came out short: drop the broken files (a cut PBM or SFA does not open anyway). */
+static void save_failed(const char* a, const char* b) {
+    if(a) pd->file->unlink(a, 0);
+    if(b) pd->file->unlink(b, 0);
+    stop_mic();
+    rxlog("S storage full, %s not saved", a ? a : "?");
+}
+
+/* Writes and deletes a scratch file as big as the largest save (an animation and its GIF) to
+ * learn whether the next transmission fits. */
+static bool storage_has_room(void) {
+    SDFile* f = pd->file->open("space.tmp", kFileWrite);
+    bool ok = f != NULL;
+    if(f) {
+        static uint8_t zero[4096];
+        for(int i = 0; i < 48 && ok; i++) ok = pd->file->write(f, zero, sizeof zero) == (int)sizeof zero;
+        pd->file->close(f);
+    }
+    pd->file->unlink("space.tmp", 0);
+    return ok;
+}
+
 /* Saves the received picture as a P4 PBM under Data/. Same name overwrites. Lines that never
  * arrived carry the preview (saved_row). */
 static void save_image(void) {
@@ -373,11 +406,12 @@ static void save_image(void) {
     if(!f) return;
     char hdr[32];
     int hl = snprintf(hdr, sizeof hdr, "P4\n%d %d\n", SSTV_WIDTH, SSTV_HEIGHT);
-    pd->file->write(f, hdr, (unsigned)hl);
+    storage_full = false;
+    wr(f, hdr, (unsigned)hl);
     uint8_t row[SSTV_LINE_BYTES];
     for(int y = 0; y < SSTV_HEIGHT; y++) {
         saved_row(y, row);
-        pd->file->write(f, row, SSTV_LINE_BYTES);
+        wr(f, row, SSTV_LINE_BYTES);
     }
     pd->file->close(f);
     /* the same picture as a PNG next to it, for a computer (Data/<game>/ in disk mode) */
@@ -390,7 +424,8 @@ static void save_image(void) {
     if(f) {
         export_png(SSTV_WIDTH, SSTV_HEIGHT, png_row, NULL, file_write, f);
         pd->file->close(f);
-    }
+    } else storage_full = true;
+    if(storage_full) save_failed(fname, png);
     image_dirty = false;
 }
 
@@ -445,8 +480,10 @@ static void save_note(void) {
     SDFile* f = pd->file->open(fname, kFileWrite);
     if(!f) return;
     const char* text = note_text();
-    pd->file->write(f, text, (unsigned)strlen(text));
+    storage_full = false;
+    wr(f, text, (unsigned)strlen(text));
     pd->file->close(f);
+    if(storage_full) save_failed(fname, NULL);
     note_dirty = false;
 }
 
@@ -551,7 +588,7 @@ static void base_name(char* out, size_t cap, const char* fallback_prefix, const 
 }
 
 static void file_write(void* ctx, const void* data, int len) {
-    pd->file->write((SDFile*)ctx, data, (unsigned)len);
+    wr((SDFile*)ctx, data, (unsigned)len);
 }
 
 /* .sfa: "SFA1" w h n fps order_len order[] frames[] (XBM) - what the gallery plays. */
@@ -559,9 +596,9 @@ static bool write_sfa(const char* fname, const sstv_anim_info* a, const uint8_t*
     SDFile* f = pd->file->open(fname, kFileWrite);
     if(!f) return false;
     uint8_t h[9] = {'S', 'F', 'A', '1', (uint8_t)a->w, (uint8_t)a->h, (uint8_t)a->n, (uint8_t)a->fps, (uint8_t)a->order_len};
-    pd->file->write(f, h, 9);
-    pd->file->write(f, a->order, (unsigned)a->order_len);
-    pd->file->write(f, frames, (unsigned)(a->n * sstv_anim_frame_bytes(a)));
+    wr(f, h, 9);
+    wr(f, a->order, (unsigned)a->order_len);
+    wr(f, frames, (unsigned)(a->n * sstv_anim_frame_bytes(a)));
     pd->file->close(f);
     return true;
 }
@@ -616,15 +653,18 @@ static void save_anim(void) {
     char base[NAME_CAP], fname[NAME_CAP + 8];
     base_name(base, sizeof base, "anim_", "sfa");
     snprintf(fname, sizeof fname, "%s.sfa", base);
-    write_sfa(fname, &anim_info, anim_frames);
-    snprintf(fname, sizeof fname, "%s.gif", base);
-    SDFile* f = pd->file->open(fname, kFileWrite);
+    storage_full = false;
+    if(!write_sfa(fname, &anim_info, anim_frames)) storage_full = true;
+    char gname[NAME_CAP + 8];
+    snprintf(gname, sizeof gname, "%s.gif", base);
+    SDFile* f = pd->file->open(gname, kFileWrite);
     if(f) {
         int delay = anim_info.fps > 0 ? 100 / anim_info.fps : 50;
         export_gif(anim_info.w, anim_info.h, 2, anim_frames, sstv_anim_frame_bytes(&anim_info), anim_info.order,
                    anim_info.order_len, delay, file_write, f);
         pd->file->close(f);
-    }
+    } else storage_full = true;
+    if(storage_full) save_failed(fname, gname);
     anim_dirty = false;
 }
 
@@ -662,10 +702,16 @@ static void save_received(void) {
 static int gallery_filter;
 static const uint8_t filter_kind[4] = {0xff, 0, 2, 1}; /* gallery_kind each filter keeps */
 
+static unsigned long long mtime_key(const FileStat* s) {
+    return (unsigned long long)s->m_year * 10000000000ULL + (unsigned long long)s->m_month * 100000000ULL +
+           (unsigned long long)s->m_day * 1000000ULL + (unsigned long long)s->m_hour * 10000ULL +
+           (unsigned long long)s->m_minute * 100ULL + (unsigned long long)s->m_second;
+}
+
 static void gallery_list_cb(const char* path, void* userdata) {
     int filter = *(const int*)userdata;
     size_t n = strlen(path);
-    if(n < 5 || gallery_count >= MAX_GALLERY) return;
+    if(n < 5) return;
     bool pbm = strcmp(path + n - 4, ".pbm") == 0;
     bool txt = strcmp(path + n - 4, ".txt") == 0;
     bool sfa = strcmp(path + n - 4, ".sfa") == 0;
@@ -673,9 +719,25 @@ static void gallery_list_cb(const char* path, void* userdata) {
     if(strncmp(path, "rxlog", 5) == 0) return; /* the reception log, not a note */
     uint8_t kind = txt ? 1 : sfa ? 2 : 0;
     if(filter && kind != filter_kind[filter]) return;
+    if(gallery_count == gallery_cap) {
+        int cap = gallery_cap ? gallery_cap * 2 : 128;
+        void* a = pd->system->realloc(gallery_names, (size_t)cap * NAME_CAP);
+        void* b = a ? pd->system->realloc(gallery_kind, (size_t)cap) : NULL;
+        void* c = b ? pd->system->realloc(thumbs, (size_t)cap * sizeof *thumbs) : NULL;
+        void* d = c ? pd->system->realloc(gallery_key, (size_t)cap * sizeof *gallery_key) : NULL;
+        if(a) gallery_names = a;
+        if(b) gallery_kind = b;
+        if(c) thumbs = c;
+        if(d) gallery_key = d;
+        if(!d) return; /* out of RAM: the rest stays unlisted */
+        for(int i = gallery_cap; i < cap; i++) thumbs[i] = NULL;
+        gallery_cap = cap;
+    }
     strncpy(gallery_names[gallery_count], path, NAME_CAP - 1);
     gallery_names[gallery_count][NAME_CAP - 1] = 0;
     gallery_kind[gallery_count] = kind;
+    FileStat st;
+    gallery_key[gallery_count] = pd->file->stat(path, &st) == 0 ? mtime_key(&st) : 0ULL;
     gallery_count++;
 }
 
@@ -780,7 +842,7 @@ static LCDBitmap* make_anim_thumb(const char* name) {
 }
 
 static void free_thumbs(void) {
-    for(int i = 0; i < MAX_GALLERY; i++) {
+    for(int i = 0; i < gallery_cap; i++) {
         if(thumbs[i]) pd->graphics->freeBitmap(thumbs[i]);
         thumbs[i] = NULL;
     }
@@ -788,11 +850,6 @@ static void free_thumbs(void) {
 
 static void gallery_ensure_thumbs(int first, int count);
 static PDMenuItem* filter_item;
-static unsigned long long mtime_key(const FileStat* s) {
-    return (unsigned long long)s->m_year * 10000000000ULL + (unsigned long long)s->m_month * 100000000ULL +
-           (unsigned long long)s->m_day * 1000000ULL + (unsigned long long)s->m_hour * 10000ULL +
-           (unsigned long long)s->m_minute * 100ULL + (unsigned long long)s->m_second;
-}
 
 /* Lists the saved items of kind `filter` (see gallery_filter), newest saved first. */
 static void gallery_scan(int filter) {
@@ -800,32 +857,45 @@ static void gallery_scan(int filter) {
     free_thumbs();
     gallery_count = 0;
     pd->file->listfiles(".", gallery_list_cb, &filter, 0);
+    /* newest first; a merge sort through one temporary index array (thousands of files are fine) */
     if(gallery_count > 1) {
-        static int idx[MAX_GALLERY];               /* static: 12 KB is too much for the stack */
-        static unsigned long long key[MAX_GALLERY];
-        for(int i = 0; i < gallery_count; i++) {
-            idx[i] = i;
-            FileStat st;
-            key[i] = pd->file->stat(gallery_names[i], &st) == 0 ? mtime_key(&st) : 0ULL;
-        }
-        for(int i = 1; i < gallery_count; i++) { /* insertion sort, newest first */
-            int j = i;
-            while(j > 0 && key[idx[j - 1]] < key[idx[j]]) {
-                int t = idx[j - 1];
-                idx[j - 1] = idx[j];
-                idx[j] = t;
-                j--;
+        int n = gallery_count;
+        int* idx = pd->system->realloc(NULL, (size_t)n * 2 * sizeof(int));
+        if(!idx) return;
+        int *a = idx, *b = idx + n;
+        for(int i = 0; i < n; i++) a[i] = i;
+        for(int w = 1; w < n; w *= 2) {
+            for(int lo = 0; lo < n; lo += 2 * w) {
+                int mid = lo + w < n ? lo + w : n, hi = lo + 2 * w < n ? lo + 2 * w : n;
+                int i = lo, j = mid, k = lo;
+                while(i < mid && j < hi) b[k++] = gallery_key[a[i]] >= gallery_key[a[j]] ? a[i++] : a[j++];
+                while(i < mid) b[k++] = a[i++];
+                while(j < hi) b[k++] = a[j++];
             }
+            int* t = a; a = b; b = t;
         }
-        static char names2[MAX_GALLERY][NAME_CAP];
-        static uint8_t kind2[MAX_GALLERY];
-        for(int i = 0; i < gallery_count; i++) {
-            strncpy(names2[i], gallery_names[idx[i]], NAME_CAP - 1);
-            names2[i][NAME_CAP - 1] = 0;
-            kind2[i] = gallery_kind[idx[i]];
+        /* apply the permutation in place, cycle by cycle (b[] marks the done ones) */
+        for(int i = 0; i < n; i++) b[i] = 0;
+        for(int i = 0; i < n; i++) {
+            if(b[i] || a[i] == i) continue;
+            char nm[NAME_CAP];
+            memcpy(nm, gallery_names[i], NAME_CAP);
+            uint8_t kd = gallery_kind[i];
+            unsigned long long ky = gallery_key[i];
+            int j = i;
+            while(a[j] != i) {
+                memcpy(gallery_names[j], gallery_names[a[j]], NAME_CAP);
+                gallery_kind[j] = gallery_kind[a[j]];
+                gallery_key[j] = gallery_key[a[j]];
+                b[j] = 1;
+                j = a[j];
+            }
+            memcpy(gallery_names[j], nm, NAME_CAP);
+            gallery_kind[j] = kd;
+            gallery_key[j] = ky;
+            b[j] = 1;
         }
-        memcpy(gallery_names, names2, sizeof gallery_names);
-        memcpy(gallery_kind, kind2, sizeof gallery_kind);
+        pd->system->realloc(idx, 0);
     }
 }
 
@@ -873,6 +943,12 @@ static bool gallery_load_full(int idx) {
 }
 
 static void gallery_ensure_thumbs(int first, int count) {
+    /* keep the page on screen and one page either side; free the rest */
+    for(int i = 0; i < gallery_count; i++)
+        if(thumbs[i] && (i < first - count || i >= first + 2 * count)) {
+            pd->graphics->freeBitmap(thumbs[i]);
+            thumbs[i] = NULL;
+        }
     uint8_t* px = pd->system->realloc(NULL, SSTV_IMAGE_BYTES);
     for(int i = first; i < first + count && i < gallery_count; i++) {
         if(thumbs[i]) continue;
@@ -1311,7 +1387,7 @@ static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
 
 static void start_mic(void) {
     /* The microphone runs only in Receive; the menu and gallery keep it off. */
-    if(mic_state != 1 || mic_running || ui_mode != ModeReceive) return;
+    if(mic_state != 1 || mic_running || ui_mode != ModeReceive || storage_full) return;
     pd->sound->setMicCallback(mic_cb, NULL, kMicInputAutodetect);
     mic_running = true;
     pd->system->setAutoLockDisabled(1); /* a pass has no button input for minutes; stay awake */
@@ -1691,7 +1767,7 @@ static void draw_scene(void) {
         }
     } else {
         use_font(font_ui);
-        const char* hint = mic_state < 0 ? "allow the microphone in Settings > Permissions" : mic_state != 1 ? "waiting for microphone permission" : "waiting for a transmission";
+        const char* hint = storage_full ? "delete something in the gallery" : mic_state < 0 ? "allow the microphone in Settings > Permissions" : mic_state != 1 ? "waiting for microphone permission" : "waiting for a transmission";
         draw_text_centered(hint, text_cx, 208);
     }
 }
@@ -2176,7 +2252,7 @@ chrome:;
                 draw_text_white(fc, right - bw - 8 - text_width(fc), (BAR_H - font_height()) / 2);
             }
         } else {
-            draw_title_bar(mic_state == 1 ? "Listening" : mic_state < 0 ? "No microphone" : "Microphone?", NULL);
+            draw_title_bar(storage_full ? "Storage full" : mic_state == 1 ? "Listening" : mic_state < 0 ? "No microphone" : "Microphone?", NULL);
         }
         pd->graphics->setDrawOffset(0, 0);
     }
@@ -2414,6 +2490,7 @@ static int update(void* userdata) {
                 ui_mode = ModeReceive; /* the microphone runs only here */
                 confirm_leave = false;
                 clear_image(); /* each visit to Receive starts a fresh listen */
+                storage_full = !storage_has_room(); /* a full flash: say so instead of listening */
                 ask_mic();
                 start_mic();
             } else {
@@ -2423,6 +2500,7 @@ static int update(void* userdata) {
         draw_menu();
         break;
     case ModeReceive:
+        if(storage_full && (started || finished)) clear_image(); /* a save failed: back to "Storage full" */
         if(confirm_leave) {
             if(pushed & kButtonA) { confirm_leave = false; menu_open(); }
             else if(pushed & kButtonB) confirm_leave = false;
