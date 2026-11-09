@@ -73,9 +73,16 @@ def fs_dither(gray):  # Floyd-Steinberg to 1 bit, gray 0..255 (255 white)
     return out
 
 
-def screen_picture(w, h):
-    pic = Image.open("images/sphere3d.pbm").convert("L")  # 400x240, already dithered
-    return fs_dither(pic.resize((w, h), Image.BOX))
+COUCH = 8  # frames of the Flipper desktop animation L1_Tv (128x47): the dolphin on the couch
+
+
+def screen_picture(w, h, frame=0):
+    """What the console shows: the dolphin on the couch with its bowl, cut 1:1 from the right
+    of the 128x47 frame (shrunk, the line art turned to mush; the TV on the left does not fit,
+    the console is the TV)."""
+    f = Image.open(f"tools/assets/couch/{frame % COUCH}.png").convert("L")
+    x0, y0 = 128 - w, 0
+    return f.crop((x0, y0, x0 + w, y0 + h))
 
 
 def title(im, x, y):
@@ -93,7 +100,7 @@ CON_SX, CON_SY, CON_SW, CON_SH = 7, 7, 88, 53  # console screen interior
 DROPS = 7  # drops on the spout arc
 
 
-def scene(t=0.0, reveal=1.0, mouth=False, W=350, H=155):
+def scene(t=0.0, reveal=1.0, mouth=False, frame=0, W=350, H=155):
     """The cover: title on top, the dolphin spouting into the console showing a picture.
     t: spout phase 0..1; reveal: share of the picture drawn (top down)."""
     im = Image.new("L", (W, H), WHITE)
@@ -105,7 +112,7 @@ def scene(t=0.0, reveal=1.0, mouth=False, W=350, H=155):
     con = load1("console")
     cx, cy = W - con.width - 22, H - con.height + 4  # the console's bottom edge runs off the card
     im.paste(con, (cx, cy))
-    pic = screen_picture(CON_SW - 6, CON_SH - 6)
+    pic = screen_picture(CON_SW - 6, CON_SH - 6, frame)
     rows = int(round(pic.height * reveal))
     if rows > 0:
         im.paste(pic.crop((0, 0, pic.width, rows)), (cx + CON_SX + 3, cy + CON_SY + 3))
@@ -160,20 +167,24 @@ if __name__ == "__main__":
     os.makedirs(OUT + "/launchImages", exist_ok=True)
     card = scene()
     card.save(f"{OUT}/card.png")
-    # highlighted: intro = the picture draws itself top down; loop = the drops flowing from the
-    # dolphin into the console. One loop moves every drop by one drop spacing (1/DROPS of the
-    # arc) in small steps, so the stream looks continuous (a whole spacing per frame looked still).
-    intro, loop = 10, 12
-    step = 1.0 / (DROPS * loop)
+    # highlighted: intro = the first couch frame draws itself top down (each step held 3
+    # launcher frames); loop = the couch scene (each of its frames held HOLD launcher frames)
+    # while the drops flow from the dolphin into the console. The drops move 1/(DROPS*12) of the
+    # arc per launcher frame (a whole spacing per frame looked still); over the loop that adds
+    # up to whole spacings, so the loop has no seam.
+    intro, HOLD = 12, 8
+    loop = COUCH * HOLD
+    step = 1.0 / (DROPS * 12)
     for i in range(intro):
-        scene(t=i * step, reveal=(i + 1) / (intro + 1)).save(f"{OUT}/card-highlighted/{i + 1}.png")
+        scene(t=i * 3 * step, reveal=(i + 1) / (intro + 1)).save(f"{OUT}/card-highlighted/{i + 1}.png")
+    t0 = intro * 3 * step
     for i in range(loop):
-        scene(t=(intro + i) * step).save(f"{OUT}/card-highlighted/{intro + i + 1}.png")
+        scene(t=t0 + i * step, frame=i // HOLD).save(f"{OUT}/card-highlighted/{intro + i + 1}.png")
     with open(f"{OUT}/card-highlighted/animation.txt", "w") as f:
-        f.write("introFrames = " + ", ".join(f"{i + 1}x2" for i in range(intro)) + "\n")
+        f.write("introFrames = " + ", ".join(f"{i + 1}x3" for i in range(intro)) + "\n")
         f.write("frames = " + ", ".join(str(intro + i + 1) for i in range(loop)) + "\n")
     pressed = Image.new("L", card.size, WHITE)
-    pressed.paste(scene(t=intro * step), (0, 1))
+    pressed.paste(scene(t=t0), (0, 1))
     pressed.save(f"{OUT}/card-pressed.png")
     icon(False).save(f"{OUT}/icon.png")
     icon(True).save(f"{OUT}/icon-pressed.png")
