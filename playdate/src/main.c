@@ -582,8 +582,13 @@ static void save_received(void) {
 
 /* ---- gallery data ---- */
 
+/* System-menu "filter" for the gallery: 0 all, 1 images, 2 animations, 3 notes. The main
+ * menu (tile, "N saved") always counts everything. */
+static int gallery_filter;
+static const uint8_t filter_kind[4] = {0xff, 0, 2, 1}; /* gallery_kind each filter keeps */
+
 static void gallery_list_cb(const char* path, void* userdata) {
-    (void)userdata;
+    int filter = *(const int*)userdata;
     size_t n = strlen(path);
     if(n < 5 || gallery_count >= MAX_GALLERY) return;
     bool pbm = strcmp(path + n - 4, ".pbm") == 0;
@@ -591,9 +596,11 @@ static void gallery_list_cb(const char* path, void* userdata) {
     bool sfa = strcmp(path + n - 4, ".sfa") == 0;
     if(!pbm && !txt && !sfa) return;
     if(strncmp(path, "rxlog", 5) == 0) return; /* the reception log, not a note */
+    uint8_t kind = txt ? 1 : sfa ? 2 : 0;
+    if(filter && kind != filter_kind[filter]) return;
     strncpy(gallery_names[gallery_count], path, NAME_CAP - 1);
     gallery_names[gallery_count][NAME_CAP - 1] = 0;
-    gallery_kind[gallery_count] = txt ? 1 : sfa ? 2 : 0;
+    gallery_kind[gallery_count] = kind;
     gallery_count++;
 }
 
@@ -705,20 +712,20 @@ static void free_thumbs(void) {
 }
 
 static void gallery_ensure_thumbs(int first, int count);
-static bool sort_newest; /* system-menu option: newest received on top */
-static PDMenuItem* sort_item;
+static PDMenuItem* filter_item;
 static unsigned long long mtime_key(const FileStat* s) {
     return (unsigned long long)s->m_year * 10000000000ULL + (unsigned long long)s->m_month * 100000000ULL +
            (unsigned long long)s->m_day * 1000000ULL + (unsigned long long)s->m_hour * 10000ULL +
            (unsigned long long)s->m_minute * 100ULL + (unsigned long long)s->m_second;
 }
 
-static void gallery_scan(void) {
+/* Lists the saved items of kind `filter` (see gallery_filter), newest saved first. */
+static void gallery_scan(int filter) {
     save_received();
     free_thumbs();
     gallery_count = 0;
-    pd->file->listfiles(".", gallery_list_cb, NULL, 0);
-    if(sort_newest && gallery_count > 1) {
+    pd->file->listfiles(".", gallery_list_cb, &filter, 0);
+    if(gallery_count > 1) {
         int idx[MAX_GALLERY];
         unsigned long long key[MAX_GALLERY];
         for(int i = 0; i < gallery_count; i++) {
@@ -747,15 +754,17 @@ static void gallery_scan(void) {
     }
 }
 
-/* system menu: toggle gallery sort */
-static void sort_menu_cb(void* ud) {
+/* system menu: gallery filter; in the gallery the list refreshes at once (back to the grid) */
+static void filter_menu_cb(void* ud) {
     (void)ud;
-    sort_newest = pd->system->getMenuItemValue(sort_item) != 0;
-    if(ui_mode == ModeGrid) {
-        gallery_scan();
+    gallery_filter = pd->system->getMenuItemValue(filter_item);
+    if(ui_mode == ModeGrid || ui_mode == ModeFull || (ui_mode == ModeAbout && (about_back == ModeGrid || about_back == ModeFull))) {
+        gallery_scan(gallery_filter);
         gallery_index = 0;
         gallery_page = 0;
         gallery_ensure_thumbs(0, GRID_PER_PAGE);
+        if(ui_mode == ModeAbout) about_back = ModeGrid;
+        else ui_mode = ModeGrid;
     }
 }
 
@@ -802,7 +811,7 @@ static void gallery_ensure_thumbs(int first, int count) {
 
 static void gallery_open(void) {
     stop_mic();
-    gallery_scan();
+    gallery_scan(gallery_filter);
     ui_mode = ModeGrid;
     gallery_index = 0;
     gallery_page = 0;
@@ -810,21 +819,13 @@ static void gallery_open(void) {
 }
 
 static void menu_open(void) {
-    gallery_scan();
+    gallery_scan(0);
     if(menu_thumb) {
         pd->graphics->freeBitmap(menu_thumb);
         menu_thumb = NULL;
     }
     if(gallery_count > 0) {
-        /* the most recently saved item, whatever order the gallery is sorted in */
-        int last = gallery_count - 1;
-        unsigned long long best = 0;
-        for(int i = 0; i < gallery_count; i++) {
-            FileStat st;
-            if(pd->file->stat(gallery_names[i], &st) != 0) continue;
-            unsigned long long k = mtime_key(&st);
-            if(k >= best) { best = k; last = i; }
-        }
+        int last = 0; /* the list is newest first */
         if(gallery_kind[last] == 2) {
             menu_thumb = make_anim_thumb(gallery_names[last]);
         } else if(gallery_kind[last] == 1) {
@@ -2053,18 +2054,20 @@ chrome:;
     }
 }
 
+static const char* const gallery_title[4] = {"Gallery", "Images", "Animations", "Notes"};
 static void draw_grid(void) {
     pd->graphics->clear(kColorWhite);
     char t[48], nm[NAME_CAP];
     int pages = (gallery_count + GRID_PER_PAGE - 1) / GRID_PER_PAGE;
     if(pages > 1)
-        snprintf(t, sizeof t, "Gallery  %d  -  page %d/%d", gallery_count, gallery_page / GRID_PER_PAGE + 1, pages);
+        snprintf(t, sizeof t, "%s  %d  -  %d/%d", gallery_title[gallery_filter], gallery_count, gallery_page / GRID_PER_PAGE + 1, pages);
     else
-        snprintf(t, sizeof t, "Gallery   %d image%s", gallery_count, gallery_count == 1 ? "" : "s");
+        snprintf(t, sizeof t, "%s  %d", gallery_title[gallery_filter], gallery_count);
     draw_title_bar(t, "Ⓐ open   Ⓑ back");
     use_font(font_ui);
     if(gallery_count == 0) {
-        draw_text_centered("no saved images yet", LCD_COLUMNS / 2, 110);
+        static const char* const empty[4] = {"nothing saved yet", "no images yet", "no animations yet", "no notes yet"};
+        draw_text_centered(empty[gallery_filter], LCD_COLUMNS / 2, 110);
         return;
     }
     int cell_w = LCD_COLUMNS / GRID_COLS, cell_h = (LCD_ROWS - BAR_H) / GRID_ROWS;
@@ -2288,8 +2291,8 @@ static int update(void* userdata) {
                     }
                 }
                 confirm_delete = false;
-                gallery_scan(); /* refresh the list and thumbnails */
-                if(gallery_count == 0) { menu_open(); }
+                gallery_scan(gallery_filter); /* refresh the list and thumbnails */
+                if(gallery_count == 0) ui_mode = ModeGrid; /* the filter's "nothing here" */
                 else {
                     if(gallery_index >= gallery_count) gallery_index = gallery_count - 1;
                     if(!gallery_load_full(gallery_index)) ui_mode = ModeGrid;
@@ -2399,7 +2402,8 @@ int eventHandler(PlaydateAPI* playdate, PDSystemEvent event, uint32_t arg) {
         pd = playdate;
         pd->display->setRefreshRate(50);
         init();
-        sort_item = pd->system->addCheckmarkMenuItem("Newest", 0, sort_menu_cb, NULL);
+        static const char* show[4] = {"all", "images", "anims", "notes"};
+        filter_item = pd->system->addOptionsMenuItem("filter", show, 4, filter_menu_cb, NULL);
         pd->system->addMenuItem("About", about_menu_cb, NULL);
         pd->system->setUpdateCallback(update, NULL);
     } else if(event == kEventTerminate || event == kEventLock || event == kEventLowPower) {
