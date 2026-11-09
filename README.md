@@ -6,6 +6,8 @@ SFTV RX receives pictures, notes and animations that the transmitter
 ([SFTV TX](https://github.com/Negenii/sftv-flipper) on a Flipper Zero) sends as near-ultrasound
 (17–21 kHz). RX needs microphone access to work.
 
+No Flipper? [SFTV Web](https://negenii.github.io/sftv-web/) sends from a browser.
+
 ## Installing
 
 Download `SFTV_RX.pdx` (or build it, see below) and put it on the Playdate one of two ways.
