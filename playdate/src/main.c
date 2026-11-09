@@ -44,7 +44,9 @@ static LCDBitmap* thumb_mask; /* rounded corners for thumbnails */
 static LCDBitmap* qr_github; /* 150x150: https://github.com/Negenii (the Flipper's code, 3 px per dot) */
 static LCDBitmap* qr_coffee; /* 145x145: https://buymeacoffee.com/low.effort (tools/make_coffee_assets.py) */
 static LCDBitmap* cup; /* 20x28 Buy Me a Coffee cup for the button (tools/make_coffee_assets.py) */
-static int about_page; /* 0 the app, 1 support */
+static int about_page; /* 0 the app, 1 support (the target while sliding) */
+static float about_from; /* slide start, in pages */
+static unsigned about_slide_ms; /* when the slide started */
 
 static sstv_demod demod; /* tuned to the HF band */
 static sstv_rx rx;
@@ -1474,7 +1476,7 @@ static void draw_menu(void) {
     }
 }
 
-/* About (system menu), two pages flipped with left/right:
+/* About (system menu), two pages flipped with left/right (they slide, eased):
  * 1. name, version and build on the left, authorship at the bottom, the QR code to GitHub on
  *    the right under its caption (the same card as the Flipper's About);
  * 2. support: a Buy me a coffee button (a picture: the Playdate has no browser) and the QR code
@@ -1485,8 +1487,8 @@ static void draw_about_support(void) {
     use_font(font_big);
     draw_text("Like it?", 20, 52);
     use_font(font_ui);
-    draw_text("Scan the code", 20, 92);
-    draw_text("to say thanks.", 20, 110);
+    draw_text("Support making", 20, 92);
+    draw_text("fun little things.", 20, 110);
     /* the button, level with the bottom of the code */
     const int bw = 190, bh = 40, bx = 20, by = qy + qr - bh;
     pd->graphics->fillRoundRect(bx, by, bw, bh, bh / 2, kColorBlack);
@@ -1507,21 +1509,7 @@ static void draw_about_support(void) {
     if(qr_coffee) pd->graphics->drawBitmap(qr_coffee, qx, qy, kBitmapUnflipped);
 }
 
-static void draw_about(void) {
-    pd->graphics->clear(kColorWhite);
-    draw_title_bar("About", "Ⓑ back");
-    /* page dots at the bottom, arrows at the edges towards the other page */
-    for(int i = 0; i < ABOUT_PAGES; i++) {
-        int dx = LCD_COLUMNS / 2 + (i * 2 - (ABOUT_PAGES - 1)) * 8, dy = 229;
-        if(i == about_page) pd->graphics->fillEllipse(dx - 3, dy - 3, 7, 7, 0.0f, 0.0f, kColorBlack);
-        else pd->graphics->drawEllipse(dx - 3, dy - 3, 7, 7, 1, 0.0f, 0.0f, kColorBlack);
-    }
-    if(about_page > 0) pd->graphics->fillTriangle(4, 140, 10, 134, 10, 146, kColorBlack);
-    if(about_page < ABOUT_PAGES - 1) pd->graphics->fillTriangle(LCD_COLUMNS - 4, 140, LCD_COLUMNS - 10, 134, LCD_COLUMNS - 10, 146, kColorBlack);
-    if(about_page == 1) {
-        draw_about_support();
-        return;
-    }
+static void draw_about_app(void) {
     const int qr = 150, qx = LCD_COLUMNS - 20 - qr, qy = 66;
     use_font(font_big);
     draw_text("SFTV RX", 20, 52);
@@ -1536,11 +1524,51 @@ static void draw_about(void) {
     if(qr_github) pd->graphics->drawBitmap(qr_github, qx, qy, kBitmapUnflipped);
 }
 
+#define ABOUT_SLIDE_MS 350
+/* Page position now, in pages: slides from about_from to about_page, cubic ease-in-out. */
+static float about_pos(unsigned now) {
+    float t = (float)(now - about_slide_ms) / (float)ABOUT_SLIDE_MS;
+    if(t >= 1.0f) return (float)about_page;
+    float e = t < 0.5f ? 4.0f * t * t * t : 1.0f - (2.0f - 2.0f * t) * (2.0f - 2.0f * t) * (2.0f - 2.0f * t) / 2.0f;
+    return about_from + ((float)about_page - about_from) * e;
+}
+
+static void about_go(int page, unsigned now) {
+    if(page < 0 || page >= ABOUT_PAGES || page == about_page) return;
+    about_from = about_pos(now); /* a press mid-slide turns from where the pages are */
+    about_page = page;
+    about_slide_ms = now;
+}
+
+static void draw_about(unsigned now) {
+    pd->graphics->clear(kColorWhite);
+    draw_title_bar("About", "Ⓑ back");
+    /* page dots at the bottom (they stay; the pages slide between the bar and the dots) */
+    for(int i = 0; i < ABOUT_PAGES; i++) {
+        int dx = LCD_COLUMNS / 2 + (i * 2 - (ABOUT_PAGES - 1)) * 8, dy = 229;
+        if(i == about_page) pd->graphics->fillEllipse(dx - 3, dy - 3, 7, 7, 0.0f, 0.0f, kColorBlack);
+        else pd->graphics->drawEllipse(dx - 3, dy - 3, 7, 7, 1, 0.0f, 0.0f, kColorBlack);
+    }
+    float pos = about_pos(now);
+    pd->graphics->setClipRect(0, BAR_H, LCD_COLUMNS, 220 - BAR_H);
+    for(int i = 0; i < ABOUT_PAGES; i++) {
+        int dx = (int)lroundf(((float)i - pos) * (float)LCD_COLUMNS);
+        if(dx <= -LCD_COLUMNS || dx >= LCD_COLUMNS) continue;
+        pd->graphics->setDrawOffset(dx, 0);
+        if(i == 0) draw_about_app();
+        else draw_about_support();
+    }
+    pd->graphics->setDrawOffset(0, 0);
+    pd->graphics->clearClipRect();
+}
+
 static void about_menu_cb(void* ud) {
     (void)ud;
     if(ui_mode != ModeAbout) {
         about_back = ui_mode;
         about_page = 0;
+        about_from = 0.0f;
+        about_slide_ms = 0;
     }
     ui_mode = ModeAbout;
 }
@@ -2260,9 +2288,9 @@ static int update(void* userdata) {
     switch(ui_mode) {
     case ModeAbout: /* receiving goes on underneath; a new pass still takes over the screen */
         if(pushed & (kButtonA | kButtonB)) ui_mode = about_back;
-        if((pushed & kButtonRight) && about_page < ABOUT_PAGES - 1) about_page++;
-        if((pushed & kButtonLeft) && about_page > 0) about_page--;
-        draw_about();
+        if(pushed & kButtonRight) about_go(about_page + 1, now);
+        if(pushed & kButtonLeft) about_go(about_page - 1, now);
+        draw_about(now);
         break;
     case ModeMenu:
         if(pushed & (kButtonLeft | kButtonRight)) menu_index ^= 1;
