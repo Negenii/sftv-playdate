@@ -4,4 +4,4 @@ description=Flipper TV: receive pictures over sound from a Flipper Zero
 imagePath=launcher
 bundleID=com.negenii.sftvrx
 version=3.2
-buildNumber=194
+buildNumber=195

@@ -370,6 +370,14 @@ static void png_row(void* ctx, int y, uint8_t* out) {
 static bool storage_full;
 static void stop_mic(void);
 
+/* Opens a save for writing as a new file. The Playdate's stat gives the time a file was
+ * created, not last written, so a picture received again under the same name kept its old
+ * place in the newest-first gallery; removing it first makes it the newest. */
+static SDFile* open_new(const char* name) {
+    pd->file->unlink(name, 0);
+    return pd->file->open(name, kFileWrite);
+}
+
 static void wr(SDFile* f, const void* d, unsigned n) {
     if(pd->file->write(f, d, n) != (int)n) storage_full = true;
 }
@@ -402,7 +410,7 @@ static void save_image(void) {
     if(!image_dirty) return;
     char fname[64];
     sanitize_name(fname, sizeof fname, current_name);
-    SDFile* f = pd->file->open(fname, kFileWrite);
+    SDFile* f = open_new(fname);
     if(!f) return;
     char hdr[32];
     int hl = snprintf(hdr, sizeof hdr, "P4\n%d %d\n", SSTV_WIDTH, SSTV_HEIGHT);
@@ -420,7 +428,7 @@ static void save_image(void) {
     png[sizeof png - 1] = 0;
     char* dot = strrchr(png, '.');
     if(dot) strcpy(dot, ".png");
-    f = pd->file->open(png, kFileWrite);
+    f = open_new(png);
     if(f) {
         export_png(SSTV_WIDTH, SSTV_HEIGHT, png_row, NULL, file_write, f);
         pd->file->close(f);
@@ -477,7 +485,7 @@ static void save_note(void) {
     else display_name(base, sizeof base, current_name);
     char fname[NAME_CAP + 8];
     snprintf(fname, sizeof fname, "%s.txt", base);
-    SDFile* f = pd->file->open(fname, kFileWrite);
+    SDFile* f = open_new(fname);
     if(!f) return;
     const char* text = note_text();
     storage_full = false;
@@ -593,7 +601,7 @@ static void file_write(void* ctx, const void* data, int len) {
 
 /* .sfa: "SFA1" w h n fps order_len order[] frames[] (XBM) - what the gallery plays. */
 static bool write_sfa(const char* fname, const sstv_anim_info* a, const uint8_t* frames) {
-    SDFile* f = pd->file->open(fname, kFileWrite);
+    SDFile* f = open_new(fname);
     if(!f) return false;
     uint8_t h[9] = {'S', 'F', 'A', '1', (uint8_t)a->w, (uint8_t)a->h, (uint8_t)a->n, (uint8_t)a->fps, (uint8_t)a->order_len};
     wr(f, h, 9);
@@ -657,7 +665,7 @@ static void save_anim(void) {
     if(!write_sfa(fname, &anim_info, anim_frames)) storage_full = true;
     char gname[NAME_CAP + 8];
     snprintf(gname, sizeof gname, "%s.gif", base);
-    SDFile* f = pd->file->open(gname, kFileWrite);
+    SDFile* f = open_new(gname);
     if(f) {
         int delay = anim_info.fps > 0 ? 100 / anim_info.fps : 50;
         export_gif(anim_info.w, anim_info.h, 2, anim_frames, sstv_anim_frame_bytes(&anim_info), anim_info.order,
