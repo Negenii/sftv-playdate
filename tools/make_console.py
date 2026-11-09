@@ -10,10 +10,10 @@ K, Wh = 0, 255
 im = Image.new("L", (W, H), Wh)
 d = ImageDraw.Draw(im)
 
-# crank: arm out of the right side, a knob at its end
-d.rectangle([112, 21, 119, 37], fill=K)              # hub on the side
-d.rounded_rectangle([117, 26, 134, 31], 2, fill=K)   # arm
-d.ellipse([129, 18, 139, 38], fill=K)                # knob
+# crank, seen from the front: a housing down the right edge of the body and the arm sticking
+# out of its top end (the knob points at the viewer, so it is not seen)
+d.rounded_rectangle([108, 16, 120, 62], 3, fill=K)   # housing on the side
+d.rounded_rectangle([108, 18, 139, 29], 3, fill=K)   # arm
 # body
 d.rounded_rectangle([0, 0, 113, 117], 7, fill=K)
 # screen: white bezel line, black (off) interior at (7, 7) 88x53
