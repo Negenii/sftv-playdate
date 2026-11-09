@@ -1618,7 +1618,7 @@ static void draw_scene(void) {
         }
     } else {
         use_font(font_ui);
-        const char* hint = mic_state < 0 ? "microphone access denied" : mic_state == 0 ? "waiting for microphone permission" : "start a transmission on the Flipper";
+        const char* hint = mic_state < 0 ? "microphone access denied" : mic_state == 0 ? "waiting for microphone permission" : "waiting for a transmission";
         draw_text_centered(hint, text_cx, 208);
     }
 }
