@@ -97,7 +97,7 @@ static bool image_dirty; /* something received since the last save */
 static bool finished; /* END meta received */
 static unsigned finished_ms;
 static int finished_lines;
-static int mic_state; /* 0 asking, 1 allowed, -1 denied */
+static int mic_state; /* 0 not asked yet, 2 the system dialog is up, 1 allowed, -1 denied */
 static bool mic_running; /* callback installed */
 static bool show_panel; /* side panel with statistics, toggled with Right */
 static bool confirm_leave; /* B during an active pass asks before leaving Receive */
@@ -1233,6 +1233,20 @@ static void mic_access_cb(bool allowed, void* userdata) {
     if(allowed) start_mic();
 }
 
+/* Asked when Receive opens, not at launch: the menu and the gallery need no microphone. The
+ * system remembers the answer, so after the first time this returns at once without a dialog
+ * (and picks up a change made in Settings). */
+static void ask_mic(void) {
+    enum accessReply r = pd->sound->requestMicAccess(
+        /* the system shows "<name> would like to use the microphone: <this>" with room for about
+         * three lines, and its font has no comma */
+        "to hear pictures and notes a Flipper Zero plays as sound.",
+        mic_access_cb, NULL);
+    if(r == kAccessAllow) mic_state = 1;
+    else if(r == kAccessDeny) mic_state = -1;
+    else mic_state = 2; /* kAccessAsk: the dialog is up, mic_access_cb follows */
+}
+
 static void put_u32(uint8_t* p, uint32_t v) {
     p[0] = v & 0xFF;
     p[1] = (v >> 8) & 0xFF;
@@ -1580,7 +1594,7 @@ static void draw_scene(void) {
         }
     } else {
         use_font(font_ui);
-        const char* hint = mic_state < 0 ? "microphone access denied" : mic_state == 0 ? "waiting for microphone permission" : "waiting for a transmission";
+        const char* hint = mic_state < 0 ? "allow the microphone in Settings > Permissions" : mic_state != 1 ? "waiting for microphone permission" : "waiting for a transmission";
         draw_text_centered(hint, text_cx, 208);
     }
 }
@@ -2032,7 +2046,7 @@ chrome:;
                 draw_text_white(fc, right - bw - 8 - text_width(fc), (BAR_H - font_height()) / 2);
             }
         } else {
-            draw_title_bar("Listening", NULL);
+            draw_title_bar(mic_state == 1 ? "Listening" : mic_state < 0 ? "No microphone" : "Microphone?", NULL);
         }
         pd->graphics->setDrawOffset(0, 0);
     }
@@ -2269,6 +2283,7 @@ static int update(void* userdata) {
                 ui_mode = ModeReceive; /* the microphone runs only here */
                 confirm_leave = false;
                 clear_image(); /* each visit to Receive starts a fresh listen */
+                ask_mic();
                 start_mic();
             } else {
                 gallery_open();
@@ -2432,16 +2447,7 @@ static void init(void) {
         pd->sound->channel->addSource(pd->sound->getDefaultChannel(), (SoundSource*)start_synth[i]);
     }
     clear_image();
-    menu_open();
-
-    enum accessReply r = pd->sound->requestMicAccess(
-        "Receive images over sound from a Flipper Zero", mic_access_cb, NULL);
-    if(r == kAccessAllow) {
-        mic_state = 1;
-        start_mic();
-    } else if(r == kAccessDeny) {
-        mic_state = -1;
-    } /* kAccessAsk: wait for mic_access_cb */
+    menu_open(); /* the microphone is asked for when Receive opens (ask_mic) */
 }
 
 #ifdef _WINDLL
