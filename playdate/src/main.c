@@ -338,16 +338,32 @@ static void sanitize_name(char* out, size_t cap, const char* in) {
 
 static void file_write(void* ctx, const void* data, int len);
 /* PNG row y: the picture where it arrived, white elsewhere (Playdate bitmap bits: 1 = white). */
-static void png_row(void* ctx, int y, uint8_t* out) {
-    (void)ctx;
+static int placeholder_bit(int x, int line);
+
+/* Row y of the picture as saved, PBM bits (1 = black): the half-lines that arrived, and where one
+ * never did, the preview's pixels (80x48, else the 40x20 tiny one, else white), so a partial
+ * picture is kept as it looked on screen: sharp lines over a coarse preview. */
+static void saved_row(int y, uint8_t* out) {
     for(int i = 0; i < SSTV_LINE_BYTES; i++) {
-        bool have = seg_seen[y] & (i < SSTV_SEG_BYTES ? 1 : 2);
-        out[i] = have ? image_data[y * image_rowbytes + i] : 0xFF;
+        if(seg_seen[y] & (i < SSTV_SEG_BYTES ? 1 : 2)) {
+            out[i] = (uint8_t)~image_data[y * image_rowbytes + i];
+            continue;
+        }
+        uint8_t v = 0;
+        for(int b = 0; b < 8; b++)
+            if(placeholder_bit(i * 8 + b, y)) v |= (uint8_t)(0x80 >> b);
+        out[i] = v;
     }
 }
 
-/* Saves the received picture as a P4 PBM under Data/. Same name overwrites. Segments that
- * never arrived are written white, not with the preview placeholder. */
+static void png_row(void* ctx, int y, uint8_t* out) {
+    (void)ctx;
+    saved_row(y, out);
+    for(int i = 0; i < SSTV_LINE_BYTES; i++) out[i] = (uint8_t)~out[i]; /* PNG gray: 1 = white */
+}
+
+/* Saves the received picture as a P4 PBM under Data/. Same name overwrites. Lines that never
+ * arrived carry the preview (saved_row). */
 static void save_image(void) {
     if(!image_dirty) return;
     char fname[64];
@@ -359,10 +375,7 @@ static void save_image(void) {
     pd->file->write(f, hdr, (unsigned)hl);
     uint8_t row[SSTV_LINE_BYTES];
     for(int y = 0; y < SSTV_HEIGHT; y++) {
-        for(int i = 0; i < SSTV_LINE_BYTES; i++) {
-            bool have = seg_seen[y] & (i < SSTV_SEG_BYTES ? 1 : 2);
-            row[i] = have ? (uint8_t)~image_data[y * image_rowbytes + i] : 0;
-        }
+        saved_row(y, row);
         pd->file->write(f, row, SSTV_LINE_BYTES);
     }
     pd->file->close(f);
@@ -1007,6 +1020,7 @@ static void on_pixels(void* ctx, uint16_t line, int x_byte, int nbytes, const ui
     begin_pass(pd->system->getCurrentTimeMilliseconds());
     last_data_ms = pd->system->getCurrentTimeMilliseconds();
     if(line >= SSTV_HEIGHT || x_byte + nbytes > SSTV_LINE_BYTES) return;
+    if(rx.note || rx.anim) return; /* a note's or animation's frames are not picture lines */
     uint8_t* dst = image_data + line * image_rowbytes + x_byte;
     /* PBM: 1 = black. Playdate bitmap: 1 = white. */
     for(int i = 0; i < nbytes; i++) dst[i] = (uint8_t)~pixels[i];
@@ -1020,6 +1034,8 @@ static void on_pixels(void* ctx, uint16_t line, int x_byte, int nbytes, const ui
 
 static void clear_image(void) {
     anim_reset();
+    image_dirty = false; /* a cleared screen has nothing to save (stray lines that came before a
+                          * note's START were saved as a picture under the note's name) */
     memset(note_buf, 0, sizeof note_buf); /* rx.note itself is owned by the START/END flag */
     memset(note_have, 0, sizeof note_have);
     note_got = 0;
@@ -2371,7 +2387,7 @@ static int update(void* userdata) {
          * leader tones qualify); state != IDLE means it has locked onto the sync. */
         if(st.tone >= 0 || st.state != SSTV_DEMOD_IDLE) hearing_ms = now;
     }
-    if(image_dirty && ((segs_done == SSTV_NUM_SEGS) || (now - last_data_ms > LOST_TIMEOUT_MS))) save_image();
+    if(image_dirty && !rx.note && !rx.anim && ((segs_done == SSTV_NUM_SEGS) || (now - last_data_ms > LOST_TIMEOUT_MS))) save_image();
     if(note_dirty && (now - last_data_ms > LOST_TIMEOUT_MS)) save_note();
     if(rx.anim && started && !finished) anim_pump(4096, false); /* ~200k pixels/s, far ahead of the air */
     /* END never came: the pass is over by the announced timeline plus a margin. */
