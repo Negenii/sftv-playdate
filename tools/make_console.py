@@ -12,10 +12,10 @@ d = ImageDraw.Draw(im)
 
 # crank, seen from the front: a housing down the right edge of the body and the arm sticking
 # out of its top end (the knob points at the viewer, so it is not seen)
-d.rounded_rectangle([108, 16, 120, 62], 3, fill=K)   # housing on the side
-d.rounded_rectangle([108, 18, 139, 29], 3, fill=K)   # arm
+d.rounded_rectangle([115, 16, 123, 62], 3, fill=K)   # housing, 2 px clear of the body
+d.rounded_rectangle([115, 18, 139, 29], 3, fill=K)   # arm
 # body
-d.rounded_rectangle([0, 0, 113, 117], 7, fill=K)
+d.rounded_rectangle([0, 0, 112, 117], 7, fill=K)
 # screen: white bezel line, black (off) interior at (7, 7) 88x53
 d.rounded_rectangle([3, 3, 98, 63], 5, outline=Wh, width=2)
 d.rectangle([7, 7, 94, 59], fill=K)
