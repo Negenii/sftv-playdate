@@ -100,6 +100,13 @@ CON_SX, CON_SY, CON_SW, CON_SH = 7, 7, 88, 53  # console screen interior
 DROPS = 7  # drops on the spout arc
 
 
+def pic_rect(W=350, H=155):
+    """The picture's rect inside the card: (x, y, w, h), as scene() places it."""
+    con = load1("console")
+    cx, cy = W - con.width - 22, H - con.height + 4
+    return cx + CON_SX + 3, cy + CON_SY + 3, CON_SW - 6, CON_SH - 6
+
+
 def scene(t=0.0, reveal=1.0, mouth=False, frame=0, W=350, H=155):
     """The cover: title on top, the dolphin spouting into the console showing a picture.
     t: spout phase 0..1; reveal: share of the picture drawn (top down)."""
@@ -190,26 +197,49 @@ if __name__ == "__main__":
     icon(True).save(f"{OUT}/icon-pressed.png")
     menu = Image.open("tools/assets/launch_menu.png").convert("L")  # the app's first screen
     menu.save(f"{OUT}/launchImage.png")
-    # launchImages: the launcher starts from the card at (25, 43) over its own background.
-    # 1..6: the card slides (eased) until its title sits on the menu's title, white spreading
-    # from the card to the whole screen; 7..12: a Bayer dissolve into the menu.
-    (ox, oy), slide, fade, n = card_origin_for_menu(), 6, 6, 0
-    for i in range(1, slide + 1):
-        e = ease(i / slide)
-        x, y = round(25 + (ox - 25) * e), round(43 + (oy - 43) * e)
-        fr = Image.new("LA", (400, 240), (WHITE, 0))
-        l, t, r, b = round(x - x * e), round(y - y * e), round(x + 350 + (400 - x - 350) * e), round(y + 155 + (240 - y - 155) * e)
-        fr.paste((WHITE, 255), (min(l, x), min(t, y), max(r, x + 350), max(b, y + 155)))
-        fr.paste(Image.merge("LA", (card, Image.new("L", card.size, 255))), (x, y))
+    # launchImages (20 fps). The launcher starts from the (pressed) card at (25, 43) over its own
+    # background. 1..ZOOM: the camera flies into the console screen until the picture fills the
+    # display (crisp pixels, scale growing exponentially). Then SLIDE frames: the two menu cards
+    # slide in, Receive from the left and Gallery from the right (ease-out), while the picture
+    # behind them dissolves into the menu's white background and title. The last frame is the
+    # menu itself (= launchImage), so the app takes over without a jump.
+    import shutil
+    shutil.rmtree(f"{OUT}/launchImages", ignore_errors=True)
+    os.makedirs(f"{OUT}/launchImages")
+    ZOOM, SLIDE, n = 10, 6, 0
+    start = pressed                                   # what is on screen when A goes down
+    px, py, pw, ph = pic_rect()                       # the picture inside the card
+    s_end = max(400 / pw, 240 / ph)                   # fill the display
+    cx0, cy0 = 25 + px + pw / 2, 43 + py + 1 + ph / 2  # picture centre at the start (pressed: +1)
+    rgba = Image.merge("LA", (start, Image.new("L", start.size, 255)))
+    for i in range(1, ZOOM + 1):
+        e = ease(i / ZOOM)
+        sc = s_end ** e
+        ccx, ccy = cx0 + (200 - cx0) * e, cy0 + (120 - cy0) * e
+        # screen = (card - (px + pw/2, py + 1 + ph/2)) * sc + (ccx, ccy)
+        ax, ay = px + pw / 2 - ccx / sc, py + 1 + ph / 2 - ccy / sc
+        fr = rgba.transform((400, 240), Image.AFFINE, (1 / sc, 0, ax, 0, 1 / sc, ay), Image.NEAREST, fillcolor=(WHITE, 0))
         n += 1; fr.save(f"{OUT}/launchImages/{n}.png")
-    base = Image.new("L", (400, 240), WHITE); base.paste(card, (ox, oy))
-    for i in range(1, fade + 1):
-        lvl = i * 16 / fade
-        fr = base.copy()
-        mp, bp = menu.load(), fr.load()
+    full = fr.convert("L")                            # the picture filling the display
+    bg = menu.copy()
+    ImageDraw.Draw(bg).rectangle([0, 44, 399, 239], fill=WHITE)  # the menu without its cards
+    tiles = []
+    for tx in (5, 205):
+        m = Image.new("L", (400, 240), 0)
+        ImageDraw.Draw(m).rounded_rectangle([tx, 46, tx + 189, 46 + 185], 14, fill=255)
+        tiles.append((tx, menu.crop((tx, 46, tx + 190, 46 + 186)), m.crop((tx, 46, tx + 190, 46 + 186))))
+    for i in range(1, SLIDE + 1):
+        t = i / SLIDE
+        lvl = t * 16
+        fr = full.copy()
+        fp, bp = fr.load(), bg.load()
         for yy in range(240):
             for xx in range(400):
                 if B4[yy % 4][xx % 4] < lvl:
-                    bp[xx, yy] = mp[xx, yy]
+                    fp[xx, yy] = bp[xx, yy]
+        e = 1 - (1 - t) ** 2                          # ease-out
+        for k, (tx, img, m) in enumerate(tiles):
+            off = (-(tx + 190) if k == 0 else 400 - tx) * (1 - e)
+            fr.paste(img, (round(tx + off), 46), m)
         n += 1; fr.save(f"{OUT}/launchImages/{n}.png")
     print("launcher ok:", n, "launch frames")
