@@ -44,9 +44,7 @@ static LCDBitmap* thumb_mask; /* rounded corners for thumbnails */
 static LCDBitmap* qr_github; /* 150x150: https://github.com/Negenii (the Flipper's code, 3 px per dot) */
 static LCDBitmap* qr_coffee; /* 145x145: https://buymeacoffee.com/low.effort (tools/make_coffee_assets.py) */
 static LCDBitmap* bmc_button; /* 200x56 Buy Me a Coffee button in 1 bit (tools/make_coffee_assets.py) */
-static int about_page; /* 0 the app, 1 support (the target while sliding) */
-static float about_from; /* slide start, in pages */
-static unsigned about_slide_ms; /* when the slide started */
+static int about_page; /* which system-menu screen: 0 About, 1 Support */
 
 static sstv_demod demod; /* tuned to the HF band */
 static sstv_rx rx;
@@ -1477,11 +1475,10 @@ static void draw_menu(void) {
     }
 }
 
-/* About (system menu), two pages flipped with left/right (they slide, eased):
- * 1. name, version and build on the left, authorship at the bottom, the QR code to GitHub on
- *    the right under its caption (the same card as the Flipper's About);
- * 2. support: the Buy Me a Coffee button and the QR code to the page. */
-#define ABOUT_PAGES 2
+/* System-menu screens:
+ * About: name, version and build on the left, authorship at the bottom, the QR code to GitHub
+ *   on the right under its caption (the same card as the Flipper's About);
+ * Support: the Buy Me a Coffee button and the QR code to the page. */
 static void draw_about_support(void) {
     const int qr = 145, qx = LCD_COLUMNS - 20 - 150 + (150 - qr) / 2, qy = 66;
     use_font(font_big);
@@ -1514,52 +1511,17 @@ static void draw_about_app(void) {
     if(qr_github) pd->graphics->drawBitmap(qr_github, qx, qy, kBitmapUnflipped);
 }
 
-#define ABOUT_SLIDE_MS 300
-/* Page position now, in pages: slides from about_from to about_page, cubic ease-in-out. */
-static float about_pos(unsigned now) {
-    float t = (float)(now - about_slide_ms) / (float)ABOUT_SLIDE_MS;
-    if(t >= 1.0f) return (float)about_page;
-    float e = t < 0.5f ? 4.0f * t * t * t : 1.0f - (2.0f - 2.0f * t) * (2.0f - 2.0f * t) * (2.0f - 2.0f * t) / 2.0f;
-    return about_from + ((float)about_page - about_from) * e;
-}
-
-static void about_go(int page, unsigned now) {
-    if(page < 0 || page >= ABOUT_PAGES || page == about_page) return;
-    about_from = about_pos(now); /* a press mid-slide turns from where the pages are */
-    about_page = page;
-    about_slide_ms = now;
-}
-
-static void draw_about(unsigned now) {
+static void draw_about(void) {
     pd->graphics->clear(kColorWhite);
-    draw_title_bar("About", "Ⓑ back");
-    /* page dots at the bottom (they stay; the pages slide between the bar and the dots) */
-    for(int i = 0; i < ABOUT_PAGES; i++) {
-        int dx = LCD_COLUMNS / 2 + (i * 2 - (ABOUT_PAGES - 1)) * 8, dy = 229;
-        if(i == about_page) pd->graphics->fillEllipse(dx - 3, dy - 3, 7, 7, 0.0f, 0.0f, kColorBlack);
-        else pd->graphics->drawEllipse(dx - 3, dy - 3, 7, 7, 1, 0.0f, 0.0f, kColorBlack);
-    }
-    float pos = about_pos(now);
-    pd->graphics->setClipRect(0, BAR_H, LCD_COLUMNS, 220 - BAR_H);
-    for(int i = 0; i < ABOUT_PAGES; i++) {
-        int dx = (int)lroundf(((float)i - pos) * (float)LCD_COLUMNS);
-        if(dx <= -LCD_COLUMNS || dx >= LCD_COLUMNS) continue;
-        pd->graphics->setDrawOffset(dx, 0);
-        if(i == 0) draw_about_app();
-        else draw_about_support();
-    }
-    pd->graphics->setDrawOffset(0, 0);
-    pd->graphics->clearClipRect();
+    draw_title_bar(about_page ? "Support" : "About", "Ⓑ back");
+    if(about_page) draw_about_support();
+    else draw_about_app();
 }
 
+/* system menu: About (ud = 0) and Support (ud = 1) share one screen mode */
 static void about_menu_cb(void* ud) {
-    (void)ud;
-    if(ui_mode != ModeAbout) {
-        about_back = ui_mode;
-        about_page = 0;
-        about_from = 0.0f;
-        about_slide_ms = 0;
-    }
+    if(ui_mode != ModeAbout) about_back = ui_mode;
+    about_page = ud ? 1 : 0;
     ui_mode = ModeAbout;
 }
 
@@ -2203,9 +2165,9 @@ static void draw_full(void) {
 /* ---- main loop ---- */
 
 /* System-menu items for the screen: "filter" only in the gallery (and in About opened from it),
- * "about" everywhere. Rebuilt when that changes; the filter keeps its value. */
+ * "about" and "support" everywhere. Rebuilt when that changes; the filter keeps its value. */
 static void sync_menu_items(void) {
-    static int shown = -1; /* -1 none yet, 0 about only, 1 filter + about */
+    static int shown = -1; /* -1 none yet, 0 about + support, 1 filter + about + support */
     bool in_gallery = ui_mode == ModeGrid || ui_mode == ModeFull ||
                       (ui_mode == ModeAbout && (about_back == ModeGrid || about_back == ModeFull));
     if(shown == (int)in_gallery) return;
@@ -2217,7 +2179,8 @@ static void sync_menu_items(void) {
         filter_item = pd->system->addOptionsMenuItem("filter", show, 4, filter_menu_cb, NULL);
         pd->system->setMenuItemValue(filter_item, gallery_filter);
     }
-    pd->system->addMenuItem("About", about_menu_cb, NULL);
+    pd->system->addMenuItem("About", about_menu_cb, (void*)0);
+    pd->system->addMenuItem("Support", about_menu_cb, (void*)1);
 }
 
 static int update(void* userdata) {
@@ -2297,9 +2260,7 @@ static int update(void* userdata) {
     switch(ui_mode) {
     case ModeAbout: /* receiving goes on underneath; a new pass still takes over the screen */
         if(pushed & (kButtonA | kButtonB)) ui_mode = about_back;
-        if(pushed & kButtonRight) about_go(about_page + 1, now);
-        if(pushed & kButtonLeft) about_go(about_page - 1, now);
-        draw_about(now);
+        draw_about();
         break;
     case ModeMenu:
         if(pushed & (kButtonLeft | kButtonRight)) menu_index ^= 1;
