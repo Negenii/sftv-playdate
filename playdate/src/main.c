@@ -13,6 +13,7 @@
 #include "sticky_note.h"
 #include "sstv_anim.h"
 #include "export.h"
+#include "build_info.h"
 
 #define LOST_TIMEOUT_MS 5000
 #define PANEL_W 200
@@ -40,6 +41,7 @@ static int last_block_type = -1; static unsigned last_block_ms; /* drives the sc
 #define DOLPHIN_H 49
 static LCDBitmap* console; /* 140x118 Playdate silhouette, screen interior at (7,7) 88x53 */
 static LCDBitmap* thumb_mask; /* rounded corners for thumbnails */
+static LCDBitmap* qr_github; /* 150x150: https://github.com/Negenii (the Flipper's code, 3 px per dot) */
 
 static sstv_demod demod; /* tuned to the HF band */
 static sstv_rx rx;
@@ -118,8 +120,9 @@ static LCDBitmap* preview_bitmap; /* 80x48 for the console icon in the intro sce
 static LCDBitmap* ph_bm; /* full-size preview placeholder, shown below the drawing line */
 
 /* Screens. */
-typedef enum { ModeMenu, ModeReceive, ModeGrid, ModeFull } UiMode;
+typedef enum { ModeMenu, ModeReceive, ModeGrid, ModeFull, ModeAbout } UiMode;
 static UiMode ui_mode = ModeMenu;
+static UiMode about_back; /* the screen About returns to */
 static int menu_index; /* 0 receive, 1 gallery */
 static char gallery_names[MAX_GALLERY][NAME_CAP];
 static int gallery_count;
@@ -615,19 +618,53 @@ static void pbm_to_bitmap(const uint8_t* px, LCDBitmap* bmp) {
         for(int i = 0; i < SSTV_LINE_BYTES; i++) data[y * rb + i] = (uint8_t)~px[y * SSTV_LINE_BYTES + i];
 }
 
-/* 4:1 nearest-neighbour thumbnail (400x240 -> 100x60) with rounded corners. */
+/* Shrinks a 1-bit picture into the white bitmap `t` at (ox, oy), dw x dh: each target pixel
+ * takes the share of black in its source box, dithered back to 1 bit (Floyd-Steinberg).
+ * Sampling one source pixel per target pixel (what thumbnails did before) picked a single dot
+ * of the picture's own dither pattern, so halftones and gradients came out as noise or flat
+ * fields. msb: PBM rows (bit 7 = leftmost); otherwise XBM (bit 0 = leftmost). 1 = black. */
+static void dither_down(const uint8_t* src, int sw, int sh, int stride, bool msb, LCDBitmap* t, int ox, int oy, int dw, int dh) {
+    int bw, bh, rb;
+    uint8_t* data;
+    pd->graphics->getBitmapData(t, &bw, &bh, &rb, NULL, &data);
+    int16_t* err = pd->system->realloc(NULL, sizeof(int16_t) * 2 * (size_t)(dw + 2));
+    if(!err) return;
+    memset(err, 0, sizeof(int16_t) * 2 * (size_t)(dw + 2));
+    int16_t* cur = err + 1; /* [-1 .. dw] */
+    int16_t* nxt = err + dw + 3;
+    for(int y = 0; y < dh; y++) {
+        int y0 = y * sh / dh, y1 = (y + 1) * sh / dh;
+        if(y1 <= y0) y1 = y0 + 1;
+        for(int x = 0; x < dw; x++) {
+            int x0 = x * sw / dw, x1 = (x + 1) * sw / dw;
+            if(x1 <= x0) x1 = x0 + 1;
+            int black = 0;
+            for(int sy = y0; sy < y1; sy++) {
+                const uint8_t* row = src + sy * stride;
+                for(int sx = x0; sx < x1; sx++) black += msb ? (row[sx >> 3] >> (7 - (sx & 7))) & 1 : (row[sx >> 3] >> (sx & 7)) & 1;
+            }
+            int v = black * 255 / ((y1 - y0) * (x1 - x0)) + cur[x]; /* darkness 0..255 */
+            int out = v >= 128 ? 255 : 0;
+            int e = v - out;
+            cur[x + 1] += (int16_t)(e * 7 / 16);
+            nxt[x - 1] += (int16_t)(e * 3 / 16);
+            nxt[x] += (int16_t)(e * 5 / 16);
+            nxt[x + 1] += (int16_t)(e / 16);
+            int px = ox + x, py = oy + y;
+            if(out && px >= 0 && py >= 0 && px < bw && py < bh) data[py * rb + (px >> 3)] &= (uint8_t)~(0x80 >> (px & 7));
+        }
+        int16_t* tmp = cur;
+        cur = nxt;
+        nxt = tmp;
+        memset(nxt - 1, 0, sizeof(int16_t) * (size_t)(dw + 2));
+    }
+    pd->system->realloc(err, 0);
+}
+
+/* 400x240 -> 100x60 thumbnail with rounded corners. */
 static LCDBitmap* make_thumb(const uint8_t* px) {
     LCDBitmap* t = pd->graphics->newBitmap(THUMB_W, THUMB_H, kColorWhite);
-    int w, h, rb;
-    uint8_t* data;
-    pd->graphics->getBitmapData(t, &w, &h, &rb, NULL, &data);
-    for(int y = 0; y < THUMB_H; y++) {
-        for(int x = 0; x < THUMB_W; x++) {
-            int sx = x * 4 + 1, sy = y * 4 + 1;
-            int black = (px[sy * SSTV_LINE_BYTES + (sx >> 3)] >> (7 - (sx & 7))) & 1;
-            if(black) data[y * rb + (x >> 3)] &= (uint8_t)~(0x80 >> (x & 7));
-        }
-    }
+    dither_down(px, SSTV_WIDTH, SSTV_HEIGHT, SSTV_LINE_BYTES, true, t, 0, 0, THUMB_W, THUMB_H);
     if(thumb_mask) pd->graphics->setBitmapMask(t, thumb_mask);
     return t;
 }
@@ -649,13 +686,11 @@ static LCDBitmap* make_anim_thumb(const char* name) {
     LCDBitmap* t = NULL;
     if(read_sfa(name, &a, &fr)) {
         t = pd->graphics->newBitmap(THUMB_W, THUMB_H, kColorWhite);
-        LCDBitmap* one = pd->graphics->newBitmap(a.w, a.h, kColorWhite);
-        xbm_to_bitmap(fr + a.order[0] * sstv_anim_frame_bytes(&a), a.w, a.h, one);
-        float sc = (float)THUMB_W / (float)a.w < (float)THUMB_H / (float)a.h ? (float)THUMB_W / (float)a.w : (float)THUMB_H / (float)a.h;
-        pd->graphics->pushContext(t);
-        pd->graphics->drawScaledBitmap(one, (int)((float)THUMB_W - (float)a.w * sc) / 2, (int)((float)THUMB_H - (float)a.h * sc) / 2, sc, sc);
-        pd->graphics->popContext();
-        pd->graphics->freeBitmap(one);
+        /* fit, keeping the aspect: 128x64 -> 100x50 */
+        int dw = THUMB_W, dh = a.h * THUMB_W / a.w;
+        if(dh > THUMB_H) { dh = THUMB_H; dw = a.w * THUMB_H / a.h; }
+        dither_down(fr + a.order[0] * sstv_anim_frame_bytes(&a), a.w, a.h, sstv_anim_stride(a.w), false, t, (THUMB_W - dw) / 2,
+                    (THUMB_H - dh) / 2, dw, dh);
         if(thumb_mask) pd->graphics->setBitmapMask(t, thumb_mask);
     }
     if(fr) pd->system->realloc(fr, 0);
@@ -781,7 +816,15 @@ static void menu_open(void) {
         menu_thumb = NULL;
     }
     if(gallery_count > 0) {
+        /* the most recently saved item, whatever order the gallery is sorted in */
         int last = gallery_count - 1;
+        unsigned long long best = 0;
+        for(int i = 0; i < gallery_count; i++) {
+            FileStat st;
+            if(pd->file->stat(gallery_names[i], &st) != 0) continue;
+            unsigned long long k = mtime_key(&st);
+            if(k >= best) { best = k; last = i; }
+        }
         if(gallery_kind[last] == 2) {
             menu_thumb = make_anim_thumb(gallery_names[last]);
         } else if(gallery_kind[last] == 1) {
@@ -1425,6 +1468,31 @@ static void draw_menu(void) {
         snprintf(t, sizeof t, "%d saved", gallery_count);
         draw_pill(t, tx[1] + tile_w - 12 - text_width(t) - 12, ty + 10, false);
     }
+}
+
+/* About (system menu): name, version and build on the left, authorship at the bottom, the QR
+ * code to GitHub on the right under its caption -- the same card as the Flipper's About. */
+static void draw_about(void) {
+    pd->graphics->clear(kColorWhite);
+    draw_title_bar("About", "Ⓑ back");
+    const int qr = 150, qx = LCD_COLUMNS - 20 - qr, qy = 66;
+    use_font(font_big);
+    draw_text("SFTV RX", 20, 52);
+    use_font(font_ui);
+    char t[32];
+    snprintf(t, sizeof t, "version %s", SFTV_VERSION);
+    draw_text(t, 20, 92);
+    snprintf(t, sizeof t, "build %d", SFTV_BUILD);
+    draw_text(t, 20, 110);
+    draw_text("© 2026 negenii", 20, qy + qr - font_height() + 2); /* bottom line level with the code */
+    draw_text_centered("github.com", qx + qr / 2, qy - font_height() - 6);
+    if(qr_github) pd->graphics->drawBitmap(qr_github, qx, qy, kBitmapUnflipped);
+}
+
+static void about_menu_cb(void* ud) {
+    (void)ud;
+    if(ui_mode != ModeAbout) about_back = ui_mode;
+    ui_mode = ModeAbout;
 }
 
 /* The receive-scene dolphin pose for the current state: idle, signal heard, START/preview,
@@ -2138,6 +2206,10 @@ static int update(void* userdata) {
     if(started && total_frames > 0 && now - started_ms > (unsigned)(total_frames - SSTV_ILEAVE) * (PHYS_US_NOW / 1000) + 4000) finish(now);
 
     switch(ui_mode) {
+    case ModeAbout: /* receiving goes on underneath; a new pass still takes over the screen */
+        if(pushed & (kButtonA | kButtonB)) ui_mode = about_back;
+        draw_about();
+        break;
     case ModeMenu:
         if(pushed & (kButtonLeft | kButtonRight)) menu_index ^= 1;
         if(pushed & kButtonA) {
@@ -2271,6 +2343,7 @@ static void init(void) {
         if(src) { *poses[i].dst = render_scaled(src, 2, 2); pd->graphics->freeBitmap(src); }
     }
     console = pd->graphics->loadBitmap("images/console", &err);
+    qr_github = pd->graphics->loadBitmap("images/qr_github", &err);
 
     thumb_mask = pd->graphics->newBitmap(THUMB_W, THUMB_H, kColorBlack);
     pd->graphics->pushContext(thumb_mask);
@@ -2327,6 +2400,7 @@ int eventHandler(PlaydateAPI* playdate, PDSystemEvent event, uint32_t arg) {
         pd->display->setRefreshRate(50);
         init();
         sort_item = pd->system->addCheckmarkMenuItem("Newest", 0, sort_menu_cb, NULL);
+        pd->system->addMenuItem("About", about_menu_cb, NULL);
         pd->system->setUpdateCallback(update, NULL);
     } else if(event == kEventTerminate || event == kEventLock || event == kEventLowPower) {
         /* The audio thread keeps calling the mic callback after the game is unloaded
