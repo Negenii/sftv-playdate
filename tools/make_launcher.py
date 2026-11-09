@@ -11,13 +11,28 @@ OUT = SRC + "/launcher"
 WHITE, BLACK = 255, 0
 
 
+def font_dir(base):
+    """The app's own fonts are in playdate/Source/fonts; the Roobert ones come from the Playdate
+    SDK (PLAYDATE_SDK_PATH, or SDKRoot in ~/.Playdate/config) unless a build already copied them."""
+    if os.path.exists(f"{SRC}/fonts/{base}.fnt"):
+        return f"{SRC}/fonts"
+    sdk = os.environ.get("PLAYDATE_SDK_PATH")
+    if not sdk:
+        cfg = os.path.expanduser("~/.Playdate/config")
+        for line in open(cfg) if os.path.exists(cfg) else []:
+            if line.strip().startswith("SDKRoot"):
+                sdk = line.split(None, 1)[1].strip()
+    return os.path.join(sdk or "", "Resources/Fonts/Roobert")
+
+
 # ---- Playdate .fnt (text format + glyph table image) ----
 class Font:
     def __init__(self, base):
-        fnt = open(f"{SRC}/fonts/{base}.fnt", encoding="utf-8").read().splitlines()
-        tbl = [f for f in os.listdir(f"{SRC}/fonts") if f.startswith(base + "-table-")][0]
+        d = font_dir(base)
+        fnt = open(f"{d}/{base}.fnt", encoding="utf-8").read().splitlines()
+        tbl = [f for f in os.listdir(d) if f.startswith(base + "-table-")][0]
         cw, ch = map(int, tbl[:-4].split("-")[-2:])
-        self.img = Image.open(f"{SRC}/fonts/{tbl}").convert("RGBA")
+        self.img = Image.open(f"{d}/{tbl}").convert("RGBA")
         self.cw, self.ch, self.h = cw, ch, ch
         self.tracking, self.w, self.idx = 0, {}, {}
         cols = self.img.width // cw

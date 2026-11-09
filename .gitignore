@@ -10,3 +10,6 @@ tests/bin/
 .ufbt/
 tools/.venv/
 recordings/
+
+# Playdate SDK fonts, copied in by playdate/Makefile at build time
+playdate/Source/fonts/Roobert-*

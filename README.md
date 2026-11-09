@@ -46,8 +46,8 @@ major version, 3.x here).
 
 - Dolphin art (the receive scene, the launcher card and launch animation) comes from the
   Flipper Zero firmware, GPL-3.0.
-- Roobert fonts (`playdate/Source/fonts/Roobert-*`) ship with the Playdate SDK by Panic and
-  are used under the SDK's terms; they are not covered by this repository's license.
+- The Roobert fonts ship with the Playdate SDK by Panic and are not part of this repository:
+  the build copies them from the installed SDK into the app, as the SDK's terms allow.
 - The notes font (`Notes-14`) is generated from HaxrCorp 4089 by sahwar
   (`tools/haxrcorp4089.ttf`), CC BY-SA 3.0; the generated font is under the same license.
 - The Buy Me a Coffee button is their brand asset, used to link to the support page.

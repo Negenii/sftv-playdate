@@ -27,3 +27,13 @@ include $(SDK)/C_API/buildsupport/common.mk
 
 # Rebuild everything when any header changes (common.mk only tracks .c files)
 $(OBJS): $(wildcard ../common/*.h) $(wildcard src/*.h)
+
+# The Roobert fonts ship with the Playdate SDK and its license keeps them out of this GPL
+# repository: they are copied from the installed SDK into Source/fonts before pdc runs (and so
+# end up inside the .pdx, as the SDK allows). Source/fonts/Roobert-* is in .gitignore.
+ROOBERT := Roobert-10-Bold Roobert-9-Mono-Condensed Roobert-20-Medium Roobert-11-Medium-extended
+SDK_FONTS = $(SDK)/Resources/Fonts/Roobert
+sdk_fonts:
+	@for f in $(ROOBERT); do cp "$(SDK_FONTS)/$$f.fnt" "$(SDK_FONTS)/$$f"-table-*.png Source/fonts/ || exit 1; done
+device_bin simulator_bin: sdk_fonts
+.PHONY: sdk_fonts
