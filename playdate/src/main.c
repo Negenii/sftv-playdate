@@ -168,10 +168,11 @@ static sstv_anim_info full_anim;
 static uint8_t* full_anim_frames;
 static bool full_is_anim;
 /* Gallery animation under the crank, like a barrel organ: CRANK_DEG_PER_FRAME of turn is one
- * frame, either way, so the speed is the crank's; autoplay waits CRANK_HOLD_MS after the crank
- * stops, then goes on from that frame. */
-#define CRANK_DEG_PER_FRAME 30.0f
-#define CRANK_HOLD_MS 1200u
+ * frame, either way, so the speed is the crank's (one turn a second = 30 fps). Any crank
+ * movement, however slight, keeps it in charge; autoplay comes back CRANK_HOLD_MS after the
+ * crank last moved, from that frame. */
+#define CRANK_DEG_PER_FRAME 12.0f
+#define CRANK_HOLD_MS 10000u
 static float crank_acc; /* degrees turned since the turn began */
 static int crank_base; /* the frame (order position) the turn began on */
 static unsigned crank_ms;
@@ -2418,7 +2419,7 @@ static int update(void* userdata) {
         { /* crank scrolls a note, or plays an animation forwards and backwards */
             float dc = pd->system->getCrankChange();
             if(full_is_note && (dc > 0.5f || dc < -0.5f)) full_scroll += (int)(dc * 0.6f);
-            if(full_is_anim && full_anim.order_len > 0 && (dc > 0.3f || dc < -0.3f)) {
+            if(full_is_anim && full_anim.order_len > 0 && dc != 0.0f) {
                 int n = full_anim.order_len;
                 if(!crank_ms || now - crank_ms >= CRANK_HOLD_MS) { /* a fresh turn */
                     crank_acc = 0.0f;
