@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <math.h>
+#include <stdarg.h>
 
 #include "pd_api.h"
 #include "sstv_params.h"
@@ -10,6 +11,8 @@
 #include "sstv_frame.h"
 #include "mic_ring.h"
 #include "sticky_note.h"
+#include "sstv_anim.h"
+#include "export.h"
 
 #define LOST_TIMEOUT_MS 5000
 #define PANEL_W 200
@@ -53,6 +56,24 @@ static float revealed; /* lines actually shown; eases up toward lines_reached, n
 static float sheet_y = LCD_ROWS; /* top of the sheet; it slides in from the bottom edge */
 static float bar_y; /* top-bar vertical offset: 0 down/visible, -BAR_H slid up/hidden */
 static unsigned last_data_ms;
+static bool calib_active; /* calibration screen up (see calib_frame) */
+/* End-of-pass duet (see chime_first_half in the Flipper app): after END the Playdate plays
+ * the last two notes, rising (G6 C7) when every line arrived, falling (E-flat6 C6) when not.
+ * The Flipper's C6 E6 take 300 ms from its last symbol; END decodes ~20-40 ms after that here
+ * (mic buffering + one update), so the answer starts 270 ms after END. */
+#define CHIME_DELAY_MS 270
+#define CHIME_NOTE_S 0.15f
+static PDSynth* chime_synth[2];
+static unsigned chime_at; /* 0 = nothing pending */
+/* Start-of-pass answer: the Flipper plays C6 G6 before its preamble; the Playdate answers C7 E7
+ * on the first lock frame it decodes (~2 s in). Sine, not square: the speaker sits next to the
+ * mic, and a square wave's odd harmonics land in the 17-21 kHz band ~20 dB under the note, far
+ * louder than the received tones. The lock frames carry no data, so the overlap costs nothing. */
+static PDSynth* start_synth[2];
+static unsigned start_chime_ms;
+static void play_start_chime(unsigned now);
+static bool chime_ok;
+static int calib_streak;
 static char current_name[NAME_CAP] = "untitled";
 static bool started; /* START meta received, transmission in progress */
 static unsigned hearing_ms; /* last time the demodulator heard a tone (before a pass begins) */
@@ -62,7 +83,10 @@ static void stop_mic(void);
 static unsigned started_ms; /* when the START block ended: the pass timeline starts here */
 static bool rx_paused; /* transmitter paused: freeze the timeline until RESUME */
 static unsigned pause_anchor; /* the timeline clock is held here while paused */
-static char note_buf[SSTV_NOTE_MAX_CHARS + 1]; /* assembled note text (note passes) */
+static char note_buf[SSTV_NOTE_MAX_BYTES + 1]; /* assembled note text (note passes, up to 64 KB) */
+static int note_scroll; /* receive view scroll (px), crank-driven */
+static bool note_follow = true; /* keep the newest text in view until the crank is used */
+static int full_scroll; /* gallery note scroll (px) */
 static int total_frames; /* physical frames in the pass, announced in START */
 static bool image_dirty; /* something received since the last save */
 static bool finished; /* END meta received */
@@ -103,11 +127,39 @@ static int gallery_index; /* cursor */
 static int gallery_page; /* first tile shown */
 static LCDBitmap* gallery_bitmap;
 static LCDBitmap* thumbs[MAX_GALLERY]; /* 100x60 thumbnails, loaded lazily */
-static uint8_t gallery_kind[MAX_GALLERY]; /* 0 = image (.pbm), 1 = note (.txt) */
+static uint8_t gallery_kind[MAX_GALLERY]; /* 0 = image (.pbm), 1 = note (.txt), 2 = animation (.sfa) */
 static bool full_is_note; /* the item open in full view is a note */
-static char full_note_text[SSTV_NOTE_MAX_CHARS + 1];
+static char full_note_text[SSTV_NOTE_MAX_BYTES + 1];
+static char thumb_txt[513]; /* a thumbnail only needs the start of a note */
 static bool note_dirty; /* a note chunk arrived since the last save */
 static LCDBitmap* menu_thumb; /* latest saved image, for the gallery tile */
+
+/* Animation passes (revision 12): the stream sits in rx.data like note text; it is decoded as it
+ * arrives and the frame being decoded is on screen, its pixels landing over its reference. */
+static sstv_anim_info anim_info;
+static int anim_hdr_len; /* 0 header not in yet, -1 not a valid stream */
+static sstv_anim_dec anim_dec;
+static uint8_t* anim_frames; /* n * frame bytes */
+static bool anim_dirty; /* stream bytes arrived since the last save */
+static LCDBitmap* anim_bm; /* one frame at its own size, drawn scaled */
+static unsigned anim_play_ms;
+static int anim_shown; /* frame on screen (title bar counter) */
+static int anim_disp; /* frame being wiped in (see the receive view) */
+static int anim_wipe_prev = -1; /* frame still showing below the wipe line, -1 none (white) */
+static float anim_wipe_row; /* rows of anim_disp drawn so far */
+static unsigned anim_wipe_ms;
+static uint8_t* anim_compose; /* the frame on screen: new rows above the line, old below */
+static uint16_t* anim_rowpos; /* stream position after each decoded row (anim_dec.row_pos) */
+static float anim_line; /* drawing line, in rows across frames (frame * h + row) */
+static bool anim_repairing; /* parity frames on the (delayed) air: show "Verifying" */
+static int8_t anim_seg_ok[SSTV_ANIM_MAX_SEGS]; /* 1 CRC checked, -1 CRC mismatch, 0 bytes missing */
+static int anim_rx_stamp = -1; /* receiver progress at the last segment check */
+static unsigned anim_disp_ms;
+static int anim_play_pos;
+/* gallery full view of a saved animation */
+static sstv_anim_info full_anim;
+static uint8_t* full_anim_frames;
+static bool full_is_anim;
 #define GRID_COLS 3
 #define GRID_ROWS 2
 #define GRID_PER_PAGE (GRID_COLS * GRID_ROWS)
@@ -123,6 +175,70 @@ static int rec_len; /* samples captured so far, -1 when idle */
 static const char* rec_prefix = "rec"; /* "rec" (Up) or "test" (Down, tone test takes) */
 static char rec_saved[20]; /* name of the last saved recording, for the on-screen notice */
 static unsigned rec_saved_ms;
+
+/* ---- reception log: Data/<bundle>/rxlog.txt, read on a computer in disk mode. One line per
+ * event, time in ms since launch first. Rotated to rxlog_old.txt past LOG_MAX bytes. ---- */
+#define LOG_MAX (512 * 1024)
+static SDFile* rx_logf;
+static int log_bytes;
+static unsigned log_flush_ms;
+
+static void log_open(void) {
+    FileStat st;
+    if(pd->file->stat("rxlog.txt", &st) == 0 && st.size > LOG_MAX) {
+        pd->file->unlink("rxlog_old.txt", 0);
+        pd->file->rename("rxlog.txt", "rxlog_old.txt");
+    }
+    rx_logf = pd->file->open("rxlog.txt", kFileAppend);
+}
+
+static void rxlog(const char* fmt, ...) {
+    if(!rx_logf) return;
+    char b[240];
+    int n = snprintf(b, sizeof b, "%u ", pd->system->getCurrentTimeMilliseconds());
+    va_list ap;
+    va_start(ap, fmt);
+    n += vsnprintf(b + n, sizeof b - (size_t)n - 1, fmt, ap);
+    va_end(ap);
+    if(n > (int)sizeof b - 2) n = (int)sizeof b - 2;
+    b[n++] = '\n';
+    pd->file->write(rx_logf, b, (unsigned)n);
+    log_bytes += n;
+}
+
+static void log_flush(void) {
+    if(rx_logf) pd->file->flush(rx_logf);
+}
+
+/* Data positions of the pass that never arrived, as ranges ("4-7 120"), plus parity counts per
+ * group: what the outer code had to work with. */
+static void log_missing(const char* when) {
+    int df = rx.data_frames;
+    if(df <= 0 || df > SSTV_RX_MAX_DATA_FRAMES) {
+        rxlog("%s: pass length unknown (data_frames %d)", when, df);
+        return;
+    }
+    char b[200];
+    int n = 0, miss = 0;
+    for(int p = 0; p < df; p++) {
+        if(rx.have[p]) continue;
+        int q = p;
+        while(q + 1 < df && !rx.have[q + 1]) q++;
+        miss += q - p + 1;
+        if(n < (int)sizeof b - 16) n += snprintf(b + n, sizeof b - (size_t)n, q > p ? "%d-%d " : "%d ", p, q);
+        p = q;
+    }
+    b[n] = 0;
+    rxlog("%s: missing %d/%d data positions: %s", when, miss, df, miss ? b : "none");
+    int intro = rx.note ? SSTV_NOTE_INTRO(df) : sstv_pass_intro(rx.coded);
+    int groups = sstv_pass_groups(df, intro);
+    for(int g = 0; g < groups && g < SSTV_RX_GROUPS_MAX; g++) {
+        int par = 0, have = 0, size = sstv_pass_group_size(df, intro, g), base = sstv_pass_group_base(intro, g);
+        for(int j = 0; j < SSTV_OUTER_PARITY; j++) par += rx.have_parity[g][j];
+        for(int p = 0; p < size; p++) have += rx.have[base + p];
+        rxlog("%s: group %d data %d/%d parity %d/%d done %d", when, g, have, size, par, SSTV_OUTER_PARITY, rx.group_done[g]);
+    }
+}
 
 /* ---- audio thread ---- */
 
@@ -196,6 +312,16 @@ static void sanitize_name(char* out, size_t cap, const char* in) {
 
 /* ---- saving ---- */
 
+static void file_write(void* ctx, const void* data, int len);
+/* PNG row y: the picture where it arrived, white elsewhere (Playdate bitmap bits: 1 = white). */
+static void png_row(void* ctx, int y, uint8_t* out) {
+    (void)ctx;
+    for(int i = 0; i < SSTV_LINE_BYTES; i++) {
+        bool have = seg_seen[y] & (i < SSTV_SEG_BYTES ? 1 : 2);
+        out[i] = have ? image_data[y * image_rowbytes + i] : 0xFF;
+    }
+}
+
 /* Saves the received picture as a P4 PBM under Data/. Same name overwrites. Segments that
  * never arrived are written white, not with the preview placeholder. */
 static void save_image(void) {
@@ -216,6 +342,17 @@ static void save_image(void) {
         pd->file->write(f, row, SSTV_LINE_BYTES);
     }
     pd->file->close(f);
+    /* the same picture as a PNG next to it, for a computer (Data/<game>/ in disk mode) */
+    char png[64];
+    strncpy(png, fname, sizeof png - 1);
+    png[sizeof png - 1] = 0;
+    char* dot = strrchr(png, '.');
+    if(dot) strcpy(dot, ".png");
+    f = pd->file->open(png, kFileWrite);
+    if(f) {
+        export_png(SSTV_WIDTH, SSTV_HEIGHT, png_row, NULL, file_write, f);
+        pd->file->close(f);
+    }
     image_dirty = false;
 }
 
@@ -246,9 +383,197 @@ static bool read_note(const char* name, char* out, int cap) {
     return true;
 }
 
-/* Persists whatever the current reception produced (a picture or a note). */
+/* ---- animations ---- */
+
+static int rx_anim_byte(void* ctx, int pos) {
+    (void)ctx;
+    if(pos < 0 || pos >= rx.note_len) return -1;
+    int at = SSTV_ILEAVE + pos / SSTV_NOTE_CHUNK;
+    if(at >= SSTV_RX_MAX_DATA_FRAMES || !rx.have[at]) return -1;
+    return rx.data[at][pos % SSTV_NOTE_CHUNK];
+}
+
+static void anim_reset(void) {
+    anim_hdr_len = 0;
+    anim_dirty = false;
+    anim_play_pos = 0;
+    anim_disp = 0;
+    anim_disp_ms = 0;
+    anim_wipe_prev = -1;
+    anim_wipe_row = 0.0f;
+    anim_wipe_ms = 0;
+    if(anim_compose) anim_compose = pd->system->realloc(anim_compose, 0);
+    anim_line = 0.0f;
+    memset(anim_seg_ok, 0, sizeof anim_seg_ok);
+    anim_rx_stamp = -1;
+    if(anim_frames) anim_frames = pd->system->realloc(anim_frames, 0);
+}
+
+/* Parses the header once it is in, then decodes what has arrived (budget pixels; final: the
+ * pass is over, decode everything that can be and give up on holes). */
+static void anim_pump(int budget, bool final) {
+    if(!rx.anim) return;
+    if(anim_hdr_len == 0) {
+        int r = sstv_anim_parse(&anim_info, rx_anim_byte, NULL);
+        if(r != 0) rxlog("A header %d: %dx%d n=%d fps=%d order=%d len=%d", r, anim_info.w, anim_info.h, anim_info.n, anim_info.fps, anim_info.order_len, rx.note_len);
+        if(r < 0) anim_hdr_len = -1;
+        if(r > 0) {
+            anim_frames = pd->system->realloc(anim_frames, (size_t)anim_info.n * (size_t)sstv_anim_frame_bytes(&anim_info));
+            sstv_anim_dec_init(&anim_dec, &anim_info, r, rx.note_len, anim_frames);
+            anim_rowpos = pd->system->realloc(anim_rowpos, sizeof(uint16_t) * (size_t)anim_info.n * (size_t)anim_info.h);
+            memset(anim_rowpos, 0xFF, sizeof(uint16_t) * (size_t)anim_info.n * (size_t)anim_info.h);
+            anim_dec.row_pos = anim_rowpos;
+            anim_hdr_len = r;
+            if(anim_bm) pd->graphics->freeBitmap(anim_bm);
+            anim_bm = pd->graphics->newBitmap(anim_info.w, anim_info.h, kColorWhite);
+        }
+    }
+    /* segment CRCs, rechecked whenever frames arrive or get repaired: a segment whose bytes come
+     * right after a mismatch (a resend overwrote a false-accepted frame) is decoded again */
+    int stamp = rx.frames_ok + rx.frames_repaired;
+    if(anim_hdr_len > 0 && (stamp != anim_rx_stamp || final)) {
+        anim_rx_stamp = stamp;
+        for(int sg = 0; sg < sstv_anim_segs(anim_info.n); sg++) {
+            if(anim_seg_ok[sg] == 1) continue;
+            int r = sstv_anim_seg_check(&anim_dec, sg, rx_anim_byte, NULL);
+            if(r == 1) {
+                bool redo = anim_seg_ok[sg] == -1;
+                for(int f = sg * SSTV_ANIM_SEG; f < (sg + 1) * SSTV_ANIM_SEG && f < anim_info.n; f++)
+                    if(anim_dec.state[f] == 3) redo = true;
+                if(redo) sstv_anim_dec_rewind(&anim_dec, sg);
+                rxlog("A seg %d CRC ok%s", sg, redo ? ", decoding again" : "");
+            } else if(r == -1 && anim_seg_ok[sg] != -1) {
+                rxlog("A seg %d CRC MISMATCH", sg);
+            }
+            anim_seg_ok[sg] = (int8_t)r;
+        }
+    }
+    if(anim_hdr_len > 0 && !sstv_anim_dec_done(&anim_dec)) {
+        int fd0 = anim_dec.frames_done, seg0 = anim_dec.seg;
+        bool stuck;
+        sstv_anim_dec_run(&anim_dec, rx_anim_byte, NULL, budget, final, &stuck);
+        if(anim_dec.frames_done != fd0 || anim_dec.seg != seg0 || final)
+            rxlog("A frames_done=%d/%d seg=%d frame=%d pix=%d pos=%d end=%d stuck=%d final=%d corrupt=%d", anim_dec.frames_done, anim_info.n, anim_dec.seg,
+                  anim_dec.frame, anim_dec.pix, anim_dec.pos, anim_dec.end, stuck, final, anim_dec.corrupt);
+    }
+}
+
+/* Base file name for the current pass (no extension). */
+static void base_name(char* out, size_t cap, const char* fallback_prefix, const char* ext) {
+    if(name_is_blank(current_name)) {
+        next_named(fallback_prefix, ext, out, cap);
+        return;
+    }
+    char t[64];
+    sanitize_name(t, sizeof t, current_name);
+    char* dot = strrchr(t, '.');
+    if(dot && strcmp(dot, ".pbm") == 0) *dot = 0;
+    strncpy(out, t, cap - 1);
+    out[cap - 1] = 0;
+}
+
+static void file_write(void* ctx, const void* data, int len) {
+    pd->file->write((SDFile*)ctx, data, (unsigned)len);
+}
+
+/* .sfa: "SFA1" w h n fps order_len order[] frames[] (XBM) - what the gallery plays. */
+static bool write_sfa(const char* fname, const sstv_anim_info* a, const uint8_t* frames) {
+    SDFile* f = pd->file->open(fname, kFileWrite);
+    if(!f) return false;
+    uint8_t h[9] = {'S', 'F', 'A', '1', (uint8_t)a->w, (uint8_t)a->h, (uint8_t)a->n, (uint8_t)a->fps, (uint8_t)a->order_len};
+    pd->file->write(f, h, 9);
+    pd->file->write(f, a->order, (unsigned)a->order_len);
+    pd->file->write(f, frames, (unsigned)(a->n * sstv_anim_frame_bytes(a)));
+    pd->file->close(f);
+    return true;
+}
+
+static bool read_sfa(const char* fname, sstv_anim_info* a, uint8_t** frames) {
+    SDFile* f = pd->file->open(fname, kFileReadData);
+    if(!f) return false;
+    uint8_t h[9];
+    bool ok = pd->file->read(f, h, 9) == 9 && memcmp(h, "SFA1", 4) == 0 && h[4] && h[5] && h[6] && h[8];
+    if(ok) {
+        memset(a, 0, sizeof *a);
+        a->w = h[4];
+        a->h = h[5];
+        a->n = h[6];
+        a->fps = h[7] ? h[7] : 2;
+        a->order_len = h[8];
+        int fb = sstv_anim_frame_bytes(a);
+        *frames = pd->system->realloc(*frames, (size_t)(a->n * fb));
+        ok = pd->file->read(f, a->order, (unsigned)a->order_len) == a->order_len &&
+             pd->file->read(f, *frames, (unsigned)(a->n * fb)) == a->n * fb;
+        for(int i = 0; ok && i < a->order_len; i++)
+            if(a->order[i] >= a->n) ok = false;
+    }
+    pd->file->close(f);
+    return ok;
+}
+
+/* Frames that decoded completely in a segment whose CRC matched. */
+static int anim_frames_ok(void) {
+    if(anim_hdr_len <= 0) return 0;
+    int n = 0;
+    for(int f = 0; f < anim_info.n; f++) n += anim_dec.state[f] == 2 && anim_seg_ok[f / SSTV_ANIM_SEG] == 1;
+    return n;
+}
+
+/* Saves the received animation: .sfa for the gallery and an animated .gif (2x) for a computer.
+ * Undecodable frames (a hole the outer code could not fill) stay as far as they got. */
+static void save_anim(void) {
+    if(!anim_dirty) return;
+    anim_pump(1 << 30, true);
+    if(anim_hdr_len <= 0) return;
+    /* a segment whose CRC never matched decoded from a wrong byte: its frames hold the last
+     * good frame instead of garbage */
+    int fb = sstv_anim_frame_bytes(&anim_info);
+    for(int f = 0; f < anim_info.n; f++) {
+        if(anim_seg_ok[f / SSTV_ANIM_SEG] != -1) continue;
+        if(f > 0) memcpy(anim_frames + f * fb, anim_frames + (f - 1) * fb, (size_t)fb);
+        else memset(anim_frames, 0, (size_t)fb);
+    }
+    rxlog("A saved: %d/%d frames verified", anim_frames_ok(), anim_info.n);
+    if(anim_frames_ok() == anim_info.n) sstv_rx_forget(&rx); /* complete: a resend starts over */
+    char base[NAME_CAP], fname[NAME_CAP + 8];
+    base_name(base, sizeof base, "anim_", "sfa");
+    snprintf(fname, sizeof fname, "%s.sfa", base);
+    write_sfa(fname, &anim_info, anim_frames);
+    snprintf(fname, sizeof fname, "%s.gif", base);
+    SDFile* f = pd->file->open(fname, kFileWrite);
+    if(f) {
+        int delay = anim_info.fps > 0 ? 100 / anim_info.fps : 50;
+        export_gif(anim_info.w, anim_info.h, 2, anim_frames, sstv_anim_frame_bytes(&anim_info), anim_info.order,
+                   anim_info.order_len, delay, file_write, f);
+        pd->file->close(f);
+    }
+    anim_dirty = false;
+}
+
+/* One XBM frame into anim_bm-sized bitmap `bm` (1 = black in XBM, 0 = black on the Playdate). */
+static void xbm_to_bitmap(const uint8_t* f, int w, int h, LCDBitmap* bm) {
+    int bw, bh, rb;
+    uint8_t* data;
+    pd->graphics->getBitmapData(bm, &bw, &bh, &rb, NULL, &data);
+    int stride = sstv_anim_stride(w);
+    for(int y = 0; y < h && y < bh; y++) {
+        uint8_t* d = data + y * rb;
+        memset(d, 0xFF, (size_t)rb);
+        for(int x = 0; x < w; x++)
+            if((f[y * stride + (x >> 3)] >> (x & 7)) & 1) d[x >> 3] &= (uint8_t)~(0x80 >> (x & 7));
+    }
+}
+
+/* Largest whole scale that fits w x h into the box. */
+static int fit_scale(int w, int h, int bw, int bh) {
+    int s = bw / w < bh / h ? bw / w : bh / h;
+    return s < 1 ? 1 : s;
+}
+
+/* Persists whatever the current reception produced (a picture, a note or an animation). */
 static void save_received(void) {
-    if(rx.note) save_note();
+    if(rx.anim) save_anim();
+    else if(rx.note) save_note();
     else save_image();
 }
 
@@ -260,10 +585,12 @@ static void gallery_list_cb(const char* path, void* userdata) {
     if(n < 5 || gallery_count >= MAX_GALLERY) return;
     bool pbm = strcmp(path + n - 4, ".pbm") == 0;
     bool txt = strcmp(path + n - 4, ".txt") == 0;
-    if(!pbm && !txt) return;
+    bool sfa = strcmp(path + n - 4, ".sfa") == 0;
+    if(!pbm && !txt && !sfa) return;
+    if(strncmp(path, "rxlog", 5) == 0) return; /* the reception log, not a note */
     strncpy(gallery_names[gallery_count], path, NAME_CAP - 1);
     gallery_names[gallery_count][NAME_CAP - 1] = 0;
-    gallery_kind[gallery_count] = txt ? 1 : 0;
+    gallery_kind[gallery_count] = txt ? 1 : sfa ? 2 : 0;
     gallery_count++;
 }
 
@@ -312,6 +639,26 @@ static LCDBitmap* make_note_thumb(const char* text) {
     draw_sticky_note(pd, font_notes, 0, 0, THUMB_W, THUMB_H, text);
     pd->graphics->popContext();
     if(thumb_mask) pd->graphics->setBitmapMask(t, thumb_mask);
+    return t;
+}
+
+/* An animation's thumbnail: its first frame, scaled to fit, on white. */
+static LCDBitmap* make_anim_thumb(const char* name) {
+    sstv_anim_info a;
+    uint8_t* fr = NULL;
+    LCDBitmap* t = NULL;
+    if(read_sfa(name, &a, &fr)) {
+        t = pd->graphics->newBitmap(THUMB_W, THUMB_H, kColorWhite);
+        LCDBitmap* one = pd->graphics->newBitmap(a.w, a.h, kColorWhite);
+        xbm_to_bitmap(fr + a.order[0] * sstv_anim_frame_bytes(&a), a.w, a.h, one);
+        float sc = (float)THUMB_W / (float)a.w < (float)THUMB_H / (float)a.h ? (float)THUMB_W / (float)a.w : (float)THUMB_H / (float)a.h;
+        pd->graphics->pushContext(t);
+        pd->graphics->drawScaledBitmap(one, (int)((float)THUMB_W - (float)a.w * sc) / 2, (int)((float)THUMB_H - (float)a.h * sc) / 2, sc, sc);
+        pd->graphics->popContext();
+        pd->graphics->freeBitmap(one);
+        if(thumb_mask) pd->graphics->setBitmapMask(t, thumb_mask);
+    }
+    if(fr) pd->system->realloc(fr, 0);
     return t;
 }
 
@@ -379,8 +726,17 @@ static void sort_menu_cb(void* ud) {
 
 static bool gallery_load_full(int idx) {
     if(idx < 0 || idx >= gallery_count) return false;
+    full_is_anim = false;
+    if(gallery_kind[idx] == 2) {
+        full_is_note = false;
+        full_is_anim = read_sfa(gallery_names[idx], &full_anim, &full_anim_frames);
+        anim_play_pos = 0;
+        anim_play_ms = pd->system->getCurrentTimeMilliseconds();
+        return full_is_anim;
+    }
     if(gallery_kind[idx] == 1) {
         full_is_note = true;
+        full_scroll = 0;
         return read_note(gallery_names[idx], full_note_text, sizeof full_note_text);
     }
     full_is_note = false;
@@ -398,9 +754,10 @@ static void gallery_ensure_thumbs(int first, int count) {
     uint8_t* px = pd->system->realloc(NULL, SSTV_IMAGE_BYTES);
     for(int i = first; i < first + count && i < gallery_count; i++) {
         if(thumbs[i]) continue;
-        if(gallery_kind[i] == 1) {
-            char txt[SSTV_NOTE_MAX_CHARS + 1];
-            if(read_note(gallery_names[i], txt, sizeof txt)) thumbs[i] = make_note_thumb(txt);
+        if(gallery_kind[i] == 2) {
+            thumbs[i] = make_anim_thumb(gallery_names[i]);
+        } else if(gallery_kind[i] == 1) {
+            if(read_note(gallery_names[i], thumb_txt, sizeof thumb_txt)) thumbs[i] = make_note_thumb(thumb_txt);
         } else if(read_pbm(gallery_names[i], px)) {
             thumbs[i] = make_thumb(px);
         }
@@ -425,9 +782,10 @@ static void menu_open(void) {
     }
     if(gallery_count > 0) {
         int last = gallery_count - 1;
-        if(gallery_kind[last] == 1) {
-            char txt[SSTV_NOTE_MAX_CHARS + 1];
-            if(read_note(gallery_names[last], txt, sizeof txt)) menu_thumb = make_note_thumb(txt);
+        if(gallery_kind[last] == 2) {
+            menu_thumb = make_anim_thumb(gallery_names[last]);
+        } else if(gallery_kind[last] == 1) {
+            if(read_note(gallery_names[last], thumb_txt, sizeof thumb_txt)) menu_thumb = make_note_thumb(thumb_txt);
         } else {
             uint8_t* px = pd->system->realloc(NULL, SSTV_IMAGE_BYTES);
             if(read_pbm(gallery_names[last], px)) menu_thumb = make_thumb(px);
@@ -553,7 +911,10 @@ static void on_pixels(void* ctx, uint16_t line, int x_byte, int nbytes, const ui
 }
 
 static void clear_image(void) {
+    anim_reset();
     memset(note_buf, 0, sizeof note_buf); /* rx.note itself is owned by the START/END flag */
+    note_scroll = 0;
+    note_follow = true;
     memset(image_data, 0xFF, (size_t)image_rowbytes * SSTV_HEIGHT);
     memset(seg_seen, 0, sizeof seg_seen);
     memset(preview_bits, 0, sizeof preview_bits);
@@ -579,6 +940,9 @@ static void clear_image(void) {
 }
 
 static void finish(unsigned now) {
+    rxlog("FINISH in=%d ok=%d bad=%d rs=%d repaired=%d groups_repaired=%d repairs_failed=%d fly=%d dropped=%u segs=%d anim=%d",
+          rx.frames_in, rx.frames_ok, rx.frames_bad, rx.rs_corrected, rx.frames_repaired, rx.groups_repaired, rx.repairs_failed,
+          demod.flywheel_frames, (unsigned)mic_dropped, segs_done, rx.anim);
     finished = true;
     started = false;
     finished_ms = now;
@@ -642,10 +1006,19 @@ static void begin_pass(unsigned now) {
 static void on_meta(void* ctx, const char* name, bool is_end, int frames, bool coded) {
     (void)ctx; (void)coded;
     unsigned now = pd->system->getCurrentTimeMilliseconds();
+    rxlog("%s name=\"%s\" total=%d note=%d anim=%d coded=%d len=%d data_frames=%d merged=%d", is_end ? "END" : "START", name, frames, rx.note,
+          rx.anim, coded, rx.note_len, rx.data_frames, rx.merged);
     if(is_end) {
+        log_missing("END");
         finish(now); /* the transmitter is done: save and announce */
+        chime_ok = rx.anim ? (anim_hdr_len > 0 && anim_frames_ok() == anim_info.n)
+                 : rx.note ? (rx.note_len > 0 && (int)strlen(note_buf) >= rx.note_len) : segs_done == SSTV_NUM_SEGS;
+        chime_at = now + CHIME_DELAY_MS;
+        if(chime_at == 0) chime_at = 1;
         return;
     }
+    calib_active = false; /* a real pass ends calibration */
+    calib_streak = 0;
     /* A new transmission starts: keep what the previous one produced, then start fresh. */
     save_received();
     clear_image();
@@ -653,7 +1026,8 @@ static void on_meta(void* ctx, const char* name, bool is_end, int frames, bool c
     started_ms = now;
     total_frames = frames;
     if(name_is_blank(name)) {
-        if(rx.note) next_note_name(current_name, NAME_CAP); /* notes are numbered note_N (always Latin) */
+        if(rx.anim) next_named("anim_", "sfa", current_name, NAME_CAP);
+        else if(rx.note) next_note_name(current_name, NAME_CAP); /* notes are numbered note_N (always Latin) */
         else next_untitled(current_name, NAME_CAP);
     } else {
         strncpy(current_name, name, NAME_CAP - 1);
@@ -686,18 +1060,108 @@ static void on_control(void* ctx, int subtype, uint32_t arg) {
 
 static void on_note(void* ctx, int chunk, int nbytes, const uint8_t* text) {
     (void)ctx;
+    if(rx.anim) { /* the bytes stay in rx.data; anim_pump reads them from there */
+        anim_dirty = true;
+        last_data_ms = pd->system->getCurrentTimeMilliseconds();
+        return;
+    }
     int off = chunk * SSTV_NOTE_CHUNK;
-    for(int k = 0; k < nbytes && off + k < SSTV_NOTE_MAX_CHARS; k++) note_buf[off + k] = (char)text[k];
+    for(int k = 0; k < nbytes && off + k < SSTV_NOTE_MAX_BYTES; k++) note_buf[off + k] = (char)text[k];
     note_dirty = true;
+}
+
+/* ---- calibration: the Flipper loops lock frames (menu > Calibrate); every frame is compared
+ * with the known pattern, so the bit error rate is exact. The screen opens on its own after a
+ * run of lock frames longer than a preamble's, and closes 3 s after they stop. ---- */
+#define CALIB_HIST 60 /* frames on the graph, ~21 s */
+#define CALIB_STREAK 4 /* consecutive lock frames to open (a preamble has SSTV_LOCK_FRAMES = 3) */
+/* Quality = the chance that a frame with this bit error rate passes the inner RS code: a byte is
+ * bad with p = 1 - (1 - ber)^8, the frame decodes blind with at most SSTV_PARITY_BYTES / 2 bad
+ * bytes of SSTV_FRAME_BYTES (erasures help a little more). The old linear scale (100 at 0 %,
+ * 0 at 10 % bit errors) read 85 % where frames were already failing. */
+static float frame_ok_prob(float ber) {
+    float pb = 1.0f - powf(1.0f - ber, 8.0f);
+    if(pb >= 1.0f) return 0.0f;
+    double term = pow(1.0 - (double)pb, SSTV_FRAME_BYTES), sum = 0.0; /* P(0 bad bytes) */
+    for(int k = 0; k <= SSTV_PARITY_BYTES / 2; k++) {
+        sum += term;
+        term *= (double)(SSTV_FRAME_BYTES - k) / (double)(k + 1) * (double)pb / (1.0 - (double)pb);
+    }
+    return (float)(sum > 1.0 ? 1.0 : sum);
+}
+/* A frame counts towards opening the screen when it differs from the lock frame in at most this
+ * many of 360 bits: looser than SSTV_LOCK_MATCH_BITS (60) so a weak spot still opens it; a random
+ * frame differs in ~164 +- 9 bits. */
+#define CALIB_OPEN_BITS 120
+static bool calib_active;
+static unsigned calib_last_ms;
+static int calib_streak, calib_n, calib_fly_prev;
+static uint8_t calib_score[CALIB_HIST], calib_sync[CALIB_HIST];
+static float calib_ber;
+
+static void calib_frame(const uint8_t* frame, unsigned now) {
+    int dist = sstv_lock_distance(frame);
+    bool real = demod.flywheel_frames == calib_fly_prev;
+    calib_fly_prev = demod.flywheel_frames;
+    if(dist <= CALIB_OPEN_BITS) {
+        if(calib_streak == 0 && (!started || finished) && !calib_active && now - start_chime_ms > 8000) play_start_chime(now);
+        calib_last_ms = now;
+        if(++calib_streak >= CALIB_STREAK && !calib_active && (!started || finished)) {
+            calib_active = true;
+            calib_n = 0;
+        }
+    } else {
+        calib_streak = 0;
+    }
+    if(!calib_active) return;
+    /* Once open, any frame keeps the screen up: far away the lock frames come in with more than
+     * SSTV_LOCK_MATCH_BITS errors and stop counting as lock frames, but they still score (0).
+     * It closes when no frame at all arrives for 3 s, or when a real pass starts. */
+    calib_last_ms = now;
+    float ber = (float)dist / (float)SSTV_FRAME_BITS;
+    calib_ber = ber;
+    float sc = 100.0f * frame_ok_prob(ber);
+    int i = calib_n % CALIB_HIST;
+    calib_score[i] = (uint8_t)(sc + 0.5f);
+    calib_sync[i] = real;
+    calib_n++;
+}
+
+static void play_start_chime(unsigned now) {
+    start_chime_ms = now;
+    if(!start_synth[0] || !start_synth[1]) return;
+    rxlog("CHIME start");
+    uint32_t t = pd->sound->getCurrentTime();
+    uint32_t step = (uint32_t)(CHIME_NOTE_S * 44100.0f);
+    pd->sound->synth->playNote(start_synth[0], 2093.0f, 0.8f, CHIME_NOTE_S, t); /* C7 */
+    pd->sound->synth->playNote(start_synth[1], 2637.0f, 0.8f, CHIME_NOTE_S, t + step); /* E7 */
 }
 
 static void on_phys(void* ctx, const uint8_t* frame, const float* soft) {
     (void)ctx;
     unsigned now = pd->system->getCurrentTimeMilliseconds();
+    calib_frame(frame, now);
     led_frame_ms = now;
     int before = rx.blocks_ok;
+    int ok0 = rx.frames_ok, bad0 = rx.frames_bad, rs0 = rx.rs_corrected, rep0 = rx.frames_repaired, fail0 = rx.repairs_failed;
     sstv_rx_phys(&rx, frame, soft);
     if(rx.blocks_ok != before) { led_block_ms = led_frame_ms; last_block_type = rx.last_type; last_block_ms = led_frame_ms; }
+    /* frame quality: mean |soft| and bits under 0.2 (weak decisions) */
+    float sum = 0.0f;
+    int weak = 0;
+    for(int i = 0; i < SSTV_FRAME_BITS; i++) {
+        float m = soft[i] < 0 ? -soft[i] : soft[i];
+        sum += m;
+        if(m < 0.2f) weak++;
+    }
+    int exp_idx = (started && total_frames > 0) ? SSTV_ILEAVE + (int)((float)(now - started_ms) * 1000.0f / (float)PHYS_US_NOW) : -1;
+    int lock = sstv_lock_distance(frame);
+    rxlog("F in=%d exp=%d conf=%.2f weak=%d fly=%d lock=%d", rx.frames_in, exp_idx, (double)(sum / SSTV_FRAME_BITS), weak, demod.flywheel_frames, lock);
+    if(rx.frames_ok != ok0 || rx.frames_bad != bad0)
+        rxlog("B type=%d ok+%d bad+%d rs+%d repaired+%d%s", rx.last_type, rx.frames_ok - ok0, rx.frames_bad - bad0, rx.rs_corrected - rs0,
+              rx.frames_repaired - rep0, rx.repairs_failed != fail0 ? " REPAIR-FAILED" : "");
+    else if(rx.frames_repaired != rep0 || rx.repairs_failed != fail0)
+        rxlog("R repaired+%d%s", rx.frames_repaired - rep0, rx.repairs_failed != fail0 ? " REPAIR-FAILED" : "");
 }
 
 static void start_mic(void) {
@@ -993,7 +1457,7 @@ static void draw_scene(void) {
     if(started) {
         draw_spout(dx + 70, dy + 2, cx + CONSOLE_SCREEN_X + CONSOLE_SCREEN_W / 2, cy + CONSOLE_SCREEN_Y + CONSOLE_SCREEN_H / 2, (float)(now % 1200) / 1200.0f);
         if(rx.note) {
-            draw_text_centered("Receiving note", text_cx, 200); /* notes have no preview */
+            draw_text_centered(rx.anim ? (anim_hdr_len < 0 ? "Animation header unreadable" : "Receiving animation") : "Receiving note", text_cx, 200);
         } else if(segs_done == 0) {
             /* Preview + intro repair progress: the bar spans everything before the picture
              * (tiny + preview, the schedule for coded passes, and the intro group's parity), so
@@ -1029,30 +1493,33 @@ static void draw_panel(void) {
     int x0 = LCD_COLUMNS - PANEL_W;
     pd->graphics->fillRect(x0, 0, PANEL_W, LCD_ROWS, kColorWhite);
     pd->graphics->drawLine(x0, 0, x0, LCD_ROWS, 1, kColorBlack);
-    int x = x0 + 8, y = 8, right = x0 + PANEL_W - 8;
+    int x = x0 + 8, y = 6, right = x0 + PANEL_W - 8;
     char t[64], nm[NAME_CAP];
     unsigned now = pd->system->getCurrentTimeMilliseconds();
     bool quiet = segs_done > 0 && !finished && !rx_paused && now - last_data_ms > LOST_TIMEOUT_MS;
     use_font(font_ui);
-    int lh = font_height() + 3;
+    int lh = font_height() + 1; /* compact rows: everything stays above the hint line */
 
     display_name(nm, sizeof nm, current_name);
     use_font(font_ui);
     fit_text(t, sizeof t, nm, PANEL_W - 16 - 20);
     draw_text(t, x, y);
-    y += lh + 4;
+    y += lh + 3;
     /* state and mode pills */
     const char* state = rx_paused ? "PAUSE" : finished ? "DONE" : segs_done == SSTV_NUM_SEGS ? "DONE" : quiet ? "LOST" : segs_done > 0 || started ? "RX" : "IDLE";
     int px = x;
     px += draw_pill(state, px, y, true) + 5;
-    px += draw_pill(rx.note ? "TXT" : rx.coded ? "ZIP" : "RAW", px, y, false) + 5;
+    px += draw_pill(rx.anim ? "ANI" : rx.note ? "TXT" : rx.coded ? "ZIP" : "RAW", px, y, false) + 5;
     if(rec_len >= 0) draw_pill(rec_prefix[0] == 't' ? "TEST" : "REC", px, y, true);
-    y += font_height() + 12;
+    y += font_height() + 9;
     /* progress: lines for a picture, characters for a note */
     int bar_w = PANEL_W - 16;
     pd->graphics->drawRoundRect(x, y, bar_w, 8, 4, 1, kColorBlack);
     int got, total_units;
-    if(rx.note) {
+    if(rx.anim) {
+        got = anim_hdr_len > 0 ? anim_dec.frames_done : 0;
+        total_units = anim_hdr_len > 0 ? anim_info.n : 1;
+    } else if(rx.note) {
         got = (int)strlen(note_buf);
         total_units = rx.note_len > 0 ? rx.note_len : (got > 0 ? got : 1);
     } else {
@@ -1062,11 +1529,12 @@ static void draw_panel(void) {
     int fill = (bar_w - 2) * got / total_units;
     if(fill > bar_w - 2) fill = bar_w - 2;
     if(fill > 0) pd->graphics->fillRoundRect(x + 1, y + 1, fill, 6, 3, kColorBlack);
-    y += 12;
-    if(rx.note) snprintf(t, sizeof t, "%d / %d chars", (int)strlen(note_buf), rx.note_len);
+    y += 11;
+    if(rx.anim) snprintf(t, sizeof t, "%d / %d frames", got, anim_hdr_len > 0 ? anim_info.n : 0);
+    else if(rx.note) snprintf(t, sizeof t, "%d / %d chars", (int)strlen(note_buf), rx.note_len);
     else snprintf(t, sizeof t, "%d / %d lines", segs_done / 2, SSTV_HEIGHT);
     draw_text(t, x, y);
-    y += lh + 6;
+    y += lh + 4;
     /* counters: label left, value right; ok/bad and rs/repaired combined into one line each */
     char v0[16], v1[16], v2[16], v3[16], v4[16], v5[16], v6[16];
     snprintf(v6, sizeof v6, "%u/%d", (unsigned)mic_dropped, dsp_load);
@@ -1087,20 +1555,26 @@ static void draw_panel(void) {
         draw_text(rows[i].v, right - text_width(rows[i].v), y + 1);
         y += lh;
     }
-    /* tone: a three-lamp traffic light for data tones 1/2/3 (the active one filled) */
-    y += 6;
+    /* tone: one lamp per data tone (8 in the HF band, 17.0-20.5 kHz), the one being heard
+     * filled (the sync is a pattern of these tones since revision 13) */
+    y += 4;
     use_font(font_ui);
     draw_text("tone", x, y);
-    int r = 7, gap = 8, cx0 = x + 44, ccy = y + font_height() / 2;
-    for(int k = 0; k < 3; k++) {
-        int ccx = cx0 + k * (2 * r + gap);
-        if(st.tone == k + 1) pd->graphics->fillEllipse(ccx, ccy - r, 2 * r, 2 * r, 0.0f, 0.0f, kColorBlack);
-        else pd->graphics->drawEllipse(ccx, ccy - r, 2 * r, 2 * r, 1, 0.0f, 0.0f, kColorBlack);
+    {
+        int r = 5, step = 2 * r + 4, cx0 = x + 40, ccy = y + font_height() / 2;
+        int nt = demod.num_tones - demod.first_det; /* lamps: data tones (the audible band's silence has none) */
+        if(nt > SSTV_MAX_TONES) nt = SSTV_MAX_TONES;
+        for(int k = 0; k < nt; k++) {
+            int ccx = cx0 + k * step;
+            if(st.tone == k + demod.first_det) pd->graphics->fillEllipse(ccx, ccy - r, 2 * r, 2 * r, 0.0f, 0.0f, kColorBlack);
+            else pd->graphics->drawEllipse(ccx, ccy - r, 2 * r, 2 * r, 1, 0.0f, 0.0f, kColorBlack);
+        }
     }
     /* hints */
-    pd->graphics->drawLine(x0, LCD_ROWS - 20, LCD_COLUMNS, LCD_ROWS - 20, 1, kColorBlack);
-    use_font(font_glyph);
-    draw_text("Ⓐ clear   Ⓑ menu", x, LCD_ROWS - 16);
+    use_font(font_glyph); /* 22 px line (the button glyphs): sized from the font, inside the screen */
+    int hy = LCD_ROWS - font_height() - 1;
+    pd->graphics->drawLine(x0, hy - 3, LCD_COLUMNS, hy - 3, 1, kColorBlack);
+    draw_text("Ⓐ clear   Ⓑ menu", x, hy);
 }
 
 /* Banner over the picture for a few seconds after the END frame. */
@@ -1110,7 +1584,9 @@ static void draw_finished_banner(void) {
     char t[80], nm[NAME_CAP];
     display_name(nm, sizeof nm, current_name);
     use_font(font_ui);
-    if(rx.note)
+    if(rx.anim)
+        snprintf(t, sizeof t, "Received \"%s\"   %d/%d frames", nm, anim_frames_ok(), anim_hdr_len > 0 ? anim_info.n : 0);
+    else if(rx.note)
         snprintf(t, sizeof t, "Received note \"%s\"  %d chars", nm, rx.note_len);
     else
         snprintf(t, sizeof t, "Received \"%s\"   %d/%d lines", nm, finished_lines, SSTV_HEIGHT);
@@ -1186,12 +1662,177 @@ static void draw_rec_status(void) {
     draw_text_white(t, tx, by + (h - font_height()) / 2);
 }
 
+static void draw_calibration(void) {
+    pd->graphics->clear(kColorWhite);
+    draw_title_bar("Calibration", NULL);
+    int n = calib_n < CALIB_HIST ? calib_n : CALIB_HIST;
+    /* score: mean of the last 3 frames */
+    int sum = 0, cnt = 0;
+    for(int k = 0; k < 3 && k < n; k++) { sum += calib_score[(calib_n - 1 - k + CALIB_HIST) % CALIB_HIST]; cnt++; }
+    int score = cnt ? sum / cnt : 0;
+    char t[32];
+    use_font(font_ui);
+    draw_text("quality", 16, 40);
+    use_font(font_big);
+    snprintf(t, sizeof t, "%d%%", score);
+    draw_text(t, 16, 56);
+    use_font(font_ui);
+    snprintf(t, sizeof t, "errors: %.1f%%", (double)(calib_ber * 100.0f));
+    draw_text(t, 16, 96);
+    /* "sync" while frames come in on their own sync tone; gone when it is lost */
+    bool sync_ok = n > 0 && calib_sync[(calib_n - 1) % CALIB_HIST];
+    if(sync_ok && pd->system->getCurrentTimeMilliseconds() - calib_last_ms < 1000) draw_text("sync", 16, 114);
+    /* graph: one 4 px bar per frame, newest on the right; dashed line at 60 (~4 % bit errors,
+     * where the error correction stops coping) */
+    const int gx = 140, gy = 40, gw = CALIB_HIST * 4, gh = 100;
+    pd->graphics->drawRect(gx - 1, gy - 1, gw + 2, gh + 2, kColorBlack);
+    for(int x = gx; x < gx + gw; x += 6) pd->graphics->fillRect(x, gy + gh - gh * 60 / 100, 3, 1, kColorBlack);
+    for(int k = 0; k < n; k++) {
+        int idx = (calib_n - n + k) % CALIB_HIST;
+        int h = calib_score[idx] * gh / 100;
+        int x = gx + (CALIB_HIST - n + k) * 4;
+        if(h > 0) pd->graphics->fillRect(x, gy + gh - h, 3, h, kColorBlack);
+        if(!calib_sync[idx]) pd->graphics->fillRect(x, gy + gh + 3, 3, 2, kColorBlack); /* lost sync tick */
+    }
+    /* per-tone level in dB over the demodulator's noise floor, 0..40: they drop together as the
+     * devices move apart (a level relative to the strongest tone would not) */
+    static const char* labels[SSTV_HF_NUM_TONES] = {"17", "17.5", "18", "18.5", "19", "19.5", "20", "20.5"};
+    use_font(font_num);
+    const int by = 222, bmax = 60;
+    for(int k = 0; k < demod.num_tones && k < SSTV_HF_NUM_TONES; k++) {
+        float db = 10.0f * log10f(demod.gain[k] / demod.min_energy + 1e-12f);
+        if(db < 0.0f) db = 0.0f;
+        if(db > 40.0f) db = 40.0f;
+        int h = (int)((float)bmax * db / 40.0f + 0.5f);
+        int x = 16 + k * 48;
+        pd->graphics->drawRect(x, by - bmax, 30, bmax, kColorBlack);
+        if(h > 0) pd->graphics->fillRect(x, by - h, 30, h, kColorBlack);
+        draw_text(labels[k], x + 15 - text_width(labels[k]) / 2, by + 3);
+    }
+}
+
 /* The picture is a sheet that crawls in from the bottom edge as lines arrive (the Flipper
  * shows the same sheet leaving through its top edge). It covers the intro scene as it rises. */
 static void draw_receive(void) {
     unsigned now = pd->system->getCurrentTimeMilliseconds();
     unsigned enow = rx_paused ? pause_anchor : now; /* the timeline stands still while paused */
     int y, frontier;
+    if(rx.anim && anim_hdr_len > 0) {
+        /* the animation at the largest whole scale (3x for 128x64): while it arrives, the frame
+         * being decoded, a scan line at its decoding row; once complete, it plays */
+        pd->graphics->clear(kColorWhite);
+        const sstv_anim_info* a = &anim_info;
+        int fb = sstv_anim_frame_bytes(a);
+        int sc = fit_scale(a->w, a->h, LCD_COLUMNS, LCD_ROWS - BAR_H - 8);
+        int ox = (LCD_COLUMNS - a->w * sc) / 2, oy = BAR_H + (LCD_ROWS - BAR_H - a->h * sc) / 2; /* under the bar */
+        int show, row = -1;
+        const uint8_t* fsrc;
+        /* Bytes land in 100-byte blocks that can hold several small frames (dozens after an
+         * outer-code repair), so the decoder runs ahead in bursts. The screen draws the decoded
+         * frames one after another as a wipe: a line runs down the frame at a steady pace, the
+         * new frame above it, the previous one still below; at the bottom the next frame starts.
+         * On the frame still being decoded the line stops at its last decoded row. */
+        /* The drawing line follows the air, not the decoder: bytes land in 100-byte blocks, so
+         * a line tied to decoding ran a few rows at once and waited. The decoder notes the stream
+         * position of every finished row (row_pos); the timeline gives the byte that was on the
+         * air one interleave block ago (by then it has been decoded); the line goes to the row of
+         * that byte. It moves as steadily as the bytes go out: slower over rows that cost many
+         * bytes, faster over simple ones. It never passes a row that has not been decoded (a lost
+         * block holds it until the repair), and eases toward its target. Rows count across
+         * frames: g = frame * h + row. */
+        const int H = a->h, total_rows = a->n * H;
+        int decoded = anim_dec.frame * H + (anim_dec.frame_open ? anim_dec.pix / a->w : 0);
+        if(decoded > total_rows) decoded = total_rows;
+        float target = (float)decoded;
+        anim_repairing = false;
+        if(!finished && rx.data_frames > 0 && anim_rowpos) {
+            int df = rx.data_frames, intro = SSTV_NOTE_INTRO(df);
+            float phys = (float)(enow - started_ms) * 1000.0f / (float)PHYS_US_NOW; /* one block behind the air */
+            if(phys < 0.0f) phys = 0.0f;
+            int f0 = (int)phys;
+            /* outer-code parity on the air (the Flipper's green LED): no data, the line waits; the
+             * "Verifying" pill says so, mid-pass and after the last data (until END) */
+            anim_repairing = sstv_pass_frame_kind(f0, df, intro) != SSTV_PASS_DATA;
+            float fr = phys - (float)f0;
+            int d0 = sstv_pass_data_before(f0, df, intro), d1 = sstv_pass_data_before(f0 + 1, df, intro);
+            float bytes = ((float)d0 + (float)(d1 - d0) * fr - (float)SSTV_ILEAVE) * (float)SSTV_NOTE_CHUNK;
+            /* last decoded row whose bytes are in (row_pos only grows along g) */
+            int lo = 0, hi = decoded; /* rows [0, lo) are in */
+            while(lo < hi) {
+                int mid = (lo + hi) / 2;
+                if((float)anim_rowpos[mid] <= bytes) lo = mid + 1;
+                else hi = mid;
+            }
+            target = (float)lo;
+            if(lo < decoded) { /* part of the way into the next row, by bytes */
+                float p0 = lo > 0 ? (float)anim_rowpos[lo - 1] : (float)anim_hdr_len, p1 = (float)anim_rowpos[lo];
+                if(p1 > p0) target += (bytes - p0) / (p1 - p0) > 0.0f ? (bytes - p0) / (p1 - p0) : 0.0f;
+            }
+            if(target > (float)decoded) target = (float)decoded;
+        }
+        if(!rx_paused && anim_line < target) {
+            float d = target - anim_line, stepr = d * 0.2f;
+            if(stepr < 0.25f) stepr = 0.25f;
+            anim_line = d < stepr ? target : anim_line + stepr;
+        }
+        bool caught_up = (finished || sstv_anim_dec_done(&anim_dec)) && anim_line >= (float)decoded;
+        if(caught_up) {
+            unsigned step = 1000u / (unsigned)(a->fps > 0 ? a->fps : 2);
+            if(enow - anim_play_ms > 5000) anim_play_ms = enow; /* (re)start */
+            while(enow - anim_play_ms >= step) {
+                anim_play_ms += step;
+                anim_play_pos = (anim_play_pos + 1) % a->order_len;
+            }
+            show = a->order[anim_play_pos];
+            fsrc = anim_frames + show * fb;
+        } else {
+            int g = (int)anim_line;
+            int cur = g / H, rows = g % H;
+            if(cur >= a->n) {
+                cur = a->n - 1;
+                rows = H;
+            }
+            if(!anim_compose) anim_compose = pd->system->realloc(NULL, (size_t)fb);
+            int stride = sstv_anim_stride(a->w);
+            memcpy(anim_compose, anim_frames + cur * fb, (size_t)(rows * stride));
+            if(cur > 0) memcpy(anim_compose + rows * stride, anim_frames + (cur - 1) * fb + rows * stride, (size_t)((H - rows) * stride));
+            else memset(anim_compose + rows * stride, 0, (size_t)((H - rows) * stride));
+            fsrc = anim_compose;
+            show = cur;
+            if(rows < H) row = rows;
+            anim_play_ms = enow;
+        }
+        xbm_to_bitmap(fsrc, a->w, a->h, anim_bm);
+        pd->graphics->drawScaledBitmap(anim_bm, ox, oy, (float)sc, (float)sc);
+        pd->graphics->drawRect(ox - 2, oy - 2, a->w * sc + 4, a->h * sc + 4, kColorBlack);
+        if(row >= 0) { /* the drawing line: markers at both ends, roots hanging below (as on pictures) */
+            int ly = oy + row * sc;
+            int fw = a->w * sc;
+            pd->graphics->fillRect(ox, ly, fw, 1, kColorBlack);
+            pd->graphics->fillRect(ox - 6, ly - 2, 4, 5, kColorBlack);
+            pd->graphics->fillRect(ox + fw + 2, ly - 2, 4, 5, kColorBlack);
+            int bottom = oy + a->h * sc;
+            for(int rx0 = 2; rx0 < fw; rx0 += 6) {
+                float ph = (float)now / 130.0f + (float)rx0 * 0.5f;
+                int len = 2 + (int)(2.5f * (0.5f + 0.5f * sinf(ph)));
+                if((rx0 / 6) & 1) len += 1;
+                if(ly + 1 + len > bottom) len = bottom - ly - 1;
+                if(len > 0) pd->graphics->fillRect(ox + rx0, ly + 1, 1, len, kColorBlack);
+            }
+        }
+        anim_shown = show;
+        y = LCD_ROWS; /* keeps the title bar down: frame number and progress live there */
+        frontier = 0;
+        goto chrome;
+    }
+    if(rx.anim) {
+        /* animation without its header yet (the first data block was lost and waits for the
+         * outer-code repair, or the stream is invalid): the scene, not an empty note */
+        draw_scene();
+        y = LCD_ROWS;
+        frontier = 0;
+        goto chrome;
+    }
     if(rx.note) {
         /* a note pass: the sticky note slides out smoothly as its frames arrive, then rests */
         const int rest = BAR_H + 6;
@@ -1214,7 +1855,11 @@ static void draw_receive(void) {
         if(y > 0) draw_scene();
         else pd->graphics->clear(kColorWhite);
         int nx = 22, nw = LCD_COLUMNS - 44, nh = LCD_ROWS - y - 12;
-        if(nh > 24) draw_sticky_note(pd, font_notes, nx, y, nw, nh, note_buf);
+        if(nh > 24) {
+            /* follow the newest text while receiving, until the crank takes over */
+            if(note_follow) note_scroll = sticky_note_max_scroll(pd, font_notes, nw, nh, note_buf);
+            draw_sticky_note_scrolled(pd, font_notes, nx, y, nw, nh, note_buf, &note_scroll);
+        }
         goto chrome; /* skip the picture-sheet code */
     }
     /* The drawing line follows the decoded lines, not the clock: revealed eases toward
@@ -1273,20 +1918,32 @@ chrome:;
     int boff = (int)(bar_y - 0.5f);
     if(boff > -BAR_H) { /* still at least partly on screen */
         pd->graphics->setDrawOffset(0, boff);
-        if(started) {
+        if(started || (finished && rx.anim && anim_hdr_len > 0)) {
             char nm[NAME_CAP], bar[NAME_CAP + 16];
             display_name(nm, sizeof nm, current_name);
-            snprintf(bar, sizeof bar, "Receiving: \"%s\"", nm);
+            if(rx.anim && anim_hdr_len > 0) fit_text(bar, sizeof bar, nm, 170); /* room for the counter and bar */
+            else snprintf(bar, sizeof bar, "Receiving: \"%s\"", nm);
             draw_title_bar(bar, NULL);
+            if(rx.anim && anim_hdr_len > 0) { /* frame counter + progress bar, left of the LED */
+                char fc[24];
+                snprintf(fc, sizeof fc, "%d/%d", anim_shown + 1, anim_info.n);
+                const int bw = 64, bh = 8, right = LCD_COLUMNS - 34;
+                float frac = pass_progress(enow);
+                if(frac >= 0.0f) draw_mini_bar(right - bw, (BAR_H - bh) / 2, bw, bh, frac);
+                use_font(font_ui);
+                draw_text_white(fc, right - bw - 8 - text_width(fc), (BAR_H - font_height()) / 2);
+            }
         } else {
             draw_title_bar("Listening", NULL);
         }
         pd->graphics->setDrawOffset(0, 0);
     }
     bool verifying = started && !finished && !rx_paused && !rx.note && (int)revealed >= SSTV_HEIGHT;
+    if(rx.anim && anim_hdr_len > 0 && started && !finished && !rx_paused && anim_repairing) verifying = true;
     /* The progress pill appears once the scene's own preview bar is gone (the picture lines have
      * started; a note has no preview bar) and stays until "Verifying" takes its corner. */
-    if(started && !finished && !rx_paused && !verifying && (rx.note || segs_done > 0)) draw_progress_pill(now, enow);
+    if(started && !finished && !rx_paused && !verifying && !(rx.anim && anim_hdr_len > 0) && (rx.note || segs_done > 0))
+        draw_progress_pill(now, enow);
     /* Picture fully in but the pass is not done yet: the outer-code parity is still arriving.
      * Show a spinner and "Verifying" until END (or the timeout) finishes the pass. */
     if(verifying) {
@@ -1361,8 +2018,20 @@ static void draw_grid(void) {
 
 static void draw_full(void) {
     pd->graphics->clear(kColorWhite);
-    if(full_is_note)
-        draw_sticky_note(pd, font_notes, 24, 36, LCD_COLUMNS - 48, LCD_ROWS - 72, full_note_text); /* leave room for the top/bottom hint pills */
+    if(full_is_anim) {
+        unsigned now = pd->system->getCurrentTimeMilliseconds();
+        unsigned step = 1000u / (unsigned)(full_anim.fps > 0 ? full_anim.fps : 2);
+        while(now - anim_play_ms >= step) {
+            anim_play_ms += step;
+            anim_play_pos = (anim_play_pos + 1) % full_anim.order_len;
+        }
+        LCDBitmap* one = pd->graphics->newBitmap(full_anim.w, full_anim.h, kColorWhite);
+        xbm_to_bitmap(full_anim_frames + full_anim.order[anim_play_pos] * sstv_anim_frame_bytes(&full_anim), full_anim.w, full_anim.h, one);
+        int sc = fit_scale(full_anim.w, full_anim.h, LCD_COLUMNS, LCD_ROWS);
+        pd->graphics->drawScaledBitmap(one, (LCD_COLUMNS - full_anim.w * sc) / 2, (LCD_ROWS - full_anim.h * sc) / 2, (float)sc, (float)sc);
+        pd->graphics->freeBitmap(one);
+    } else if(full_is_note)
+        draw_sticky_note_scrolled(pd, font_notes, 24, 36, LCD_COLUMNS - 48, LCD_ROWS - 72, full_note_text, &full_scroll); /* leave room for the top/bottom hint pills; crank scrolls */
     else if(gallery_bitmap)
         pd->graphics->drawBitmap(gallery_bitmap, 0, 0, kBitmapUnflipped);
     char t[64], nm[NAME_CAP];
@@ -1377,7 +2046,7 @@ static void draw_full(void) {
         draw_pill(hint, LCD_COLUMNS - 8 - (text_width(hint) + 12), 8, true);
     }
     if(confirm_delete) {
-        const char* msg = full_is_note ? "Delete this note?" : "Delete this image?";
+        const char* msg = full_is_anim ? "Delete this animation?" : full_is_note ? "Delete this note?" : "Delete this image?";
         const char* keys = "Ⓐ delete    Ⓑ keep";
         use_font(font_ui);
         int w1 = text_width(msg);
@@ -1428,6 +2097,8 @@ static int update(void* userdata) {
     dsp_samples += dsp_n;
     if(dsp_samples >= 44100) {
         dsp_load = (int)(dsp_time * 44100.0f * 100.0f / (float)dsp_samples + 0.5f);
+        static int dsp_ticks;
+        if(++dsp_ticks % 5 == 0 && mic_running) rxlog("S dsp=%d%% dropped=%u in=%d", dsp_load, (unsigned)mic_dropped, rx.frames_in);
         dsp_time = 0.0f;
         dsp_samples = 0;
     }
@@ -1438,6 +2109,19 @@ static int update(void* userdata) {
     }
 
     unsigned now = pd->system->getCurrentTimeMilliseconds();
+    if(now - log_flush_ms > 2000) {
+        log_flush();
+        log_flush_ms = now;
+    }
+    if(chime_at && now >= chime_at) { /* the Playdate's half of the end-of-pass duet */
+        chime_at = 0;
+        uint32_t t = pd->sound->getCurrentTime();
+        uint32_t step = (uint32_t)(CHIME_NOTE_S * 44100.0f);
+        if(chime_synth[0] && chime_synth[1]) {
+            pd->sound->synth->playNote(chime_synth[0], chime_ok ? 1568.0f : 1244.5f, 0.7f, CHIME_NOTE_S, t); /* G6 / Eb6 */
+            pd->sound->synth->playNote(chime_synth[1], chime_ok ? 2093.0f : 1046.5f, 0.7f, CHIME_NOTE_S, t + step); /* C7 / C6 */
+        }
+    }
     /* Before a pass begins, note when the demodulator is hearing a tone so the dolphin can
      * react (open its mouth) to a signal that is not yet a decoded transmission. */
     if(ui_mode == ModeReceive && !started) {
@@ -1449,6 +2133,7 @@ static int update(void* userdata) {
     }
     if(image_dirty && ((segs_done == SSTV_NUM_SEGS) || (now - last_data_ms > LOST_TIMEOUT_MS))) save_image();
     if(note_dirty && (now - last_data_ms > LOST_TIMEOUT_MS)) save_note();
+    if(rx.anim && started && !finished) anim_pump(4096, false); /* ~200k pixels/s, far ahead of the air */
     /* END never came: the pass is over by the announced timeline plus a margin. */
     if(started && total_frames > 0 && now - started_ms > (unsigned)(total_frames - SSTV_ILEAVE) * (PHYS_US_NOW / 1000) + 4000) finish(now);
 
@@ -1474,12 +2159,19 @@ static int update(void* userdata) {
             draw_receive();
             break;
         }
-        if(pushed & kButtonA) clear_image();
+        if(pushed & kButtonA) {
+            clear_image();
+            sstv_rx_forget(&rx); /* clear means clear: no merging into what was on screen */
+        }
         if(pushed & kButtonB) {
             if(started && !finished) confirm_leave = true; /* a pass is in progress: ask first */
             else menu_open();
         }
         if(pushed & kButtonRight) show_panel = !show_panel;
+        { /* crank scrolls a note */
+            float dc = pd->system->getCrankChange();
+            if(rx.note && (dc > 0.5f || dc < -0.5f)) { note_scroll += (int)(dc * 0.6f); note_follow = false; }
+        }
         if((pushed & kButtonUp) && rec_len < 0 && rec_buf) {
             rec_prefix = "rec";
             rec_len = 0;
@@ -1488,7 +2180,9 @@ static int update(void* userdata) {
             rec_prefix = "test";
             rec_len = 0;
         }
-        draw_receive();
+        if(calib_active && now - calib_last_ms > 3000) calib_active = false;
+        if(calib_active) draw_calibration();
+        else draw_receive();
         break;
     case ModeGrid:
         if(pushed & kButtonB) menu_open();
@@ -1508,8 +2202,19 @@ static int update(void* userdata) {
         if(pushed) full_ui_ms = now;              /* any press re-shows them */
         if(confirm_delete) {
             if(pushed & kButtonA) {
-                if(gallery_index >= 0 && gallery_index < gallery_count)
+                if(gallery_index >= 0 && gallery_index < gallery_count) {
                     pd->file->unlink(gallery_names[gallery_index], 0);
+                    sstv_rx_forget(&rx); /* a resend of what was deleted is received from scratch */
+                    /* and its computer copy: picture.png / animation.gif */
+                    char pair[NAME_CAP + 4];
+                    strncpy(pair, gallery_names[gallery_index], sizeof pair - 1);
+                    pair[sizeof pair - 1] = 0;
+                    char* dot = strrchr(pair, '.');
+                    if(dot && gallery_kind[gallery_index] != 1) {
+                        strcpy(dot, gallery_kind[gallery_index] == 2 ? ".gif" : ".png");
+                        pd->file->unlink(pair, 0);
+                    }
+                }
                 confirm_delete = false;
                 gallery_scan(); /* refresh the list and thumbnails */
                 if(gallery_count == 0) { menu_open(); }
@@ -1525,6 +2230,10 @@ static int update(void* userdata) {
         }
         /* When the hints are hidden the first A/B just reveals them; the action runs only
          * while they are visible. Left/Right always navigate (and re-show). */
+        { /* crank scrolls a note */
+            float dc = pd->system->getCrankChange();
+            if(full_is_note && (dc > 0.5f || dc < -0.5f)) full_scroll += (int)(dc * 0.6f);
+        }
         if((pushed & kButtonA) && ui_visible) confirm_delete = true;
         if((pushed & kButtonB) && ui_visible) ui_mode = ModeGrid;
         if((pushed & kButtonRight) && gallery_count > 0) { gallery_index = (gallery_index + 1) % gallery_count; gallery_load_full(gallery_index); }
@@ -1574,12 +2283,27 @@ static void init(void) {
     preview_bitmap = pd->graphics->newBitmap(SSTV_PREVIEW_W, SSTV_PREVIEW_H, kColorWhite);
     rec_buf = pd->system->realloc(NULL, sizeof(int16_t) * REC_SECONDS * REC_RATE);
     rec_len = -1;
+    export_realloc = pd->system->realloc;
+    log_open();
+    rxlog("LAUNCH");
     mic_ring_init(&ring);
     sstv_rx_init(&rx, on_pixels, on_meta, on_preview, NULL);
     sstv_rx_set_control_cb(&rx, on_control);
     sstv_rx_set_note_cb(&rx, on_note);
     sstv_demod_init(&demod, 44100.0f, on_phys, NULL);
     sstv_demod_set_band(&demod, SSTV_BAND_HF);
+    for(int i = 0; i < 2; i++) {
+        chime_synth[i] = pd->sound->synth->newSynth();
+        pd->sound->synth->setWaveform(chime_synth[i], kWaveformSquare);
+        pd->sound->synth->setAttackTime(chime_synth[i], 0.005f);
+        pd->sound->synth->setReleaseTime(chime_synth[i], 0.04f);
+        pd->sound->channel->addSource(pd->sound->getDefaultChannel(), (SoundSource*)chime_synth[i]);
+        start_synth[i] = pd->sound->synth->newSynth();
+        pd->sound->synth->setWaveform(start_synth[i], kWaveformSine);
+        pd->sound->synth->setAttackTime(start_synth[i], 0.005f);
+        pd->sound->synth->setReleaseTime(start_synth[i], 0.04f);
+        pd->sound->channel->addSource(pd->sound->getDefaultChannel(), (SoundSource*)start_synth[i]);
+    }
     clear_image();
     menu_open();
 
@@ -1610,6 +2334,7 @@ int eventHandler(PlaydateAPI* playdate, PDSystemEvent event, uint32_t arg) {
         if(pd) {
             save_received();
             stop_mic();
+            log_flush();
         }
     } else if(event == kEventUnlock) {
         if(pd) start_mic();

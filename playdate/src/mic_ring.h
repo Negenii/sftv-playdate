@@ -3,7 +3,7 @@
 
 /* Single-producer (audio callback) / single-consumer (update loop) ring of int16 samples.
  * Capacity is a power of two; one slot is kept free to distinguish full from empty. */
-#define MIC_RING_CAP 16384
+#define MIC_RING_CAP 131072 /* ~3 s at 44.1 kHz: saving an animation (decode + GIF) stalls the update loop ~0.6 s */
 
 typedef struct {
     int16_t buf[MIC_RING_CAP];

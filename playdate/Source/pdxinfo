@@ -2,5 +2,5 @@ name=SFTV RX
 author=negenii
 description=Flipper TV: receive pictures over sound from a Flipper Zero
 bundleID=com.negenii.sftvrx
-version=0.1
+version=3.1
 buildNumber=1
