@@ -42,6 +42,9 @@ static int last_block_type = -1; static unsigned last_block_ms; /* drives the sc
 static LCDBitmap* console; /* 140x118 Playdate silhouette, screen interior at (7,7) 88x53 */
 static LCDBitmap* thumb_mask; /* rounded corners for thumbnails */
 static LCDBitmap* qr_github; /* 150x150: https://github.com/Negenii (the Flipper's code, 3 px per dot) */
+static LCDBitmap* qr_coffee; /* 145x145: https://buymeacoffee.com/low.effort (tools/make_coffee_assets.py) */
+static LCDBitmap* cup; /* 20x28 Buy Me a Coffee cup for the button (tools/make_coffee_assets.py) */
+static int about_page; /* 0 the app, 1 support */
 
 static sstv_demod demod; /* tuned to the HF band */
 static sstv_rx rx;
@@ -1471,11 +1474,54 @@ static void draw_menu(void) {
     }
 }
 
-/* About (system menu): name, version and build on the left, authorship at the bottom, the QR
- * code to GitHub on the right under its caption -- the same card as the Flipper's About. */
+/* About (system menu), two pages flipped with left/right:
+ * 1. name, version and build on the left, authorship at the bottom, the QR code to GitHub on
+ *    the right under its caption (the same card as the Flipper's About);
+ * 2. support: a Buy me a coffee button (a picture: the Playdate has no browser) and the QR code
+ *    to the page. */
+#define ABOUT_PAGES 2
+static void draw_about_support(void) {
+    const int qr = 145, qx = LCD_COLUMNS - 20 - 150 + (150 - qr) / 2, qy = 66;
+    use_font(font_big);
+    draw_text("Like it?", 20, 52);
+    use_font(font_ui);
+    draw_text("Scan the code", 20, 92);
+    draw_text("to say thanks.", 20, 110);
+    /* the button, level with the bottom of the code */
+    const int bw = 190, bh = 40, bx = 20, by = qy + qr - bh;
+    pd->graphics->fillRoundRect(bx, by, bw, bh, bh / 2, kColorBlack);
+    const char* label = "Buy me a coffee";
+    int cw = 0, ch = 0, gap = 0, lw = text_width(label);
+    if(cup) {
+        pd->graphics->getBitmapData(cup, &cw, &ch, NULL, NULL, NULL);
+        gap = 8;
+    }
+    int cx = bx + (bw - cw - gap - lw) / 2;
+    if(cup) {
+        pd->graphics->setDrawMode(kDrawModeFillWhite);
+        pd->graphics->drawBitmap(cup, cx, by + (bh - ch) / 2, kBitmapUnflipped);
+        pd->graphics->setDrawMode(kDrawModeCopy);
+    }
+    draw_text_white(label, cx + cw + gap, by + (bh - font_height()) / 2);
+    draw_text_centered("buymeacoffee.com", qx + qr / 2, qy - font_height() - 6);
+    if(qr_coffee) pd->graphics->drawBitmap(qr_coffee, qx, qy, kBitmapUnflipped);
+}
+
 static void draw_about(void) {
     pd->graphics->clear(kColorWhite);
     draw_title_bar("About", "Ⓑ back");
+    /* page dots at the bottom, arrows at the edges towards the other page */
+    for(int i = 0; i < ABOUT_PAGES; i++) {
+        int dx = LCD_COLUMNS / 2 + (i * 2 - (ABOUT_PAGES - 1)) * 8, dy = 229;
+        if(i == about_page) pd->graphics->fillEllipse(dx - 3, dy - 3, 7, 7, 0.0f, 0.0f, kColorBlack);
+        else pd->graphics->drawEllipse(dx - 3, dy - 3, 7, 7, 1, 0.0f, 0.0f, kColorBlack);
+    }
+    if(about_page > 0) pd->graphics->fillTriangle(4, 140, 10, 134, 10, 146, kColorBlack);
+    if(about_page < ABOUT_PAGES - 1) pd->graphics->fillTriangle(LCD_COLUMNS - 4, 140, LCD_COLUMNS - 10, 134, LCD_COLUMNS - 10, 146, kColorBlack);
+    if(about_page == 1) {
+        draw_about_support();
+        return;
+    }
     const int qr = 150, qx = LCD_COLUMNS - 20 - qr, qy = 66;
     use_font(font_big);
     draw_text("SFTV RX", 20, 52);
@@ -1492,7 +1538,10 @@ static void draw_about(void) {
 
 static void about_menu_cb(void* ud) {
     (void)ud;
-    if(ui_mode != ModeAbout) about_back = ui_mode;
+    if(ui_mode != ModeAbout) {
+        about_back = ui_mode;
+        about_page = 0;
+    }
     ui_mode = ModeAbout;
 }
 
@@ -2211,6 +2260,8 @@ static int update(void* userdata) {
     switch(ui_mode) {
     case ModeAbout: /* receiving goes on underneath; a new pass still takes over the screen */
         if(pushed & (kButtonA | kButtonB)) ui_mode = about_back;
+        if((pushed & kButtonRight) && about_page < ABOUT_PAGES - 1) about_page++;
+        if((pushed & kButtonLeft) && about_page > 0) about_page--;
         draw_about();
         break;
     case ModeMenu:
@@ -2347,6 +2398,8 @@ static void init(void) {
     }
     console = pd->graphics->loadBitmap("images/console", &err);
     qr_github = pd->graphics->loadBitmap("images/qr_github", &err);
+    qr_coffee = pd->graphics->loadBitmap("images/qr_coffee", &err);
+    cup = pd->graphics->loadBitmap("images/cup", &err);
 
     thumb_mask = pd->graphics->newBitmap(THUMB_W, THUMB_H, kColorBlack);
     pd->graphics->pushContext(thumb_mask);
