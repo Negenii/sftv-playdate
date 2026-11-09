@@ -26,7 +26,6 @@ d.line([(84, 0), (95, 0)], fill=K)                   # the lock button on the to
 # arm out of its top; a 1 px gap separates them from the body above the foot
 d.rounded_rectangle([110, 22, 121, 63], 5, fill=K)   # housing
 d.rounded_rectangle([114, 22, 139, 33], 3, fill=K)   # arm
-d.line([(123, 21), (138, 21)], fill=K)               # the arm's top edge, past the housing
 d.line([(113, 21), (113, 53)], fill=Wh)              # the gap
 # screen: a 5 px white bezel, the dark (off) screen inside
 d.rounded_rectangle([2, 3, 99, 64], 4, fill=Wh)
